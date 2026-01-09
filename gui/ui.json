@@ -1,0 +1,10 @@
+{
+    "background": "ui.png",
+    "scale": 0.6,
+    "display": {
+        "left": 800,
+        "top": 77,
+        "width": 660,
+        "height": 330
+    }
+}

@@ -1,0 +1,3 @@
+[submodule "ext/bfin_sim"]
+	path = ext/bfin_sim
+	url = https://github.com/op1emu/bfin_sim
