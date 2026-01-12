@@ -19,3 +19,7 @@ cmake -B build -GNinja
 cmake --build build
 ./build/op1emu path/to/te-boot.ldr
 ```
+
+## Acknowledgements
+- [bfin_sim](https://github.com/op1emu/bfin_sim) - Blackfin simulator used for CPU emulation, from gdb/sim.
+- [op1kenobi](https://github.com/alexmandelshtam/op1kenobi) - OP-1 screenshot assets used for the GUI background.
