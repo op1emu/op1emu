@@ -83,7 +83,7 @@ void SIC::ForwardInterrupts() {
         // Process pending and unmasked interrupts
         u32 ipend = isr[i] & imask[i];
 
-        if (!ipend) return;
+        if (!ipend) continue;
 
         for (int pin = 0; pin < 32; pin++) {
             u32 bit = 1 << pin;
