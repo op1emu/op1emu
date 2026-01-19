@@ -8,6 +8,7 @@
 #include "dma.h"
 #include "ppi.h"
 #include "gpio.h"
+#include "jtag.h"
 #include "simhw.h"
 #include "emu.h"
 #include "peripheral/mcp230xx.h"
@@ -115,6 +116,8 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     devices.emplace_back(std::make_shared<SimMMUDevice>(BFIN_COREMMR_MMU_BASE, SIM->state));
     devices.emplace_back(std::make_shared<EBIU>(0xFFC00A00));
     devices.emplace_back(std::make_shared<OTP>(0xFFC03600));
+    // OP-1 seems only use last byte of DSPID, which is 0x02 for BF524 rev 02
+    devices.emplace_back(std::make_shared<Jtag>(0xFFE05000, 0x02));
     devices.emplace_back(std::make_shared<BootROM>(0xEF000000));
     devices.emplace_back(std::make_shared<GPTimer>(0xFFC00600));
 
