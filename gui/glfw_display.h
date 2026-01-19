@@ -1,6 +1,7 @@
 #pragma once
 
 #include "peripheral/display.h"
+#include "peripheral/keyboard.h"
 #include <GLFW/glfw3.h>
 #include <vector>
 #include <cstdint>
@@ -14,13 +15,32 @@ struct DisplayRect {
     int height;
 };
 
+struct ButtonConfig {
+    int left;
+    int top;
+    int width;
+    int height;
+    int bank;
+    int index;
+    std::string name;
+};
+
+struct KeycapConfig {
+    std::string name;
+    int glfwKey; // GLFW key code
+    int bank;
+    int index;
+};
+
 struct UIConfig {
     std::string background;
     DisplayRect display;
     float scale = 1.0f;
+    std::vector<ButtonConfig> buttons;
+    std::vector<KeycapConfig> keycaps;
 };
 
-class GLFWDisplay : public Display {
+class GLFWDisplay : public Display, public Keyboard {
 public:
     GLFWDisplay();
     ~GLFWDisplay() override;
@@ -42,6 +62,11 @@ private:
     void LoadUIConfig(const std::string& path);
     GLuint LoadBackgroundTexture(const std::string& path, int& width, int& height);
     void DrawTexturedQuad(GLuint texture, float x, float y, float w, float h, float texW = 1.0f, float texH = 1.0f);
+    static void MouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
+    static void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+    void HandleMouseButton(int button, int action, double x, double y);
+    void HandleKeyboard(int key, int action);
+    int MapKeyNameToGLFW(const std::string& keyName);
 
     GLFWwindow* window_ = nullptr;
     GLuint texture_ = 0;

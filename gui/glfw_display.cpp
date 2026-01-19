@@ -22,6 +22,11 @@ GLFWDisplay::GLFWDisplay() {
     glfwMakeContextCurrent(window_);
     glfwSwapInterval(1);
 
+    // Set up mouse button callback
+    glfwSetWindowUserPointer(window_, this);
+    glfwSetMouseButtonCallback(window_, MouseButtonCallback);
+    glfwSetKeyCallback(window_, KeyCallback);
+
     backgroundTexture_ = LoadBackgroundTexture(uiConfig_.background, windowWidth_, windowHeight_);
     windowWidth_ = static_cast<int>(windowWidth_ * uiConfig_.scale);
     windowHeight_ = static_cast<int>(windowHeight_ * uiConfig_.scale);
@@ -60,6 +65,33 @@ void GLFWDisplay::LoadUIConfig(const std::string& path) {
     uiConfig_.display.top = int(int(j["display"]["top"]) * uiConfig_.scale);
     uiConfig_.display.width = int(int(j["display"]["width"]) * uiConfig_.scale);
     uiConfig_.display.height = int(int(j["display"]["height"]) * uiConfig_.scale);
+
+    // Parse buttons
+    if (j.contains("buttons")) {
+        for (auto& [name, btn] : j["buttons"].items()) {
+            ButtonConfig button;
+            button.name = name;
+            button.left = int(int(btn["left"]) * uiConfig_.scale);
+            button.top = int(int(btn["top"]) * uiConfig_.scale);
+            button.width = int(int(btn["width"]) * uiConfig_.scale);
+            button.height = int(int(btn["height"]) * uiConfig_.scale);
+            button.bank = btn["bank"];
+            button.index = btn["index"];
+            uiConfig_.buttons.push_back(button);
+        }
+    }
+
+    // Parse keycaps
+    if (j.contains("keycaps")) {
+        for (auto& [name, key] : j["keycaps"].items()) {
+            KeycapConfig keycap;
+            keycap.name = name;
+            keycap.bank = key["bank"];
+            keycap.index = key["index"];
+            keycap.glfwKey = MapKeyNameToGLFW(name);
+            uiConfig_.keycaps.push_back(keycap);
+        }
+    }
 }
 
 GLuint GLFWDisplay::LoadBackgroundTexture(const std::string& path, int& width, int& height) {
@@ -207,4 +239,82 @@ void GLFWDisplay::SwapBuffers() {
 void GLFWDisplay::SetDisplayRotation(int degrees) {
     rotation_ = degrees % 360;
     if (rotation_ < 0) rotation_ += 360;
+}
+
+void GLFWDisplay::MouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+    auto* display = static_cast<GLFWDisplay*>(glfwGetWindowUserPointer(window));
+    if (display) {
+        double xpos, ypos;
+        glfwGetCursorPos(window, &xpos, &ypos);
+        display->HandleMouseButton(button, action, xpos, ypos);
+    }
+}
+
+void GLFWDisplay::HandleMouseButton(int button, int action, double x, double y) {
+    if (button != GLFW_MOUSE_BUTTON_LEFT) return;
+
+    // Check if click is within any button
+    for (const auto& btn : uiConfig_.buttons) {
+        if (x >= btn.left && x < btn.left + btn.width &&
+            y >= btn.top && y < btn.top + btn.height) {
+            if (action == GLFW_PRESS) {
+                OnKeyPressed(btn.bank, btn.index);
+            } else if (action == GLFW_RELEASE) {
+                OnKeyReleased(btn.bank, btn.index);
+            }
+        }
+    }
+}
+
+void GLFWDisplay::KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (action != GLFW_PRESS && action != GLFW_RELEASE) return;
+    auto* display = static_cast<GLFWDisplay*>(glfwGetWindowUserPointer(window));
+    if (display) {
+        display->HandleKeyboard(key, action);
+    }
+}
+
+void GLFWDisplay::HandleKeyboard(int key, int action) {
+    if (action != GLFW_PRESS && action != GLFW_RELEASE) return;
+
+    // Check if key matches any keycap
+    for (const auto& keycap : uiConfig_.keycaps) {
+        if (key == keycap.glfwKey) {
+            if (action == GLFW_PRESS) {
+                OnKeyPressed(keycap.bank, keycap.index);
+            } else if (action == GLFW_RELEASE) {
+                OnKeyReleased(keycap.bank, keycap.index);
+            }
+            break;
+        }
+    }
+}
+
+int GLFWDisplay::MapKeyNameToGLFW(const std::string& keyName) {
+    // Map common key names to GLFW key codes
+    if (keyName == "shift") return GLFW_KEY_LEFT_SHIFT;
+    if (keyName == "ctrl" || keyName == "control") return GLFW_KEY_LEFT_CONTROL;
+    if (keyName == "alt") return GLFW_KEY_LEFT_ALT;
+    if (keyName == "space") return GLFW_KEY_SPACE;
+    if (keyName == "enter" || keyName == "return") return GLFW_KEY_ENTER;
+    if (keyName == "tab") return GLFW_KEY_TAB;
+    if (keyName == "escape" || keyName == "esc") return GLFW_KEY_ESCAPE;
+    if (keyName == "backspace") return GLFW_KEY_BACKSPACE;
+
+    // Arrow keys
+    if (keyName == "up") return GLFW_KEY_UP;
+    if (keyName == "down") return GLFW_KEY_DOWN;
+    if (keyName == "left") return GLFW_KEY_LEFT;
+    if (keyName == "right") return GLFW_KEY_RIGHT;
+
+    // Single character keys (a-z, 0-9)
+    if (keyName.length() == 1) {
+        char c = keyName[0];
+        if (c >= 'a' && c <= 'z') return GLFW_KEY_A + (c - 'a');
+        if (c >= 'A' && c <= 'Z') return GLFW_KEY_A + (c - 'A');
+        if (c >= '0' && c <= '9') return GLFW_KEY_0 + (c - '0');
+    }
+
+    // Default: return the key name as-is if it's already a valid GLFW key code
+    return GLFW_KEY_UNKNOWN;
 }

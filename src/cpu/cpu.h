@@ -32,6 +32,8 @@ class Display;
 class OLED;
 class NFC;
 class NandFlash;
+class Keyboard;
+class MCP230XX;
 
 class BlackFinCpu : public CpuInterface {
 public:
@@ -54,6 +56,7 @@ public:
     void QueueEvent(const std::function<void()>& event, std::chrono::nanoseconds delay = std::chrono::nanoseconds(1));
 
     void AttachDisplay(const std::shared_ptr<Display>& display);
+    void AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard);
 
     static BlackFinCpu& FromCPU(void* cpu);
 
@@ -65,6 +68,7 @@ protected:
     std::shared_ptr<GPIO> portG;
     std::shared_ptr<PPI> ppi;
     std::shared_ptr<OLED> oled;
+    std::vector<std::shared_ptr<MCP230XX>> gpioExpanders;
     std::vector<std::shared_ptr<Device>> devices;
     std::vector<std::tuple<std::chrono::nanoseconds, std::function<void()>>> eventQueue;
     std::recursive_mutex eventQueueMutex;

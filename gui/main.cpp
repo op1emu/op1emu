@@ -78,6 +78,7 @@ int main(int argc, char* argv[]) {
     // Create BlackFin CPU
     BlackFinCpu cpu;
     cpu.AttachDisplay(display);
+    cpu.AttachKeyboard(display);
 
     // Load LDR file
     LDRParser parser;

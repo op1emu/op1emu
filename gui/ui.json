@@ -6,5 +6,45 @@
         "top": 77,
         "width": 660,
         "height": 330
+    },
+    "buttons": {
+        "t1": {
+            "left": 774,
+            "top": 419,
+            "width": 174,
+            "height": 171,
+            "bank": 3,
+            "index": 6
+        },
+        "t2": {
+            "left": 953,
+            "top": 419,
+            "width": 173,
+            "height": 171,
+            "bank": 3,
+            "index": 7
+        },
+        "t3": {
+            "left": 1131,
+            "top": 419,
+            "width": 173,
+            "height": 171,
+            "bank": 3,
+            "index": 8
+        },
+        "t4": {
+            "left": 1310,
+            "top": 419,
+            "width": 175,
+            "height": 171,
+            "bank": 3,
+            "index": 9
+        }
+    },
+    "keycaps": {
+        "shift": {
+            "bank": 5,
+            "index": 6
+        }
     }
 }

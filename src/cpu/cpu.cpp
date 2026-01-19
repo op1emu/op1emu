@@ -13,6 +13,7 @@
 #include "peripheral/mcp230xx.h"
 #include "peripheral/oled.h"
 #include "peripheral/display.h"
+#include "peripheral/keyboard.h"
 #include "utils/log.h"
 
 extern "C" {
@@ -149,7 +150,6 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     std::shared_ptr<TWI> twi = std::make_shared<TWI>(0xFFC01400);
     devices.push_back(twi);
 
-    std::vector<std::shared_ptr<MCP230XX>> gpioExpanders;
     for (int i = 0; i < 8; i++) {
         u32 addr = 0x20 + i;
         gpioExpanders.push_back(std::make_shared<MCP230XX>(addr, MCP230XXModel::MCP23017));
@@ -157,6 +157,12 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     }
     // TODO: this bit controls DAT_01f007e0, figure out its function
     gpioExpanders[0]->SetPinInput(6, GPIOPinLevel::High); // Set MCP23017 #6 high
+    // Connect gpio expanders
+    gpioExpanders[3]->Connect(16, {*gpioExpanders[2], 0}); // Connect gpio3 INTA to gpio2 #0
+    gpioExpanders[4]->Connect(16, {*gpioExpanders[2], 1}); // Connect gpio4 INTA to gpio2 #1
+    gpioExpanders[6]->Connect(16, {*gpioExpanders[2], 2}); // Connect gpio6 INTA to gpio2 #2
+    gpioExpanders[5]->Connect(16, {*gpioExpanders[2], 3}); // Connect gpio5 INTA to gpio2 #3
+    gpioExpanders[2]->Connect(16, {*portG, 0}); // Connect gpio2 INTA to portG #0
 
     // This one byte controls DAT_ff802894, which seams to be "is_not_display_flip"
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x1a, 0x0)); // Dummy I2C device
@@ -331,5 +337,14 @@ void BlackFinCpu::AttachDisplay(const std::shared_ptr<Display>& display) {
         this->QueueEvent([this]() {
             this->portG->SetPinInput(3, GPIOPinLevel::High);
         }, std::chrono::nanoseconds(1000));
+    });
+}
+
+void BlackFinCpu::AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard) {
+    keyboard->SetKeyEventCallback([this](int bank, int index, bool pressed) {
+        this->QueueEvent([this, bank, index, pressed]() {
+            // Map keyboard events to GPIO expander pins
+            gpioExpanders[bank]->SetPinInput(index, pressed ? GPIOPinLevel::Low : GPIOPinLevel::High);
+        });
     });
 }

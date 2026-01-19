@@ -32,7 +32,7 @@ public:
 
     virtual int GetPinCount() const = 0;
 
-    virtual void Connect(int pin, GPIOConnection& otherConn) {
+    virtual void Connect(int pin, GPIOConnection otherConn) {
         auto& [other, otherPin] = otherConn;
         connections[pin][&other].push_back(otherPin);
         other.connections[otherPin][this].push_back(pin);
