@@ -36,7 +36,7 @@ TWI::TWI(u32 baseAddr) : RegisterDevice("TWI", baseAddr, 0x90) {
     FIELD(MASTER_CTL, MDIR, 2, 1, R(masterRead ? 1 : 0), W(masterRead));
     FIELD(MASTER_CTL, MEN, 0, 1, R(masterEnable ? 1 : 0), W(masterEnable));
     MASTER_CTL.writeCallback = [this](u32 value) {
-        if (masterStop || (!masterEnable && !masterRepeatStart)) {
+        if (masterStop) {
             auto iter = clients.find(masterAddr);
             if (iter != clients.end()) {
                 iter->second->Stop();
@@ -61,6 +61,9 @@ TWI::TWI(u32 baseAddr) : RegisterDevice("TWI", baseAddr, 0x90) {
     FIELD(INT_STAT, MERR, 5, 1, R(masterTransferError ? 1 : 0), W1C(masterTransferError));
     FIELD(INT_STAT, XMTSERV, 6, 1, R(transmitFIFOService ? 1 : 0), W1C(transmitFIFOService));
     FIELD(INT_STAT, RCVSERV, 7, 1, R(receiveFIFOService ? 1 : 0), W1C(receiveFIFOService));
+    INT_STAT.writeCallback = [this](u32 value) {
+        UpdateInterrupts();
+    };
 
     REG32(INT_MASK, 0x24);
     FIELD(INT_MASK, VAL, 0, 16, R(intMask), W(intMask));
@@ -218,6 +221,10 @@ void TWI::ProcessMasterTransfer() {
     }
     if ((masterTransferComplete && !masterRepeatStart) || masterTransferError) {
         masterEnable = false;
+        auto iter = clients.find(masterAddr);
+        if (iter != clients.end()) {
+            iter->second->Stop();
+        }
     }
 
     // Transfer complete
@@ -235,11 +242,11 @@ void TWI::UpdateInterrupts() {
 }
 
 bool RegisterI2CPeripheral::Read(u8* buffer, u32 length) {
-    if (selectedRegister) {
-        u32 value = selectedRegister->Read32();
+    if (readRegister) {
         for (int i = 0; i < length; i++) {
+            u32 value = readRegister->Read32();
             buffer[i] = value & 0xFF;
-            selectedRegister = Next(selectedRegister->addr);
+            readRegister = Next(readRegister->addr);
         }
         return true;
     }
@@ -251,20 +258,21 @@ bool RegisterI2CPeripheral::Write(const u8* buffer, u32 length) {
     if (length == 0) {
         return false;
     }
-    if (!selectedRegister) {
+    if (!writeRegister) {
         u32 regAddr = buffer[0];
         auto iter = registers.find(regAddr);
         if (iter == registers.end()) {
             return false;
         }
-        selectedRegister = &iter->second;
+        writeRegister = &iter->second;
         index++;
     }
     for (; index < length; index++) {
         u32 value = buffer[index];
-        selectedRegister->Write32(value);
-        selectedRegister = Next(selectedRegister->addr);
+        writeRegister->Write32(value);
+        writeRegister = Next(writeRegister->addr);
     }
+    readRegister = writeRegister;
     return true;
 }
 
@@ -277,5 +285,6 @@ Register* RegisterI2CPeripheral::Next(u32 addr) const {
 }
 
 void RegisterI2CPeripheral::Stop() {
-    selectedRegister = nullptr;
+    // write register reset on stop condition
+    writeRegister = nullptr;
 }

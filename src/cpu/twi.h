@@ -28,7 +28,8 @@ protected:
     virtual Register* Next(u32 addr) const;
 
     u32 address;
-    Register* selectedRegister = nullptr;
+    Register* writeRegister = nullptr;
+    Register* readRegister = nullptr;
     std::map<u32, Register> registers;
 };
 
