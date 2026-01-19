@@ -26,28 +26,37 @@ public:
     bool SetPinInput(int pin, GPIOPinLevel level) override;
     GPIOPinLevel GetPinOutput(int pin) const override;
 
-    int GetPinCount() const override { return gpioCount; }
+    int GetPinCount() const override;
 
 protected:
     void SwitchRegisterBank();
+    void ForwardInterrupt(int bank);
+    void ClearInterrupt(int bank);
 
     MCP230XXModel model;
     int gpioCount;
     int registerCount;
 
     // Register state storage (2 banks for MCP23017)
-    std::array<u8, 2> iodir_input = {0xFF, 0xFF};
+    std::array<u8, 2> iodirInput = {0xFF, 0xFF};
     std::array<u8, 2> ipol = {0, 0};
     std::array<u8, 2> inten = {0, 0};
     std::array<u8, 2> defaultValue = {0, 0};
+    std::array<u8, 2> intCompareDef = {0, 0};
     std::array<u8, 2> pullup = {0, 0};
-    std::array<u8, 2> value = {0, 0};
+    std::array<u8, 2> level = {0, 0};
     std::array<u8, 2> olat = {0, 0};
+    std::array<u8, 2> intFlag = {0, 0};
+    std::array<u8, 2> intcap = {0, 0};
+    std::array<u8, 2> inputConnected = {0, 0};
+    std::array<bool, 2> intActive = {false, false};
 
     bool registerBank = false;
     bool intMirror = false;
     bool byteMode = false;
-    bool intPolarity = false;
+    bool intOutputOpenDrain = false;
+    bool intActiveHigh = false;
+    bool intClearOnReadIntcap = false;
 
     std::function<void(int)> interruptCallback;
 };
