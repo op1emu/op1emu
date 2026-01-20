@@ -8,6 +8,7 @@
 #include "dma.h"
 #include "ppi.h"
 #include "gpio.h"
+#include "nand.h"
 #include "jtag.h"
 #include "simhw.h"
 #include "emu.h"
@@ -120,12 +121,16 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     devices.emplace_back(std::make_shared<Jtag>(0xFFE05000, 0x02));
     devices.emplace_back(std::make_shared<BootROM>(0xEF000000));
     devices.emplace_back(std::make_shared<GPTimer>(0xFFC00600));
+    nfc = std::make_shared<NFC>(0xFFC03700);
+    nfc->BindInterrupt(IRQ_NFC, irqHandler);
+    devices.emplace_back(nfc);
 
     ppi = std::make_shared<PPI>(0xFFC01000);
     devices.emplace_back(ppi);
     std::shared_ptr<DMA> dma = std::make_shared<DMA>(0xFFC00C00, emulator);
     devices.emplace_back(dma);
     dma->AttachDMABus(DMAPeripheralType::DMAPeripheralPPI, ppi);
+    dma->AttachDMABus(DMAPeripheralType::DMAPeripheralNFC, nfc);
     dma->BindInterrupt(0, IRQ_DMA0, irqHandler);
     std::shared_ptr<GPIO> portF = std::make_shared<GPIO>("PORTF", 0xFFC00700);
     portF->BindInterruptA(IRQ_PORTF_A, irqHandler);
@@ -341,6 +346,10 @@ void BlackFinCpu::AttachDisplay(const std::shared_ptr<Display>& display) {
             this->portG->SetPinInput(3, GPIOPinLevel::High);
         }, std::chrono::nanoseconds(1000));
     });
+}
+
+void BlackFinCpu::AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash) {
+    nfc->AttachNandFlash(nandFlash);
 }
 
 void BlackFinCpu::AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard) {

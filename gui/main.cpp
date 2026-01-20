@@ -1,6 +1,7 @@
 #include <GLFW/glfw3.h>
 #include "loader/ldr.h"
 #include "cpu/cpu.h"
+#include "peripheral/MT29F4G08.h"
 #include "utils/log.h"
 #include "glfw_display.h"
 #include <vector>
@@ -67,8 +68,8 @@ void CpuExecutionThread(BlackFinCpu& cpu, const LDRParser& parser) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <ldr_file>" << std::endl;
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <ldr_file> <nand_flash_file>" << std::endl;
         return 1;
     }
 
@@ -86,6 +87,10 @@ int main(int argc, char* argv[]) {
         std::cerr << "Failed to load LDR file: " << argv[1] << std::endl;
         return 1;
     }
+
+    // Load NAND Flash underlying storage
+    auto nandFlash = std::make_shared<MT29F4G08>(argv[2]);
+    cpu.AttachNandFlash(nandFlash);
 
     // Start CPU execution thread
     std::thread cpuThread(CpuExecutionThread, std::ref(cpu), std::ref(parser));

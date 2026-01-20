@@ -17,7 +17,7 @@ git submodule update --init --recursive
 mkdir build
 cmake -B build -GNinja
 cmake --build build
-./build/op1emu path/to/te-boot.ldr
+./build/op1emu path/to/te-boot.ldr path/to/nandflash.img
 ```
 
 ## Acknowledgements

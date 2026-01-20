@@ -57,6 +57,7 @@ public:
 
     void AttachDisplay(const std::shared_ptr<Display>& display);
     void AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard);
+    void AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash);
 
     static BlackFinCpu& FromCPU(void* cpu);
 
@@ -68,6 +69,7 @@ protected:
     std::shared_ptr<GPIO> portG;
     std::shared_ptr<PPI> ppi;
     std::shared_ptr<OLED> oled;
+    std::shared_ptr<NFC> nfc;
     std::vector<std::shared_ptr<MCP230XX>> gpioExpanders;
     std::vector<std::shared_ptr<Device>> devices;
     std::vector<std::tuple<std::chrono::nanoseconds, std::function<void()>>> eventQueue;
