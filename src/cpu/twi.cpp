@@ -53,7 +53,7 @@ TWI::TWI(u32 baseAddr) : RegisterDevice("TWI", baseAddr, 0x90) {
     FIELD(MASTER_STAT, BUFWRERR, 5, 1, R(masterBufferWriteError ? 1 : 0), W1C(masterBufferWriteError));
 
     REG32(MASTER_ADDR, 0x1C);
-    FIELD(MASTER_ADDR, MADDR, 0, 6, R(masterAddr), W(masterAddr));
+    FIELD(MASTER_ADDR, MADDR, 0, 7, R(masterAddr), W(masterAddr));
 
     REG32(INT_STAT, 0x20);
     FIELD(INT_STAT, VAL, 0, 4, R(slaveIntStat), W1C(slaveIntStat));
