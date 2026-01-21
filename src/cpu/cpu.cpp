@@ -10,6 +10,7 @@
 #include "gpio.h"
 #include "nand.h"
 #include "jtag.h"
+#include "rtc.h"
 #include "simhw.h"
 #include "emu.h"
 #include "peripheral/mcp230xx.h"
@@ -76,6 +77,7 @@ static constexpr int IRQ_PORTG_B = 41;
 static constexpr int IRQ_PORTH_A = 29;
 static constexpr int IRQ_PORTH_B = 31;
 static constexpr int IRQ_DMA0 = 15;
+static constexpr int IRQ_RTC = 14;
 static constexpr int IRQ_NFC = 48;
 
 BlackFinCpuWrapper::BlackFinCpuWrapper(BlackFinCpu* host)
@@ -124,6 +126,10 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     nfc = std::make_shared<NFC>(0xFFC03700);
     nfc->BindInterrupt(IRQ_NFC, irqHandler);
     devices.emplace_back(nfc);
+
+    std::shared_ptr<RTC> rtc = std::make_shared<RTC>(0xFFC00300);
+    rtc->BindInterrupt(IRQ_RTC, irqHandler);
+    devices.emplace_back(rtc);
 
     ppi = std::make_shared<PPI>(0xFFC01000);
     devices.emplace_back(ppi);
@@ -211,6 +217,8 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     CPU->ksp = 0x7000000;
     CPU->usp = 0x7000000;
     CPU->syscfg = 0x30;
+
+    startTime = std::chrono::system_clock::now();
 }
 
 BlackFinCpu::~BlackFinCpu() {
@@ -236,7 +244,22 @@ void BlackFinCpu::RestoreContext() {
     // TODO
 }
 
+static u64 GetBfinCycles(BlackFinCpuWrapper& wrapper) {
+    return ((u64)CPU->cycles[2]) | CPU->cycles[0];
+}
+
+static void SetBfinCycles(BlackFinCpuWrapper& wrapper, u64 cycles) {
+    CPU->cycles[0] = (u32)(cycles & 0xffffffff);
+    CPU->cycles[1] = (u32)(cycles >> 32);
+    CPU->cycles[2] = CPU->cycles[1];
+}
+
 HaltReason BlackFinCpu::Run() {
+    auto microSecondsElapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - startTime).count();
+    auto cyclesElapsed = microSecondsElapsed * 400; // assuming 400MHz CPU clock
+    // Sync cycles with system time
+    SetBfinCycles(wrapper, cyclesElapsed);
+
     CPU->did_jump = false;
     u32 pc = PC();
     u32 len = interp_insn_bfin(SIM, pc);

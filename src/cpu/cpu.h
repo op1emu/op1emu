@@ -75,6 +75,7 @@ protected:
     std::vector<std::tuple<std::chrono::nanoseconds, std::function<void()>>> eventQueue;
     std::recursive_mutex eventQueueMutex;
     std::chrono::nanoseconds elapsedTime{0};
+    std::chrono::system_clock::time_point startTime;
     BlackFinCpuWrapper wrapper;
     Emulator emulator;
     uint32_t pc;
