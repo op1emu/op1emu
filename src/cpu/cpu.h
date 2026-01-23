@@ -34,6 +34,7 @@ class NFC;
 class NandFlash;
 class Keyboard;
 class MCP230XX;
+class ADXL345;
 
 class BlackFinCpu : public CpuInterface {
 public:
@@ -58,6 +59,7 @@ public:
     void AttachDisplay(const std::shared_ptr<Display>& display);
     void AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard);
     void AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash);
+    void SetAcceleration(int16_t x, int16_t y, int16_t z);
 
     static BlackFinCpu& FromCPU(void* cpu);
 
@@ -70,6 +72,7 @@ protected:
     std::shared_ptr<PPI> ppi;
     std::shared_ptr<OLED> oled;
     std::shared_ptr<NFC> nfc;
+    std::shared_ptr<ADXL345> adxl345;
     std::vector<std::shared_ptr<MCP230XX>> gpioExpanders;
     std::vector<std::shared_ptr<Device>> devices;
     std::vector<std::tuple<std::chrono::nanoseconds, std::function<void()>>> eventQueue;

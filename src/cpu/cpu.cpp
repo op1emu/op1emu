@@ -15,6 +15,7 @@
 #include "simhw.h"
 #include "emu.h"
 #include "peripheral/mcp230xx.h"
+#include "peripheral/adxl345.h"
 #include "peripheral/oled.h"
 #include "peripheral/display.h"
 #include "peripheral/keyboard.h"
@@ -188,7 +189,13 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     gpioExpanders[6]->Connect(16, {*gpioExpanders[2], 2}); // Connect gpio6 INTA to gpio2 #2
     gpioExpanders[5]->Connect(16, {*gpioExpanders[2], 3}); // Connect gpio5 INTA to gpio2 #3
     gpioExpanders[2]->Connect(16, {*portG, 0}); // Connect gpio2 INTA to portG #0
+    // FIXME: figure out what exactly is connected from gpio0 INTA to gpio2
+    gpioExpanders[0]->Connect(16, {*gpioExpanders[2], 15}); // Connect gpio0 INTA to gpio2 #15
 
+    adxl345 = std::make_shared<ADXL345>(0x53);
+    adxl345->Connect(0, {*gpioExpanders[0], 1}); // Connect ADXL345 INT1 to gpio0 #1
+
+    twi->AttachPeripheral(adxl345);
     // This one byte controls DAT_ff802894, which seams to be "is_not_display_flip"
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x1a, 0x0)); // Dummy I2C device
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x18, 0x0)); // Dummy I2C device
@@ -394,5 +401,11 @@ void BlackFinCpu::AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard) {
             // Map keyboard events to GPIO expander pins
             gpioExpanders[bank]->SetPinInput(index, pressed ? GPIOPinLevel::Low : GPIOPinLevel::High);
         });
+    });
+}
+
+void BlackFinCpu::SetAcceleration(int16_t x, int16_t y, int16_t z) {
+    QueueEvent([this, x, y, z]() {
+        this->adxl345->SetAcceleration(x, y, z);
     });
 }

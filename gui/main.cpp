@@ -10,6 +10,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 
 std::atomic<bool> cpuShouldStop(false);
 
@@ -98,6 +99,10 @@ int main(int argc, char* argv[]) {
     // Main thread handles GLFW display
     while (!display->ShouldClose()) {
         display->PollEvents();
+        int16_t ax = static_cast<int16_t>((std::rand() % (540 - 50 + 1)) + 50); // ax in [50, 540]
+        int16_t ay = static_cast<int16_t>((std::rand() % (-50 - (-540) + 1)) + (-540)); // ay in [-540, -50]
+        int16_t az = static_cast<int16_t>((std::rand() % (874 - 75 + 1)) + 75); // az in [75, 874]
+        cpu.SetAcceleration(ax, ay, az); // Placeholder for random accelerometer data
 
         // Small sleep to prevent busy-waiting
         std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
