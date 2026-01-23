@@ -202,6 +202,7 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x58, 0x0)); // Dummy I2C device
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x09, 0x0)); // Dummy I2C device
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x4a, 0x0)); // probably ADC?
+    twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x64, 0x3C)); // LTC2941 battgauge
     twi->BindInterrupt(IRQ_TWI, irqHandler);
 
     for (const auto& device : devices) {
