@@ -1,4 +1,5 @@
 #include "dma.h"
+#include "utils/log.h"
 #include <stdint.h>
 
 enum DMANextOperation {
@@ -106,7 +107,12 @@ DMAChannel::DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defa
     FIELD(CURR_ADDR, VAL, 0, 32, R(currAddr), W(currAddr));
 
     REG32(IRQ_STATUS, 0x28);
-    FIELD(IRQ_STATUS, DMA_DONE, 0, 1, R(completed), W1C(completed));
+    FIELD(IRQ_STATUS, DMA_DONE, 0, 1, R(completed), [this](u32 v) {
+        if (v) {
+            completed = false;
+            TriggerInterrupt(0);
+        }
+    });
     FIELD(IRQ_STATUS, DMA_ERR, 1, 1, R(error), W1C(error));
     FIELD(IRQ_STATUS, DMA_RUN, 3, 1, R(running), N());
 
@@ -163,6 +169,12 @@ void DMAChannel::ProcessTransfer() {
     if (!enabled || !running) return;
     if (channelIsMemory) return; // Memory-to-memory not supported
 
+    auto bus = dma.GetDMABus(peripheralType);
+    if (!bus) {
+        LogWarn("DMA channel %s: No DMA bus attached for peripheral type %d", Name().c_str(), peripheralType);
+        return;
+    }
+
     int elementBytes = 1 << wordSize;
     u32 totalBytes = currXCount * elementBytes;
 
@@ -170,7 +182,7 @@ void DMAChannel::ProcessTransfer() {
     totalBytes = std::min(totalBytes, (u32)sizeof(buffer));
     dma.GetEmulator().Lock();
     if (memoryWrite) {
-        totalBytes = dma.GetDMABus(peripheralType)->DMARead(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
+        totalBytes = bus->DMARead(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
         if (xModify == elementBytes) {
             dma.GetEmulator().MemoryWrite(currAddr, buffer, totalBytes);
         } else {
@@ -187,7 +199,7 @@ void DMAChannel::ProcessTransfer() {
                 dma.GetEmulator().MemoryRead(currAddr + i * xModify, buffer + i * elementBytes, elementBytes);
             }
         }
-        totalBytes = dma.GetDMABus(peripheralType)->DMAWrite(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
+        totalBytes = bus->DMAWrite(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
     }
     dma.GetEmulator().Unlock();
 
