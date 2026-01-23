@@ -11,6 +11,7 @@
 #include "nand.h"
 #include "jtag.h"
 #include "rtc.h"
+#include "sport.h"
 #include "simhw.h"
 #include "emu.h"
 #include "peripheral/mcp230xx.h"
@@ -77,6 +78,8 @@ static constexpr int IRQ_PORTG_B = 41;
 static constexpr int IRQ_PORTH_A = 29;
 static constexpr int IRQ_PORTH_B = 31;
 static constexpr int IRQ_DMA0 = 15;
+static constexpr int IRQ_DMA1 = 28;
+static constexpr int IRQ_DMA2 = 30;
 static constexpr int IRQ_RTC = 14;
 static constexpr int IRQ_NFC = 48;
 
@@ -103,8 +106,6 @@ BlackFinCpuWrapper::~BlackFinCpuWrapper() {
 
 BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     auto irqHandler = [this](int q, int level) { this->ProcessInterrupt(q, level); };
-    devices.emplace_back(std::make_shared<MemoryDevice>("SPORT0",   0xFFC00800, 0x60));
-    devices.emplace_back(std::make_shared<MemoryDevice>("SPORT1",   0xFFC00900, 0x60));
     devices.emplace_back(std::make_shared<MemoryDevice>("PORT_MUX", 0xFFC03200, 0x100));
     devices.emplace_back(std::make_shared<MemoryDevice>("MUSB",     0xFFC03800, 0x500));
     devices.emplace_back(std::make_shared<MemoryDevice>("Data A",   0xFF800000, 0x4000));
@@ -119,6 +120,10 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     devices.emplace_back(std::make_shared<SimMMUDevice>(BFIN_COREMMR_MMU_BASE, SIM->state));
     devices.emplace_back(std::make_shared<EBIU>(0xFFC00A00));
     devices.emplace_back(std::make_shared<OTP>(0xFFC03600));
+    std::shared_ptr<SPORT> sport0 = std::make_shared<SPORT>(0xFFC00800, 0);
+    devices.emplace_back(sport0);
+    std::shared_ptr<SPORT> sport1 = std::make_shared<SPORT>(0xFFC00900, 1);
+    devices.emplace_back(sport1);
     // OP-1 seems only use last byte of DSPID, which is 0x02 for BF524 rev 02
     devices.emplace_back(std::make_shared<Jtag>(0xFFE05000, 0x02));
     devices.emplace_back(std::make_shared<BootROM>(0xEF000000));
@@ -137,7 +142,13 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     devices.emplace_back(dma);
     dma->AttachDMABus(DMAPeripheralType::DMAPeripheralPPI, ppi);
     dma->AttachDMABus(DMAPeripheralType::DMAPeripheralNFC, nfc);
+    dma->AttachDMABus(DMAPeripheralType::DMAPeripheralSPORT0Rx, sport0);
+    dma->AttachDMABus(DMAPeripheralType::DMAPeripheralSPORT0Tx, sport0);
+    dma->AttachDMABus(DMAPeripheralType::DMAPeripheralSPORT1Rx, sport1);
+    dma->AttachDMABus(DMAPeripheralType::DMAPeripheralSPORT1Tx, sport1);
     dma->BindInterrupt(0, IRQ_DMA0, irqHandler);
+    dma->BindInterrupt(1, IRQ_DMA1, irqHandler);
+    dma->BindInterrupt(2, IRQ_DMA2, irqHandler);
     std::shared_ptr<GPIO> portF = std::make_shared<GPIO>("PORTF", 0xFFC00700);
     portF->BindInterruptA(IRQ_PORTF_A, irqHandler);
     portF->BindInterruptB(IRQ_PORTF_B, irqHandler);
@@ -182,6 +193,8 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x1a, 0x0)); // Dummy I2C device
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x18, 0x0)); // Dummy I2C device
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x58, 0x0)); // Dummy I2C device
+    twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x09, 0x0)); // Dummy I2C device
+    twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x4a, 0x0)); // probably ADC?
     twi->BindInterrupt(IRQ_TWI, irqHandler);
 
     for (const auto& device : devices) {
