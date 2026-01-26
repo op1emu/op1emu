@@ -188,9 +188,12 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     gpioExpanders[4]->Connect(16, {*gpioExpanders[2], 1}); // Connect gpio4 INTA to gpio2 #1
     gpioExpanders[6]->Connect(16, {*gpioExpanders[2], 2}); // Connect gpio6 INTA to gpio2 #2
     gpioExpanders[5]->Connect(16, {*gpioExpanders[2], 3}); // Connect gpio5 INTA to gpio2 #3
-    gpioExpanders[2]->Connect(16, {*portG, 0}); // Connect gpio2 INTA to portG #0
-    // FIXME: figure out what exactly is connected from gpio0 INTA to gpio2
-    gpioExpanders[0]->Connect(16, {*gpioExpanders[2], 15}); // Connect gpio0 INTA to gpio2 #15
+
+    gpioOrConnection = std::make_shared<GPIOOrGate>(true); // active low
+    gpioOrConnection->Connect(2, {*portG, 0}); // Connect GPIOOr output to portG #0
+    gpioExpanders[2]->Connect(16, {*gpioOrConnection, 0}); // Connect gpio2 INTA to GPIOOr #0
+    // FIXME: figure out how gpio2 INTA and gpio0 INTA are connected to portG #0
+    gpioExpanders[0]->Connect(16, {*gpioOrConnection, 1}); // Connect gpio0 INTA to GPIOOr #1
 
     adxl345 = std::make_shared<ADXL345>(0x53);
     adxl345->Connect(0, {*gpioExpanders[0], 1}); // Connect ADXL345 INT1 to gpio0 #1

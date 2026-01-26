@@ -56,6 +56,52 @@ protected:
     std::map<int, std::map<GPIOPeripheral*, std::vector<int>>> connections;
 };
 
+class GPIOOrGate : public GPIOPeripheral {
+public:
+    GPIOOrGate(bool low) : activeLow(low) { }
+
+    int GetPinCount() const override { return 3; } // 2 inputs, 1 output
+
+    GPIOPinDirection GetDirection(int pin) const override {
+        if (pin == 2) {
+            return GPIOPinDirection::Output;
+        } else {
+            return GPIOPinDirection::Input;
+        }
+    }
+
+    GPIOPinLevel GetPinOutput(int pin) const override {
+        GPIOPinLevel output = GPIOPinLevel::Low;
+        if (pin == 2) {
+            // Output pin: OR of all input pins
+            for (int i = 0; i < 2; i++) {
+                if (inputs[i] == GPIOPinLevel::High) {
+                    output = GPIOPinLevel::High;
+                    break;
+                }
+            }
+        }
+        if (output == GPIOPinLevel::High) {
+            return activeLow ? GPIOPinLevel::Low : GPIOPinLevel::High;
+        } else {
+            return activeLow ? GPIOPinLevel::High : GPIOPinLevel::Low;
+        }
+    }
+
+    bool SetPinInput(int pin, GPIOPinLevel level) override {
+        if (pin < 0 || pin >= 2) return false;
+        if (inputs[pin] != level) {
+            inputs[pin] = level;
+            ForwardConnections(2); // Update output
+        }
+        return true;
+    }
+
+protected:
+    GPIOPinLevel inputs[2];
+    bool activeLow = false;
+};
+
 class GPIO : public RegisterDevice, public GPIOPeripheral {
 public:
     GPIO(const std::string& name, u32 baseAddr);
