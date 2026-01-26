@@ -278,9 +278,10 @@ void MCP230XX::ClearInterrupt(int bank) {
     // Clear interrupt level output
     intActive[bank] = false;
     // Set input pins again
-    for (int i = 0; i < gpioCount; i++) {
+    for (int i = 0; i < BANKSIZE; i++) {
+        int pin = i + bank * BANKSIZE;
         if (inputConnected[bank] & (1 << i)) {
-            SetPinInput(i, (level[bank] & (1 << i)) ? GPIOPinLevel::High : GPIOPinLevel::Low);
+            SetPinInput(pin, (level[bank] & (1 << i)) ? GPIOPinLevel::High : GPIOPinLevel::Low);
         }
     }
     ForwardInterrupt(bank);
