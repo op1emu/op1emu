@@ -71,12 +71,14 @@ void GLFWDisplay::LoadUIConfig(const std::string& path) {
         for (auto& [name, btn] : j["buttons"].items()) {
             ButtonConfig button;
             button.name = name;
-            button.left = int(int(btn["left"]) * uiConfig_.scale);
-            button.top = int(int(btn["top"]) * uiConfig_.scale);
-            button.width = int(int(btn["width"]) * uiConfig_.scale);
-            button.height = int(int(btn["height"]) * uiConfig_.scale);
-            button.bank = btn["bank"];
-            button.index = btn["index"];
+            auto&& pos = btn["position"];
+            button.left = int(int(pos[0]) * uiConfig_.scale);
+            button.top = int(int(pos[1]) * uiConfig_.scale);
+            button.width = int(int(pos[2]) * uiConfig_.scale);
+            button.height = int(int(pos[3]) * uiConfig_.scale);
+            auto&& gpio = btn["gpio"];
+            button.bank = gpio[0];
+            button.index = gpio[1];
             uiConfig_.buttons.push_back(button);
         }
     }
@@ -86,8 +88,8 @@ void GLFWDisplay::LoadUIConfig(const std::string& path) {
         for (auto& [name, key] : j["keycaps"].items()) {
             KeycapConfig keycap;
             keycap.name = name;
-            keycap.bank = key["bank"];
-            keycap.index = key["index"];
+            keycap.bank = key[0];
+            keycap.index = key[1];
             keycap.glfwKey = MapKeyNameToGLFW(name);
             uiConfig_.keycaps.push_back(keycap);
         }

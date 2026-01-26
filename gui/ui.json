@@ -9,42 +9,23 @@
     },
     "buttons": {
         "t1": {
-            "left": 774,
-            "top": 419,
-            "width": 174,
-            "height": 171,
-            "bank": 3,
-            "index": 6
+            "position": [774, 419, 174, 171],
+            "gpio": [3, 6]
         },
         "t2": {
-            "left": 953,
-            "top": 419,
-            "width": 173,
-            "height": 171,
-            "bank": 3,
-            "index": 7
+            "position": [953, 419, 173, 171],
+            "gpio": [3, 7]
         },
         "t3": {
-            "left": 1131,
-            "top": 419,
-            "width": 173,
-            "height": 171,
-            "bank": 3,
-            "index": 8
+            "position": [1131, 419, 173, 171],
+            "gpio": [3, 8]
         },
         "t4": {
-            "left": 1310,
-            "top": 419,
-            "width": 175,
-            "height": 171,
-            "bank": 3,
-            "index": 9
+            "position": [1310, 419, 175, 171],
+            "gpio": [3, 9]
         }
     },
     "keycaps": {
-        "shift": {
-            "bank": 5,
-            "index": 6
-        }
+        "shift": [5, 6]
     }
 }
