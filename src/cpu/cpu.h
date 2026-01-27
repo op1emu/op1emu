@@ -35,6 +35,7 @@ class NandFlash;
 class Keyboard;
 class MCP230XX;
 class ADXL345;
+class Potentiometer;
 class GPIOPeripheral;
 
 class BlackFinCpu : public CpuInterface {
@@ -61,6 +62,7 @@ public:
     void AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard);
     void AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash);
     void SetAcceleration(int16_t x, int16_t y, int16_t z);
+    void SetPotentiometerValue(u8 value);
 
     static BlackFinCpu& FromCPU(void* cpu);
 
@@ -74,6 +76,7 @@ protected:
     std::shared_ptr<OLED> oled;
     std::shared_ptr<NFC> nfc;
     std::shared_ptr<ADXL345> adxl345;
+    std::shared_ptr<Potentiometer> potentiometer;
     std::shared_ptr<GPIOPeripheral> gpioOrConnection;
     std::vector<std::shared_ptr<MCP230XX>> gpioExpanders;
     std::vector<std::shared_ptr<Device>> devices;

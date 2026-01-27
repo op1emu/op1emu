@@ -7,6 +7,10 @@
         "width": 660,
         "height": 330
     },
+    "volume_knob": {
+        "clockwise": [519, 65, 72, 171],
+        "counter_clockwise": [417, 65, 66, 171]
+    },
     "buttons": {
         "help": {
             "position": [417, 241, 174, 173],

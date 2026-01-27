@@ -32,12 +32,24 @@ struct KeycapConfig {
     int index;
 };
 
+struct KnobConfig {
+    int clockwiseLeft;
+    int clockwiseTop;
+    int clockwiseWidth;
+    int clockwiseHeight;
+    int counterClockwiseLeft;
+    int counterClockwiseTop;
+    int counterClockwiseWidth;
+    int counterClockwiseHeight;
+};
+
 struct UIConfig {
     std::string background;
     DisplayRect display;
     float scale = 1.0f;
     std::vector<ButtonConfig> buttons;
     std::vector<KeycapConfig> keycaps;
+    KnobConfig volumeKnob;
 };
 
 class GLFWDisplay : public Display, public Keyboard {
@@ -56,6 +68,7 @@ public:
     bool ShouldClose() const;
     void SwapBuffers();
     void SetDisplayRotation(int degrees);
+    uint8_t GetVolumeValue() const { return volumeValue_; }
 
 private:
     void CreateTexture();
@@ -83,4 +96,5 @@ private:
     UIConfig uiConfig_;
     int windowWidth_ = 0;
     int windowHeight_ = 0;
+    uint8_t volumeValue_ = 128;  // 0-255, start at middle
 };

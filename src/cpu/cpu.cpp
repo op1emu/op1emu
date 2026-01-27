@@ -19,6 +19,7 @@
 #include "peripheral/oled.h"
 #include "peripheral/display.h"
 #include "peripheral/keyboard.h"
+#include "peripheral/potentiometer.h"
 #include "utils/log.h"
 
 extern "C" {
@@ -207,6 +208,9 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x4a, 0x0)); // probably ADC?
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x64, 0x3C)); // LTC2941 battgauge
     twi->AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x11, 0x80)); // Si4713? FM radio
+    // TODO: figure out the exact device of the potentiometer
+    potentiometer = std::make_shared<Potentiometer>(0x54);
+    twi->AttachPeripheral(potentiometer);
     twi->BindInterrupt(IRQ_TWI, irqHandler);
 
     for (const auto& device : devices) {
@@ -412,5 +416,11 @@ void BlackFinCpu::AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard) {
 void BlackFinCpu::SetAcceleration(int16_t x, int16_t y, int16_t z) {
     QueueEvent([this, x, y, z]() {
         this->adxl345->SetAcceleration(x, y, z);
+    });
+}
+
+void BlackFinCpu::SetPotentiometerValue(u8 value) {
+    QueueEvent([this, value]() {
+        this->potentiometer->SetValue(value);
     });
 }

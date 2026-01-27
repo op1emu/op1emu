@@ -66,6 +66,21 @@ void GLFWDisplay::LoadUIConfig(const std::string& path) {
     uiConfig_.display.width = int(int(j["display"]["width"]) * uiConfig_.scale);
     uiConfig_.display.height = int(int(j["display"]["height"]) * uiConfig_.scale);
 
+    // Parse volume knob
+    if (j.contains("volume_knob")) {
+        auto& vk = j["volume_knob"];
+        auto& cw = vk["clockwise"];
+        auto& ccw = vk["counter_clockwise"];
+        uiConfig_.volumeKnob.clockwiseLeft = int(int(cw[0]) * uiConfig_.scale);
+        uiConfig_.volumeKnob.clockwiseTop = int(int(cw[1]) * uiConfig_.scale);
+        uiConfig_.volumeKnob.clockwiseWidth = int(int(cw[2]) * uiConfig_.scale);
+        uiConfig_.volumeKnob.clockwiseHeight = int(int(cw[3]) * uiConfig_.scale);
+        uiConfig_.volumeKnob.counterClockwiseLeft = int(int(ccw[0]) * uiConfig_.scale);
+        uiConfig_.volumeKnob.counterClockwiseTop = int(int(ccw[1]) * uiConfig_.scale);
+        uiConfig_.volumeKnob.counterClockwiseWidth = int(int(ccw[2]) * uiConfig_.scale);
+        uiConfig_.volumeKnob.counterClockwiseHeight = int(int(ccw[3]) * uiConfig_.scale);
+    }
+
     // Parse buttons
     if (j.contains("buttons")) {
         for (auto& [name, btn] : j["buttons"].items()) {
@@ -254,6 +269,40 @@ void GLFWDisplay::MouseButtonCallback(GLFWwindow* window, int button, int action
 
 void GLFWDisplay::HandleMouseButton(int button, int action, double x, double y) {
     if (button != GLFW_MOUSE_BUTTON_LEFT) return;
+
+    // Only handle press events for volume knob
+    if (action == GLFW_PRESS) {
+        // Check clockwise area
+        if (x >= uiConfig_.volumeKnob.clockwiseLeft &&
+            x < uiConfig_.volumeKnob.clockwiseLeft + uiConfig_.volumeKnob.clockwiseWidth &&
+            y >= uiConfig_.volumeKnob.clockwiseTop &&
+            y < uiConfig_.volumeKnob.clockwiseTop + uiConfig_.volumeKnob.clockwiseHeight) {
+            // Increase volume
+            if (volumeValue_ < 255) {
+                if (volumeValue_ > 250) {
+                    volumeValue_ = 255;
+                } else {
+                    volumeValue_ += 5;
+                }
+            }
+            return;
+        }
+        // Check counter-clockwise area
+        if (x >= uiConfig_.volumeKnob.counterClockwiseLeft &&
+            x < uiConfig_.volumeKnob.counterClockwiseLeft + uiConfig_.volumeKnob.counterClockwiseWidth &&
+            y >= uiConfig_.volumeKnob.counterClockwiseTop &&
+            y < uiConfig_.volumeKnob.counterClockwiseTop + uiConfig_.volumeKnob.counterClockwiseHeight) {
+            // Decrease volume
+            if (volumeValue_ > 0) {
+                if (volumeValue_ < 5) {
+                    volumeValue_ = 0;  // Handle underflow
+                } else {
+                    volumeValue_ -= 5;
+                }
+            }
+            return;
+        }
+    }
 
     // Check if click is within any button
     for (const auto& btn : uiConfig_.buttons) {
