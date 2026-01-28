@@ -10,8 +10,8 @@ OTP::OTP(u32 baseAddr)
 
     REG32(OTP_CONTROL, 0x00);
     FIELD(OTP_CONTROL, PAGE, 0, 9, R(page), W(page));
-    FIELD(OTP_CONTROL, DO_WRITE, 9, 1, R(doWrite ? 1 : 0), W(doWrite));
-    FIELD(OTP_CONTROL, DO_READ, 10, 1, R(doRead ? 1 : 0), W(doRead));
+    FIELD(OTP_CONTROL, DO_WRITE, 15, 1, R(doWrite ? 1 : 0), W(doWrite));
+    FIELD(OTP_CONTROL, DO_READ, 14, 1, R(doRead ? 1 : 0), W(doRead));
     OTP_CONTROL.writeCallback = [this](u32 value) {
         if (doWrite) {
             WritePage(page);
