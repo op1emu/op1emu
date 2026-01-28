@@ -4,6 +4,7 @@
 #include "peripheral/keyboard.h"
 #include <GLFW/glfw3.h>
 #include <vector>
+#include <tuple>
 #include <cstdint>
 #include <string>
 #include <mutex>
@@ -49,6 +50,7 @@ struct UIConfig {
     float scale = 1.0f;
     std::vector<ButtonConfig> buttons;
     std::vector<KeycapConfig> keycaps;
+    std::vector<std::tuple<ButtonConfig, ButtonConfig, uint8_t>> encoders;
     KnobConfig volumeKnob;
 };
 

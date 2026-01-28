@@ -109,6 +109,31 @@ void GLFWDisplay::LoadUIConfig(const std::string& path) {
             uiConfig_.keycaps.push_back(keycap);
         }
     }
+
+    // Parse encoders
+    if (j.contains("encoders")) {
+        for (auto& [name, enc] : j["encoders"].items()) {
+            ButtonConfig clockwise;
+            ButtonConfig counterClockwise;
+            auto& cw = enc["clockwise"];
+            auto& ccw = enc["counter_clockwise"];
+            clockwise.left = int(int(cw[0]) * uiConfig_.scale);
+            clockwise.top = int(int(cw[1]) * uiConfig_.scale);
+            clockwise.width = int(int(cw[2]) * uiConfig_.scale);
+            clockwise.height = int(int(cw[3]) * uiConfig_.scale);
+            counterClockwise.left = int(int(ccw[0]) * uiConfig_.scale);
+            counterClockwise.top = int(int(ccw[1]) * uiConfig_.scale);
+            counterClockwise.width = int(int(ccw[2]) * uiConfig_.scale);
+            counterClockwise.height = int(int(ccw[3]) * uiConfig_.scale);
+            auto& cw_gpio = enc["clockwise_gpio"];
+            clockwise.bank = cw_gpio[0];
+            clockwise.index = cw_gpio[1];
+            auto& ccw_gpio = enc["counter_clockwise_gpio"];
+            counterClockwise.bank = ccw_gpio[0];
+            counterClockwise.index = ccw_gpio[1];
+            uiConfig_.encoders.push_back(std::make_tuple(clockwise, counterClockwise, 0));
+        }
+    }
 }
 
 GLuint GLFWDisplay::LoadBackgroundTexture(const std::string& path, int& width, int& height) {
@@ -313,6 +338,40 @@ void GLFWDisplay::HandleMouseButton(int button, int action, double x, double y) 
             } else if (action == GLFW_RELEASE) {
                 OnKeyReleased(btn.bank, btn.index);
             }
+        }
+    }
+
+    // Check if click is within any encoder areas
+    constexpr const int encoder_sequences[] = {0, 2, 3, 1};
+    for (auto& [cw, ccw, index] : uiConfig_.encoders) {
+        auto newIndex = index;
+        // Clockwise
+        if (x >= cw.left && x < cw.left + cw.width &&
+            y >= cw.top && y < cw.top + cw.height) {
+            if (action == GLFW_PRESS) {
+                newIndex = (index + 1) % (sizeof(encoder_sequences)/sizeof(encoder_sequences[0]));
+            }
+        }
+        // Counter-clockwise
+        if (x >= ccw.left && x < ccw.left + ccw.width &&
+            y >= ccw.top && y < ccw.top + ccw.height) {
+            if (action == GLFW_PRESS) {
+                newIndex = (index - 1) % (sizeof(encoder_sequences)/sizeof(encoder_sequences[0]));
+            }
+        }
+        if (newIndex != index) {
+            int value = encoder_sequences[newIndex];
+            if (value & 2) {
+                OnKeyPressed(cw.bank, cw.index);
+            } else {
+                OnKeyReleased(cw.bank, cw.index);
+            }
+            if (value & 1) {
+                OnKeyPressed(ccw.bank, ccw.index);
+            } else {
+                OnKeyReleased(ccw.bank, ccw.index);
+            }
+            index = newIndex;
         }
     }
 }

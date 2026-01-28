@@ -11,6 +11,32 @@
         "clockwise": [519, 65, 72, 171],
         "counter_clockwise": [417, 65, 66, 171]
     },
+    "encoders": {
+        "enc1": {
+            "clockwise": [1726, 65, 116, 349],
+            "counter_clockwise": [1488, 65, 116, 349],
+            "clockwise_gpio": [2, 8],
+            "counter_clockwise_gpio": [2, 9]
+        },
+        "enc2": {
+            "clockwise": [2083, 65, 116, 349],
+            "counter_clockwise": [1845, 65, 116, 349],
+            "clockwise_gpio": [2, 10],
+            "counter_clockwise_gpio": [2, 11]
+        },
+        "enc3": {
+            "clockwise": [2440, 65, 116, 349],
+            "counter_clockwise": [2204, 65, 114, 349],
+            "clockwise_gpio": [2, 4],
+            "counter_clockwise_gpio": [2, 5]
+        },
+        "enc4": {
+            "clockwise": [2797, 65, 116, 349],
+            "counter_clockwise": [2561, 65, 114, 349],
+            "clockwise_gpio": [2, 6],
+            "counter_clockwise_gpio": [2, 7]
+        }
+    },
     "buttons": {
         "help": {
             "position": [417, 241, 174, 173],
