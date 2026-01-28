@@ -15,6 +15,8 @@ protected:
     void WritePage(u16 page);
     void TransferWithMask(u32* dst, const u32* src);
     void WritePageValue(u16 page, u64 lo, u64 hi);
+    u8 CalculateEcc(u64 data);
+    void WriteEcc(u16 page, u8 lo, u8 hi);
 
     // OTP memory storage: 0x200 pages, each 128 bits (4 x 32-bit words)
     std::array<u32, NUM_PAGES * PAGE_SIZE_WORDS> mem{};

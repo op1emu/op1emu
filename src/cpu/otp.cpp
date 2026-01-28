@@ -52,7 +52,10 @@ OTP::OTP(u32 baseAddr)
     u16 fps03 = 0x420C; // BF524
     partStr[14] = (fps03 >> 0) & 0xFF;
     partStr[15] = (fps03 >> 8) & 0xFF;
-    TransferWithMask(&mem[OTP_FPS03 * PAGE_SIZE_WORDS], (const u32*)partStr);
+
+    u64 lo = *(u64*)&partStr[0];
+    u64 hi = *(u64*)&partStr[8];
+    WritePageValue(OTP_FPS03, lo, hi);
 }
 
 void OTP::TransferWithMask(u32* dst, const u32* src)
@@ -93,4 +96,58 @@ void OTP::WritePageValue(u16 page, u64 lo, u64 hi)
         static_cast<u32>(hi >> 32)
     };
     TransferWithMask(&mem[page * PAGE_SIZE_WORDS], src);
+
+    u64* ptr = (u64*)&mem[page * PAGE_SIZE_WORDS];
+    lo = ptr[0];
+    hi = ptr[1];
+    u8 loEcc = CalculateEcc(lo);
+    u8 hiEcc = CalculateEcc(hi);
+    WriteEcc(page, loEcc, hiEcc);
+}
+
+u8 OTP::CalculateEcc(u64 data)
+{
+    u8 p1 = 0, p2 = 0, p4 = 0, p8 = 0, p16 = 0, p32 = 0, p64 = 0;
+    u8 overall = 0;
+    int dataIdx = 0;
+    for (int pos = 1; pos <= 72 && dataIdx < 64; pos++) {
+        // Skip parity positions (powers of 2)
+        if ((pos & (pos - 1)) == 0)  // pos is a power of 2
+            continue;
+        // Get the data bit at this logical position
+        int bit = (data >> dataIdx) & 1;
+        dataIdx++;
+        // XOR into appropriate parity accumulators
+        if (pos & 1)   p1 ^= bit;
+        if (pos & 2)   p2 ^= bit;
+        if (pos & 4)   p4 ^= bit;
+        if (pos & 8)   p8 ^= bit;
+        if (pos & 16)  p16 ^= bit;
+        if (pos & 32)  p32 ^= bit;
+        if (pos & 64)  p64 ^= bit;
+        // Overall parity includes all data bits
+        overall ^= bit;
+    }
+    // Overall parity also includes all parity bits
+    overall ^= p1 ^ p2 ^ p4 ^ p8 ^ p16 ^ p32 ^ p64;
+    // Pack ECC: [P0, P64, P32, P16, P8, P4, P2, P1]
+    u8 ecc = (overall << 7) | (p64 << 6) | (p32 << 5) | (p16 << 4) |
+             (p8 << 3) | (p4 << 2) | (p2 << 1) | p1;
+    return ecc;
+}
+
+void OTP::WriteEcc(u16 page, u8 lo, u8 hi)
+{
+    if (page >= NUM_PAGES) return;
+
+    u16 eccPage = 0;
+    if (page < NUM_PAGES / 2) {
+        eccPage = 0xE0 + page / 8;
+    } else {
+        eccPage = 0x1E0 + (page - NUM_PAGES / 2) / 8;
+    }
+
+    int offset = page % 8;
+    u16* ptr = reinterpret_cast<u16*>(&mem[eccPage * PAGE_SIZE_WORDS]);
+    ptr[offset] = lo | (hi << 8);
 }
