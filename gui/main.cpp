@@ -92,7 +92,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Load NAND Flash underlying storage
-    auto nandFlash = std::make_shared<MT29F4G08>(argv[2]);
+    auto nandFlash = std::make_shared<MT29F4G08>(cpu, argv[2]);
     cpu.AttachNandFlash(nandFlash);
 
     // Start CPU execution thread

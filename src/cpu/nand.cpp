@@ -6,11 +6,11 @@ NFC::NFC(u32 baseAddr) : RegisterDevice("NFC", baseAddr, 0x50) {
     FIELD(NFC_CTL, PG_SIZE, 9, 1, R(pageSize), W(pageSize));
 
     REG32(NFC_STAT, 0x04);
-    FIELD(NFC_STAT, NBUSY, 0, 1, R(notBusy), [this](u32 v) { SetNotBusy(v); });
-    FIELD(NFC_STAT, WB_FULL, 1, 1, R(writeBufferFull), W(writeBufferFull));
-    FIELD(NFC_STAT, PG_WR_STAT, 2, 1, R(pageWritePending), W(pageWritePending));
-    FIELD(NFC_STAT, PG_RD_STAT, 3, 1, R(pageReadPending), W(pageReadPending));
-    FIELD(NFC_STAT, WB_EMPTY, 4, 1, R(writeBufferEmpty), [this](u32 v) { SetWriteBufferEmpty(v); });
+    FIELD(NFC_STAT, NBUSY, 0, 1, R(notBusy), N());
+    FIELD(NFC_STAT, WB_FULL, 1, 1, R(writeBufferFull), N());
+    FIELD(NFC_STAT, PG_WR_STAT, 2, 1, R(pageWritePending), N());
+    FIELD(NFC_STAT, PG_RD_STAT, 3, 1, R(pageReadPending), N());
+    FIELD(NFC_STAT, WB_EMPTY, 4, 1, R(writeBufferEmpty), N());
 
     REG32(NFC_IRQSTAT, 0x08);
     FIELD(NFC_IRQSTAT, NBUSYIRQ, 0, 1, R(notBusyRising), W1C(notBusyRising));
@@ -22,9 +22,15 @@ NFC::NFC(u32 baseAddr) : RegisterDevice("NFC", baseAddr, 0x50) {
         }
     });
     FIELD(NFC_IRQSTAT, WR_DONE, 4, 1, R(pageWriteDone), W1C(pageWriteDone));
+    NFC_IRQSTAT.writeCallback = [this](u32 value) {
+        UpdateInterrupts();
+    };
 
     REG32(NFC_IRQMASK, 0x0C);
     FIELD(NFC_IRQMASK, irqmask, 0, 5, R(irqmask), W(irqmask));
+    NFC_IRQMASK.writeCallback = [this](u32 value) {
+        UpdateInterrupts();
+    };
 
     for (int i = 0; i < 4; i++) {
         REG32(NFC_ECC, 0x10 + i * 4);
@@ -52,7 +58,6 @@ NFC::NFC(u32 baseAddr) : RegisterDevice("NFC", baseAddr, 0x50) {
         pageReadStart = v != 0;
         if (pageReadStart) {
             nandFlash->StartPageRead();
-            SetNotBusy(false);
             pageReadPending = true;
         }
     });
@@ -60,7 +65,6 @@ NFC::NFC(u32 baseAddr) : RegisterDevice("NFC", baseAddr, 0x50) {
         pageWriteStart = v != 0;
         if (pageWriteStart) {
             nandFlash->StartPageWrite();
-            SetNotBusy(false);
             pageWritePending = true;
         }
     });
@@ -77,7 +81,6 @@ NFC::NFC(u32 baseAddr) : RegisterDevice("NFC", baseAddr, 0x50) {
     REG32(NFC_CMD, 0x44);
     NFC_CMD.writeCallback = [this](u32 v) {
         command = v;
-        SetNotBusy(false);
         nandFlash->SendCommand(command);
     };
 
@@ -124,6 +127,7 @@ u32 NFC::DMAWrite(int x, int y, const void* source, u32 length)
     if (transferCount >= PageSize()) {
         pageWritePending = false;
         pageWriteDone = true;
+        UpdateInterrupts();
     }
     return len;
 }
@@ -156,7 +160,8 @@ void NFC::CalculateECC(const u8* data, u32 length)
 
 void NFC::UpdateInterrupts() {
     u16 intStat = Read32(0x08);
-    if (intStat & irqmask) {
+    // NOTE that irqmask bits are active low
+    if (intStat & (~irqmask)) {
         TriggerInterrupt(1);
     } else {
         TriggerInterrupt(0);
@@ -182,6 +187,7 @@ void NFC::SetWriteBufferEmpty(bool value) {
 }
 
 void NFC::ProcessWithInterrupt(int ivg) {
+    SetNotBusy(!nandFlash->IsBusy());
     readDataReady = nandFlash->IsDataReady();
-    SetNotBusy(true);
+    UpdateInterrupts();
 }

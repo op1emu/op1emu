@@ -1,4 +1,5 @@
 #include "MT29F4G08.h"
+#include "cpu/cpu.h"
 #include "utils/log.h"
 #include <cstring>
 #include <algorithm>
@@ -42,8 +43,9 @@ enum NandCommand : u8 {
 
 static constexpr u8 ERASED_VALUE = 0xFF;
 
-MT29F4G08::MT29F4G08(const std::string& storagePath)
-    : storagePath(storagePath)
+MT29F4G08::MT29F4G08(BlackFinCpu& cpu, const std::string& storagePath)
+    : cpu(cpu)
+    , storagePath(storagePath)
     , pageBuffer(PAGE_TOTAL_SIZE, ERASED_VALUE)
     , programBuffer(PAGE_TOTAL_SIZE, ERASED_VALUE)
     , statusRegister(NandStatus::Ready | NandStatus::WriteEnabled)
@@ -87,6 +89,7 @@ void MT29F4G08::HandleCommand(u8 command) {
             addressCycle = 0;
             dataOffset = 0;
             idOffset = 0;
+            SetBusy();
             break;
         case CMD_READ1:
             addressCycle = 0;
@@ -149,6 +152,13 @@ void MT29F4G08::SendAddress(u8 address) {
     }
 }
 
+void MT29F4G08::SetBusy() {
+    isBusy = true;
+    cpu.QueueEvent([this]() {
+        isBusy = false;
+    }, std::chrono::nanoseconds(100)); // Simulate 100ns operation time
+}
+
 void MT29F4G08::StartPageRead() {
 }
 
@@ -195,11 +205,14 @@ void MT29F4G08::SetReadCallback(ReadCallback callback) {
 }
 
 bool MT29F4G08::IsDataReady() const {
-    return true;
+    if (currentCommand == CMD_READ2) {
+        return dataOffset < PAGE_TOTAL_SIZE;
+    }
+    return currentCommand == CMD_READ_STATUS;
 }
 
 bool MT29F4G08::IsBusy() const {
-    return false;
+    return isBusy;
 }
 
 u32 MT29F4G08::GetColumnAddress() const {
@@ -269,6 +282,7 @@ void MT29F4G08::SavePage(u32 pageNumber) {
 }
 
 void MT29F4G08::ExecuteRead() {
+    SetBusy();
     u32 pageNumber = GetCurrentPage();
     u32 column = GetColumnAddress();
 
@@ -281,11 +295,13 @@ void MT29F4G08::ExecuteRead() {
 }
 
 void MT29F4G08::ExecuteProgram() {
+    SetBusy();
     u32 pageNumber = GetCurrentPage();
     SavePage(pageNumber);
 }
 
 void MT29F4G08::ExecuteErase() {
+    SetBusy();
     u32 blockNumber = GetBlockAddress();
 
     if (blockNumber >= TOTAL_BLOCKS) {

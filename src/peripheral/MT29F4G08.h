@@ -4,9 +4,11 @@
 #include <vector>
 #include <fstream>
 
+class BlackFinCpu;
+
 class MT29F4G08 : public NandFlash {
 public:
-    MT29F4G08(const std::string& storagePath);
+    MT29F4G08(BlackFinCpu& cpu, const std::string& storagePath);
     ~MT29F4G08();
 
     void SendCommand(u8 command) override;
@@ -24,6 +26,7 @@ public:
 protected:
     ReadCallback readCallback;
 
+    void SetBusy();
     void HandleCommand(u8 command);
     void ExecuteRead();
     void ExecuteProgram();
@@ -35,6 +38,7 @@ protected:
     u32 GetColumnAddress() const;
     u32 GetBlockAddress() const;
 
+    BlackFinCpu& cpu;
     std::string storagePath;
     std::fstream storageFile;
     std::vector<u8> pageBuffer;
@@ -49,4 +53,6 @@ protected:
 
     u32 dataOffset = 0;
     u32 idOffset = 0;
+
+    bool isBusy = false;
 };
