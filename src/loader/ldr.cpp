@@ -74,7 +74,14 @@ bool LDRParser::loadFile(const std::string& filename) {
         block.header = header;
         block.offset = current_pos;
 
-        if (!is_fill && header.byte_count > 0) {
+        if (is_fill) {
+            // Fill block
+            uint8_t fill_value = static_cast<uint8_t>(header.argument & 0xFF);
+            block.data.resize(header.byte_count);
+            for (size_t i = 0; i < header.byte_count; i += 4) {
+                block.data[i] = fill_value;
+            }
+        } else if (header.byte_count > 0) {
             block.data.resize(header.byte_count);
             file.read(reinterpret_cast<char*>(block.data.data()), header.byte_count);
             current_pos += header.byte_count;
