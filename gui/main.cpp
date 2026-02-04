@@ -4,6 +4,7 @@
 #include "peripheral/MT29F4G08.h"
 #include "utils/log.h"
 #include "glfw_display.h"
+#include "usbipd.h"
 #include <vector>
 #include <iostream>
 #include <memory>
@@ -83,6 +84,15 @@ int main(int argc, char* argv[]) {
     BlackFinCpu cpu;
     cpu.AttachDisplay(display);
     cpu.AttachKeyboard(display);
+
+    auto loop = uvw::loop::get_default();
+    std::thread uvloop([loop]() {
+        while (true) {
+            loop->run();
+        }
+    });
+    USBIPServer usbipd(*loop, cpu.GetUSB());
+    usbipd.Start();
 
     // Load LDR file
     LDRParser parser;

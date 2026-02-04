@@ -64,9 +64,13 @@ bool MemoryDevice::UpdatePageTable(std::array<u8*, NUM_PAGE_TABLE_ENTRIES>& tabl
 u32 Register::Read32()
 {
     u32 value = 0;
-    for (const auto& [name, f] : fields) {
-        u32 mask = MAKE_32BIT_MASK(f.offset, f.length);
-        value = (value & ~mask) | ((f.readCallback() << f.offset) & mask);
+    if (readCallback) {
+        value = readCallback();
+    } else {
+        for (const auto& [name, f] : fields) {
+            u32 mask = MAKE_32BIT_MASK(f.offset, f.length);
+            value = (value & ~mask) | ((f.readCallback() << f.offset) & mask);
+        }
     }
     return value;
 }

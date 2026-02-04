@@ -83,6 +83,7 @@ struct Field {
 struct Register {
     u32 addr;
     std::string name;
+    std::function<u32()> readCallback;
     std::function<void(u32)> writeCallback;
     std::map<std::string, Field> fields;
 

@@ -31,6 +31,7 @@ class PPI;
 class Display;
 class OLED;
 class NFC;
+class USBDevice;
 class NandFlash;
 class Keyboard;
 class MCP230XX;
@@ -55,6 +56,7 @@ public:
     u32 PC() override;
 
     Emulator& GetEmulator() { return emulator; }
+    USBDevice& GetUSB() { return *usb; }
 
     void QueueEvent(const std::function<void()>& event, std::chrono::nanoseconds delay = std::chrono::nanoseconds(1));
 
@@ -75,6 +77,7 @@ protected:
     std::shared_ptr<PPI> ppi;
     std::shared_ptr<OLED> oled;
     std::shared_ptr<NFC> nfc;
+    std::shared_ptr<USBDevice> usb;
     std::shared_ptr<ADXL345> adxl345;
     std::shared_ptr<Potentiometer> potentiometer;
     std::shared_ptr<GPIOPeripheral> gpioOrConnection;

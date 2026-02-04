@@ -11,6 +11,7 @@
 #include "nand.h"
 #include "jtag.h"
 #include "rtc.h"
+#include "usb.h"
 #include "sport.h"
 #include "simhw.h"
 #include "emu.h"
@@ -84,6 +85,10 @@ static constexpr int IRQ_DMA1 = 28;
 static constexpr int IRQ_DMA2 = 30;
 static constexpr int IRQ_RTC = 14;
 static constexpr int IRQ_NFC = 48;
+static constexpr int IRQ_USB_INT0 = 52;
+static constexpr int IRQ_USB_INT1 = 53;
+static constexpr int IRQ_USB_INT2 = 54;
+static constexpr int IRQ_USB_DMAINT = 55;
 
 BlackFinCpuWrapper::BlackFinCpuWrapper(BlackFinCpu* host)
     : host(host) {
@@ -109,7 +114,6 @@ BlackFinCpuWrapper::~BlackFinCpuWrapper() {
 BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     auto irqHandler = [this](int q, int level) { this->ProcessInterrupt(q, level); };
     devices.emplace_back(std::make_shared<MemoryDevice>("PORT_MUX", 0xFFC03200, 0x100));
-    devices.emplace_back(std::make_shared<MemoryDevice>("MUSB",     0xFFC03800, 0x500));
     devices.emplace_back(std::make_shared<MemoryDevice>("Data A",   0xFF800000, 0x4000));
     devices.emplace_back(std::make_shared<MemoryDevice>("Data A Cache", 0xFF804000, 0x4000));
     devices.emplace_back(std::make_shared<MemoryDevice>("Data B",   0xFF900000, 0x4000));
@@ -122,6 +126,10 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     devices.emplace_back(std::make_shared<SimMMUDevice>(BFIN_COREMMR_MMU_BASE, SIM->state));
     devices.emplace_back(std::make_shared<EBIU>(0xFFC00A00));
     devices.emplace_back(std::make_shared<OTP>(0xFFC03600));
+    std::shared_ptr<USB> usb = std::make_shared<USB>(0xFFC03800);
+    usb->BindInterrupt(IRQ_USB_INT0, IRQ_USB_INT1, IRQ_USB_INT2, IRQ_USB_DMAINT, irqHandler);
+    devices.emplace_back(usb);
+    this->usb = usb;
     std::shared_ptr<SPORT> sport0 = std::make_shared<SPORT>(0xFFC00800, 0);
     devices.emplace_back(sport0);
     std::shared_ptr<SPORT> sport1 = std::make_shared<SPORT>(0xFFC00900, 1);
