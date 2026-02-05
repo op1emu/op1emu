@@ -12,7 +12,9 @@ static constexpr u32 PAGES_PER_BLOCK = 64;
 static constexpr u32 BLOCK_SIZE = PAGE_SIZE * PAGES_PER_BLOCK;
 static constexpr u32 TOTAL_BLOCKS = 4096;
 static constexpr u32 TOTAL_PAGES = TOTAL_BLOCKS * PAGES_PER_BLOCK;
-static constexpr u32 DEVICE_SIZE = TOTAL_PAGES * PAGE_TOTAL_SIZE; // ~ 4Gb
+// Storage layout: all pages first, then all OOB areas
+static constexpr u64 OOB_AREA_OFFSET = static_cast<u64>(TOTAL_PAGES) * PAGE_SIZE;
+static constexpr u64 DEVICE_SIZE = OOB_AREA_OFFSET + (static_cast<u64>(TOTAL_PAGES) * OOB_SIZE); // ~ 4GB
 
 static constexpr u8 COLUMN_CYCLES = 2;
 static constexpr u8 ROW_CYCLES = 3;
@@ -243,9 +245,15 @@ void MT29F4G08::LoadPage(u32 pageNumber) {
         return;
     }
 
-    u64 offset = static_cast<u64>(pageNumber) * PAGE_TOTAL_SIZE;
-    storageFile.seekg(offset, std::ios::beg);
-    storageFile.read(reinterpret_cast<char*>(pageBuffer.data()), PAGE_TOTAL_SIZE);
+    // Read page data
+    u64 pageOffset = static_cast<u64>(pageNumber) * PAGE_SIZE;
+    storageFile.seekg(pageOffset, std::ios::beg);
+    storageFile.read(reinterpret_cast<char*>(pageBuffer.data()), PAGE_SIZE);
+
+    // Read OOB data
+    u64 oobOffset = OOB_AREA_OFFSET + (static_cast<u64>(pageNumber) * OOB_SIZE);
+    storageFile.seekg(oobOffset, std::ios::beg);
+    storageFile.read(reinterpret_cast<char*>(pageBuffer.data() + PAGE_SIZE), OOB_SIZE);
 
     if (!storageFile) {
         std::fill(pageBuffer.begin(), pageBuffer.end(), ERASED_VALUE);
@@ -270,10 +278,16 @@ void MT29F4G08::SavePage(u32 pageNumber) {
         pageBuffer[i] &= programBuffer[i];
     }
 
-    // Write back
-    u64 offset = static_cast<u64>(pageNumber) * PAGE_TOTAL_SIZE;
-    storageFile.seekp(offset, std::ios::beg);
-    storageFile.write(reinterpret_cast<char*>(pageBuffer.data()), PAGE_TOTAL_SIZE);
+    // Write page data
+    u64 pageOffset = static_cast<u64>(pageNumber) * PAGE_SIZE;
+    storageFile.seekp(pageOffset, std::ios::beg);
+    storageFile.write(reinterpret_cast<char*>(pageBuffer.data()), PAGE_SIZE);
+
+    // Write OOB data
+    u64 oobOffset = OOB_AREA_OFFSET + (static_cast<u64>(pageNumber) * OOB_SIZE);
+    storageFile.seekp(oobOffset, std::ios::beg);
+    storageFile.write(reinterpret_cast<char*>(pageBuffer.data() + PAGE_SIZE), OOB_SIZE);
+
     storageFile.flush();
 
     if (!storageFile) {
@@ -313,13 +327,22 @@ void MT29F4G08::ExecuteErase() {
     }
 
     // Erase all pages in the block
-    std::vector<u8> erasedPage(PAGE_TOTAL_SIZE, ERASED_VALUE);
+    std::vector<u8> erasedPage(PAGE_SIZE, ERASED_VALUE);
+    std::vector<u8> erasedOob(OOB_SIZE, ERASED_VALUE);
     u32 startPage = blockNumber * PAGES_PER_BLOCK;
 
     for (u32 i = 0; i < PAGES_PER_BLOCK; ++i) {
-        u64 offset = static_cast<u64>(startPage + i) * PAGE_TOTAL_SIZE;
-        storageFile.seekp(offset, std::ios::beg);
-        storageFile.write(reinterpret_cast<char*>(erasedPage.data()), PAGE_TOTAL_SIZE);
+        u32 pageNumber = startPage + i;
+
+        // Erase page data
+        u64 pageOffset = static_cast<u64>(pageNumber) * PAGE_SIZE;
+        storageFile.seekp(pageOffset, std::ios::beg);
+        storageFile.write(reinterpret_cast<char*>(erasedPage.data()), PAGE_SIZE);
+
+        // Erase OOB data
+        u64 oobOffset = OOB_AREA_OFFSET + (static_cast<u64>(pageNumber) * OOB_SIZE);
+        storageFile.seekp(oobOffset, std::ios::beg);
+        storageFile.write(reinterpret_cast<char*>(erasedOob.data()), OOB_SIZE);
     }
     storageFile.flush();
 
