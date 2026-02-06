@@ -46,7 +46,10 @@ OTP::OTP(u32 baseAddr)
 
     // Initialize OTP memory with chip-specific data
     // Semi-random value for unique chip id (using address as seed)
-    WritePageValue(OTP_FPS00, (u64)(uintptr_t)this, ~(u64)(uintptr_t)this);
+    uint64_t chip_id_lo = (u64)(uintptr_t)this;
+    // BOOTROM requires bit 62 to be set for valid chip ID? See 0xEF0009A4
+    chip_id_lo |= 0x4000000000000000ULL;
+    WritePageValue(OTP_FPS00, chip_id_lo, ~(u64)(uintptr_t)this);
     // Part string and FPS03 value
     char partStr[16] = "ADSP-BF524";
     u16 fps03 = 0x420C; // BF524
