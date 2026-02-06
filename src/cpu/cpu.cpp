@@ -83,6 +83,7 @@ static constexpr int IRQ_PORTH_B = 31;
 static constexpr int IRQ_DMA0 = 15;
 static constexpr int IRQ_DMA1 = 28;
 static constexpr int IRQ_DMA2 = 30;
+static constexpr int IRQ_DMA3 = 16;
 static constexpr int IRQ_RTC = 14;
 static constexpr int IRQ_NFC = 48;
 static constexpr int IRQ_USB_INT0 = 52;
@@ -159,6 +160,7 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     dma->BindInterrupt(0, IRQ_DMA0, irqHandler);
     dma->BindInterrupt(1, IRQ_DMA1, irqHandler);
     dma->BindInterrupt(2, IRQ_DMA2, irqHandler);
+    dma->BindInterrupt(3, IRQ_DMA3, irqHandler);
     std::shared_ptr<GPIO> portF = std::make_shared<GPIO>("PORTF", 0xFFC00700);
     portF->BindInterruptA(IRQ_PORTF_A, irqHandler);
     portF->BindInterruptB(IRQ_PORTF_B, irqHandler);
