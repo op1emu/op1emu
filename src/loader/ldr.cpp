@@ -76,10 +76,11 @@ bool LDRParser::loadFile(const std::string& filename) {
 
         if (is_fill) {
             // Fill block
-            uint8_t fill_value = static_cast<uint8_t>(header.argument & 0xFF);
+            uint32_t fill_value = header.argument;
             block.data.resize(header.byte_count);
-            for (size_t i = 0; i < header.byte_count; i += 4) {
-                block.data[i] = fill_value;
+            uint32_t* ptr = reinterpret_cast<uint32_t*>(block.data.data());
+            for (size_t i = 0; i < header.byte_count / 4; i++) {
+                ptr[i] = fill_value;
             }
         } else if (header.byte_count > 0) {
             block.data.resize(header.byte_count);
