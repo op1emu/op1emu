@@ -70,7 +70,10 @@ NFC::NFC(u32 baseAddr) : RegisterDevice("NFC", baseAddr, 0x50) {
     });
 
     REG32(NFC_READ, 0x2C);
-    FIELD(NFC_READ, READ_DATA, 0, 8, R(readData), N());
+    FIELD(NFC_READ, READ_DATA, 0, 8, [this]() {
+        readData = nandFlash->ReadData();
+        return readData;
+    }, N());
 
     REG32(NFC_ADDR, 0x40);
     FIELD(NFC_ADDR, ADDR, 0, 8, R(0), [this](u32 v) {
@@ -92,8 +95,7 @@ NFC::NFC(u32 baseAddr) : RegisterDevice("NFC", baseAddr, 0x50) {
 
     REG32(NFC_DATA_RD, 0x4C);
     NFC_DATA_RD.writeCallback = [this](u32 v) {
-        readData = nandFlash->ReadData();
-        readDataReady = true;
+        readDataReady = nandFlash->IsDataReady();
         UpdateInterrupts();
     };
 }
