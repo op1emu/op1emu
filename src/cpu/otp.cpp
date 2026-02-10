@@ -1,12 +1,34 @@
 #include "otp.h"
+#include "utils/log.h"
 #include <cstring>
 
 static constexpr u32 OTP_FPS00 = 0x004;
 static constexpr u32 OTP_FPS03 = 0x007;
 
-OTP::OTP(u32 baseAddr)
+OTP::OTP(u32 baseAddr, const std::string& storagePath)
     : RegisterDevice("OTP", baseAddr, 0xA0),
       ben(0xFFFF), timing(0x00001485) {
+
+    bool fileCreating = false;
+    // Try to open existing file, or create new one
+    storageFile.open(storagePath, std::ios::in | std::ios::out | std::ios::binary);
+    if (!storageFile.is_open()) {
+        fileCreating = true;
+        // Create new file initialized with erased state (0x00)
+        storageFile.open(storagePath, std::ios::out | std::ios::binary);
+        if (storageFile.is_open()) {
+            std::vector<u8> eraseBuffer(TOTAL_SIZE_BYTES, 0);
+            storageFile.write(reinterpret_cast<char*>(eraseBuffer.data()), TOTAL_SIZE_BYTES);
+            storageFile.close();
+            storageFile.open(storagePath, std::ios::in | std::ios::out | std::ios::binary);
+        }
+    }
+
+    if (storageFile.is_open()) {
+        LoadFromFile();
+    } else {
+        LogError("OTP: Failed to open storage file: %s\n", storagePath.c_str());
+    }
 
     REG32(OTP_CONTROL, 0x00);
     FIELD(OTP_CONTROL, PAGE, 0, 9, R(page), W(page));
@@ -44,21 +66,29 @@ OTP::OTP(u32 baseAddr)
         FIELD(OTP_DATA, DATA, 0, 32, r, w);
     }
 
-    // Initialize OTP memory with chip-specific data
-    // Semi-random value for unique chip id (using address as seed)
-    uint64_t chip_id_lo = (u64)(uintptr_t)this;
-    // BOOTROM requires bit 62 to be set for valid chip ID? See 0xEF0009A4
-    chip_id_lo |= 0x4000000000000000ULL;
-    WritePageValue(OTP_FPS00, chip_id_lo, ~(u64)(uintptr_t)this);
-    // Part string and FPS03 value
-    char partStr[16] = "ADSP-BF524";
-    u16 fps03 = 0x420C; // BF524
-    partStr[14] = (fps03 >> 0) & 0xFF;
-    partStr[15] = (fps03 >> 8) & 0xFF;
+    if (fileCreating) {
+        // Initialize OTP memory with chip-specific data
+        // Semi-random value for unique chip id (using address as seed)
+        uint64_t chip_id_lo = (u64)(uintptr_t)this;
+        // BOOTROM requires bit 62 to be set for valid chip ID? See 0xEF0009A4
+        chip_id_lo |= 0x4000000000000000ULL;
+        WritePageValue(OTP_FPS00, chip_id_lo, ~(u64)(uintptr_t)this);
+        // Part string and FPS03 value
+        char partStr[16] = "ADSP-BF524";
+        u16 fps03 = 0x420C; // BF524
+        partStr[14] = (fps03 >> 0) & 0xFF;
+        partStr[15] = (fps03 >> 8) & 0xFF;
 
-    u64 lo = *(u64*)&partStr[0];
-    u64 hi = *(u64*)&partStr[8];
-    WritePageValue(OTP_FPS03, lo, hi);
+        u64 lo = *(u64*)&partStr[0];
+        u64 hi = *(u64*)&partStr[8];
+        WritePageValue(OTP_FPS03, lo, hi);
+    }
+}
+
+OTP::~OTP() {
+    if (storageFile.is_open()) {
+        storageFile.close();
+    }
 }
 
 void OTP::TransferWithMask(u32* dst, const u32* src)
@@ -86,6 +116,7 @@ void OTP::WritePage(u16 page)
     if (page >= NUM_PAGES) return;
 
     TransferWithMask(&mem[page * PAGE_SIZE_WORDS], data);
+    SavePageToFile(page);
 }
 
 void OTP::WritePageValue(u16 page, u64 lo, u64 hi)
@@ -99,6 +130,7 @@ void OTP::WritePageValue(u16 page, u64 lo, u64 hi)
         static_cast<u32>(hi >> 32)
     };
     TransferWithMask(&mem[page * PAGE_SIZE_WORDS], src);
+    SavePageToFile(page);
 
     u64* ptr = (u64*)&mem[page * PAGE_SIZE_WORDS];
     lo = ptr[0];
@@ -153,4 +185,29 @@ void OTP::WriteEcc(u16 page, u8 lo, u8 hi)
     int offset = page % 8;
     u16* ptr = reinterpret_cast<u16*>(&mem[eccPage * PAGE_SIZE_WORDS]);
     ptr[offset] = lo | (hi << 8);
+    SavePageToFile(eccPage);
+}
+
+void OTP::LoadFromFile()
+{
+    storageFile.seekg(0, std::ios::beg);
+    storageFile.read(reinterpret_cast<char*>(mem.data()), TOTAL_SIZE_BYTES);
+}
+
+void OTP::SavePageToFile(u16 page)
+{
+    if (page >= NUM_PAGES) return;
+
+    if (!storageFile.is_open()) {
+        return; // Only in-memory storage
+    }
+
+    u64 pageOffset = static_cast<u64>(page) * PAGE_SIZE_BYTES;
+    storageFile.seekp(pageOffset, std::ios::beg);
+    storageFile.write(reinterpret_cast<const char*>(&mem[page * PAGE_SIZE_WORDS]), PAGE_SIZE_BYTES);
+    storageFile.flush();
+
+    if (!storageFile) {
+        storageFile.clear();
+    }
 }
