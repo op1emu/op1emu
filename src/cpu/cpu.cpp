@@ -114,6 +114,7 @@ BlackFinCpuWrapper::~BlackFinCpuWrapper() {
 
 BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     auto irqHandler = [this](int q, int level) { this->ProcessInterrupt(q, level); };
+    devices.emplace_back(std::make_shared<MemoryDevice>("L1 SRAM", 0xFFB00000, 0x1000));
     devices.emplace_back(std::make_shared<MemoryDevice>("PORT_MUX", 0xFFC03200, 0x100));
     devices.emplace_back(std::make_shared<MemoryDevice>("Data A",   0xFF800000, 0x4000));
     devices.emplace_back(std::make_shared<MemoryDevice>("Data A Cache", 0xFF804000, 0x4000));
