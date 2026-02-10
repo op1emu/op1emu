@@ -232,6 +232,30 @@ void DMAChannel::ProcessTransfer() {
     }
 }
 
+u32 MemorySrcDMABus::DMARead(int x, int y, void* dest, u32 length) {
+    if (length > sizeof(buffer)) {
+        length = sizeof(buffer);
+    }
+    std::copy(buffer, buffer + length, static_cast<u8*>(dest));
+    return length;
+}
+
+u32 MemorySrcDMABus::DMAWrite(int x, int y, const void* source, u32 length) {
+    if (length > sizeof(buffer)) {
+        length = sizeof(buffer);
+    }
+    std::copy(static_cast<const u8*>(source), static_cast<const u8*>(source) + length, buffer);
+    return length;
+}
+
+u32 MemoryDestDMABus::DMARead(int x, int y, void* dest, u32 length) {
+    return source.DMARead(x, y, dest, length);
+}
+
+u32 MemoryDestDMABus::DMAWrite(int x, int y, const void* src, u32 length) {
+    return source.DMAWrite(x, y, src, length);
+}
+
 DMA::DMA(u32 baseAddr, Emulator& emu)
     : RegisterDevice("DMA", baseAddr, 0x400), emulator(emu)
 {

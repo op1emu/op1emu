@@ -157,6 +157,14 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     dma->AttachDMABus(DMAPeripheralType::DMAPeripheralSPORT0Tx, sport0);
     dma->AttachDMABus(DMAPeripheralType::DMAPeripheralSPORT1Rx, sport1);
     dma->AttachDMABus(DMAPeripheralType::DMAPeripheralSPORT1Tx, sport1);
+    auto memorySrcBus0 = std::make_shared<MemorySrcDMABus>();
+    auto memoryDestBus0 = std::make_shared<MemoryDestDMABus>(*memorySrcBus0);
+    dma->AttachDMABus(DMAPeripheralType::DMAPeripheralMDMADest0, memoryDestBus0);
+    dma->AttachDMABus(DMAPeripheralType::DMAPeripheralMDMASrc0, memorySrcBus0);
+    auto memorySrcBus1 = std::make_shared<MemorySrcDMABus>();
+    auto memoryDestBus1 = std::make_shared<MemoryDestDMABus>(*memorySrcBus1);
+    dma->AttachDMABus(DMAPeripheralType::DMAPeripheralMDMADest1, memoryDestBus1);
+    dma->AttachDMABus(DMAPeripheralType::DMAPeripheralMDMASrc1, memorySrcBus1);
     dma->BindInterrupt(0, IRQ_DMA0, irqHandler);
     dma->BindInterrupt(1, IRQ_DMA1, irqHandler);
     dma->BindInterrupt(2, IRQ_DMA2, irqHandler);

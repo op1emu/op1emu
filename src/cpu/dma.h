@@ -16,6 +16,26 @@ public:
     virtual u32 DMAWrite(int x, int y, const void* source, u32 length) = 0;
 };
 
+class MemorySrcDMABus : public DMABus {
+public:
+    MemorySrcDMABus() {}
+    u32 DMARead(int x, int y, void* dest, u32 length) override;
+    u32 DMAWrite(int x, int y, const void* source, u32 length) override;
+
+protected:
+    u8 buffer[512];
+};
+
+class MemoryDestDMABus : public DMABus {
+public:
+    MemoryDestDMABus(MemorySrcDMABus& source) : source(source) {}
+    u32 DMARead(int x, int y, void* dest, u32 length) override;
+    u32 DMAWrite(int x, int y, const void* source, u32 length) override;
+
+protected:
+    MemorySrcDMABus& source;
+};
+
 enum DMAPeripheralType {
     DMAPeripheralPPI = 0x0,
     DMAPeripheralHOSTDP = 0x1,
@@ -29,6 +49,10 @@ enum DMAPeripheralType {
     DMAPeripheralUART0Tx = 0x9,
     DMAPeripheralUART1Rx = 0xA,
     DMAPeripheralUART1Tx = 0xB,
+    DMAPeripheralMDMADest0 = 0xC,
+    DMAPeripheralMDMASrc0 = 0xD,
+    DMAPeripheralMDMADest1 = 0xE,
+    DMAPeripheralMDMASrc1 = 0xF,
 };
 
 class DMAChannel;
