@@ -40,10 +40,23 @@ enum NandCommand : u8 {
     CMD_RANDOM_WRITE = 0x85,
     CMD_BLOCK_ERASE1 = 0x60,
     CMD_BLOCK_ERASE2 = 0xD0,
+    CMD_READ_ID = 0x90,
     CMD_RESET = 0xFF,
 };
 
 static constexpr u8 ERASED_VALUE = 0xFF;
+
+static constexpr u8 ID_DATA[] = {
+    0x2C, // Manufacturer ID (Micron)
+    0xDC, // Device ID (MT29F4G08)
+    0x90,
+    0x95,
+    0x56,
+};
+static constexpr u8 ID_ONFI[] = {
+    'O', 'N', 'F', 'I', // ONFI signature
+    0xFF,
+};
 
 MT29F4G08::MT29F4G08(BlackFinCpu& cpu, const std::string& storagePath)
     : cpu(cpu)
@@ -92,6 +105,10 @@ void MT29F4G08::HandleCommand(u8 command) {
             dataOffset = 0;
             idOffset = 0;
             SetBusy();
+            break;
+        case CMD_READ_ID:
+            addressCycle = TOTAL_ADDRESS_CYCLES - 1; // Expecting 1 address cycle for ID read
+            idOffset = 0;
             break;
         case CMD_READ1:
             addressCycle = 0;
@@ -171,6 +188,16 @@ u8 MT29F4G08::ReadData() {
     if (currentCommand == CMD_READ_STATUS) {
         return statusRegister;
     }
+    if (currentCommand == CMD_READ_ID) {
+        if (idOffset < sizeof(ID_DATA)) {
+            if (addressBytes[TOTAL_ADDRESS_CYCLES - 1] == 0x00) {
+                return ID_DATA[idOffset++];
+            } else if (addressBytes[TOTAL_ADDRESS_CYCLES - 1] == 0x20) {
+                return ID_ONFI[idOffset++];
+            }
+        }
+        return ERASED_VALUE;
+    }
     if (dataOffset < PAGE_TOTAL_SIZE) {
         return pageBuffer[dataOffset++];
     }
@@ -209,6 +236,9 @@ void MT29F4G08::SetReadCallback(ReadCallback callback) {
 bool MT29F4G08::IsDataReady() const {
     if (currentCommand == CMD_READ2) {
         return dataOffset < PAGE_TOTAL_SIZE;
+    }
+    if (currentCommand == CMD_READ_ID) {
+        return idOffset < sizeof(ID_DATA);
     }
     return currentCommand == CMD_READ_STATUS;
 }
