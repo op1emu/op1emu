@@ -186,8 +186,8 @@ void DMAChannel::ProcessTransfer() {
         if (xModify == elementBytes) {
             dma.GetEmulator().MemoryWrite(currAddr, buffer, totalBytes);
         } else {
-            for (u32 i = 0; i < totalBytes; i ++) {
-                dma.GetEmulator().MemoryWrite(currAddr + i * xModify, buffer + i * elementBytes, elementBytes);
+            for (u32 i = 0; i < totalBytes; i += elementBytes) {
+                dma.GetEmulator().MemoryWrite(currAddr + i * xModify, buffer + i, elementBytes);
             }
         }
     } else {
@@ -195,8 +195,8 @@ void DMAChannel::ProcessTransfer() {
         if (xModify == elementBytes) {
             dma.GetEmulator().MemoryRead(currAddr, buffer, totalBytes);
         } else {
-            for (u32 i = 0; i < totalBytes; i ++) {
-                dma.GetEmulator().MemoryRead(currAddr + i * xModify, buffer + i * elementBytes, elementBytes);
+            for (u32 i = 0; i < totalBytes; i += elementBytes) {
+                dma.GetEmulator().MemoryRead(currAddr + i * xModify, buffer + i, elementBytes);
             }
         }
         totalBytes = bus->DMAWrite(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
