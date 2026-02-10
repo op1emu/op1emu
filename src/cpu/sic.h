@@ -15,11 +15,14 @@ public:
     // Called when a peripheral raises/lowers an interrupt
     void SetInterruptLevel(int pin, int level);
 
+    void SetBootMode(u8 mode) { bmode = mode; }
+
 private:
     void InitRegisters();
     void ForwardInterrupts();
 
     u16 rvect = 0;
+    u8 bmode = 0;
     u32 imask[2] = {0};
     u32 iar[8] = {0};
     u32 isr[2] = {0};

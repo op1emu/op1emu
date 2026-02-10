@@ -443,3 +443,7 @@ void BlackFinCpu::SetPotentiometerValue(u8 value) {
         this->potentiometer->SetValue(value);
     });
 }
+
+void BlackFinCpu::SetBootMode(int mode) {
+    sic->SetBootMode(mode);
+}

@@ -15,7 +15,7 @@
 
 std::atomic<bool> cpuShouldStop(false);
 
-void CpuExecutionThread(BlackFinCpu& cpu, const LDRParser& parser) {
+void LdrExecutionThread(BlackFinCpu& cpu, const LDRParser& parser) {
     const auto& dxes = parser.getDXEs();
     for (const auto& dxe : dxes) {
         for (const auto& block : dxe.blocks) {
@@ -71,9 +71,17 @@ void CpuExecutionThread(BlackFinCpu& cpu, const LDRParser& parser) {
     LogInfo("CPU thread exiting");
 }
 
+void BootExcutionThread(BlackFinCpu& cpu) {
+    cpu.SetPC(0xEF000000); // Boot entry point
+    while (!cpuShouldStop.load()) {
+        cpu.Run();
+    }
+    LogInfo("CPU thread exiting");
+}
+
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <ldr_file> <nand_flash_file>" << std::endl;
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <nand_flash_file> [ldr_file]" << std::endl;
         return 1;
     }
 
@@ -84,6 +92,7 @@ int main(int argc, char* argv[]) {
     BlackFinCpu cpu;
     cpu.AttachDisplay(display);
     cpu.AttachKeyboard(display);
+    cpu.SetBootMode(0x0D); // Set BMODE to 0b1101, boot from NAND flash with port H
 
     auto loop = uvw::loop::get_default();
     std::thread uvloop([loop]() {
@@ -96,17 +105,23 @@ int main(int argc, char* argv[]) {
 
     // Load LDR file
     LDRParser parser;
-    if (!parser.loadFile(argv[1])) {
-        std::cerr << "Failed to load LDR file: " << argv[1] << std::endl;
+    if (argc > 2 && !parser.loadFile(argv[2])) {
+        std::cerr << "Failed to load LDR file: " << argv[2] << std::endl;
         return 1;
     }
 
     // Load NAND Flash underlying storage
-    auto nandFlash = std::make_shared<MT29F4G08>(cpu, argv[2]);
+    auto nandFlash = std::make_shared<MT29F4G08>(cpu, argv[1]);
     cpu.AttachNandFlash(nandFlash);
 
     // Start CPU execution thread
-    std::thread cpuThread(CpuExecutionThread, std::ref(cpu), std::ref(parser));
+    std::thread cpuThread;
+    if (argc > 2) {
+        cpuThread = std::thread(LdrExecutionThread, std::ref(cpu), std::ref(parser));
+    } else {
+        // If no LDR file is provided, just run the CPU without loading any code
+        cpuThread = std::thread(BootExcutionThread, std::ref(cpu));
+    }
 
     // Main thread handles GLFW display
     while (!display->ShouldClose()) {

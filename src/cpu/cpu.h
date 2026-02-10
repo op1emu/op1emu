@@ -58,6 +58,8 @@ public:
     Emulator& GetEmulator() { return emulator; }
     USBDevice& GetUSB() { return *usb; }
 
+    void SetBootMode(int mode);
+
     void QueueEvent(const std::function<void()>& event, std::chrono::nanoseconds delay = std::chrono::nanoseconds(1));
 
     void AttachDisplay(const std::shared_ptr<Display>& display);

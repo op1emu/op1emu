@@ -18,7 +18,7 @@ SIC::SIC(u32 baseAddr) : RegisterDevice("SIC", baseAddr, 0x100) {
     FIELD(SWRST, SWRST, 0, 16, R(0), N());
 
     REG32(SYSCR, 0x04);
-    FIELD(SYSCR, SYSCR, 0, 16, R(0), N());
+    FIELD(SYSCR, SYSCR, 0, 4, R(bmode), N());
 
     REG32(RVECT, 0x08);
     FIELD(RVECT, RVECT, 0, 16, R(rvect), W(rvect));
