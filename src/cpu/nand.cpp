@@ -106,7 +106,6 @@ void NFC::ResetECC()
     ecc[1] = 0;
     ecc[2] = 0;
     ecc[3] = 0;
-    eccValue = 0;
     transferCount = 0;
 }
 
@@ -134,29 +133,51 @@ u32 NFC::DMAWrite(int x, int y, const void* source, u32 length)
     return len;
 }
 
-void NFC::CalculateECC(const u8* data, u32 length)
-{
-    u32 offset = 0;
-    u32 val = eccValue;
-    if (transferCount < 256) {
-        for (u32 i = 0; i < length && i + transferCount < 256; i++) {
-            val ^= data[i];
-            val = (val << 1) | (val >> 31);
+static std::tuple<u16, u16> ComputeEccPair(const u8* data, u32 length, u32 bytePos) {
+    u8 p1 = 0, p1p = 0, p2 = 0, p2p = 0, p4 = 0, p4p = 0;
+    u8 lp[8] = {0};
+    u8 lpp[8] = {0};
+    for (u32 i = 0; i < length; i++) {
+        u8 d = data[i];
+        u8 byteParity = 0;
+        for (int pos = 0; pos < 8; pos++) {
+            u8 bit = (d >> pos) & 1;
+            if (pos & 0x1) p1 ^= bit;
+            else           p1p ^= bit;
+            if (pos & 0x2) p2 ^= bit;
+            else           p2 ^= bit;
+            if (pos & 0x4) p4 ^= bit;
+            else           p4p ^= bit;
+            byteParity ^= bit;
         }
-        ecc[0] = (val & 0x7FF);
-        ecc[1] = ((val >> 11) & 0x7FF);
 
-        eccValue = 0;
-        val = 0;
-        offset = 256 - transferCount;
+        u32 currentBytePos = bytePos + i;
+        for (int pos = 0; pos < 8; pos++) {
+            if (currentBytePos & (1 << pos)) {
+                lp[pos] ^= byteParity;
+            } else {
+                lpp[pos] ^= byteParity;
+            }
+        }
+    }
+    u16 ecc1 = (p1 << 0) | (p2 << 1) | (p4 << 2) | (lp[0] << 3) | (lp[1] << 4) | (lp[2] << 5) | (lp[3] << 6) | (lp[4] << 7) | (lp[5] << 8) | (lp[6] << 9) | (lp[7] << 10);
+    u16 ecc2 = (p1p << 0) | (p2p << 1) | (p4p << 2) | (lpp[0] << 3) | (lpp[1] << 4) | (lpp[2] << 5) | (lpp[3] << 6) | (lpp[4] << 7) | (lpp[5] << 8) | (lpp[6] << 9) | (lpp[7] << 10);
+    return {ecc1 & 0x7FF, ecc2 & 0x7FF};
+}
+
+void NFC::CalculateECC(const u8* data, u32 length) {
+    u32 offset = 0;
+    if (transferCount < 256) {
+        u32 firstBlockLen = std::min(length, (u32)(256 - transferCount));
+        auto [ecc1, ecc2] = ComputeEccPair(data, firstBlockLen, transferCount);
+        ecc[0] ^= ecc1;
+        ecc[1] ^= ecc2;
+        offset = firstBlockLen;
     }
     if (transferCount + length >= 256) {
-        for (u32 i = offset; i + transferCount < 512 && i < length; i++) {
-            val ^= data[i];
-            val = (val << 1) | (val >> 31);
-        }
-        ecc[2] = (val & 0x7FF);
-        ecc[3] = ((val >> 11) & 0x7FF);
+        auto [ecc1, ecc2] = ComputeEccPair(data + offset, length - offset, 0);
+        ecc[2] ^= ecc1;
+        ecc[3] ^= ecc2;
     }
 }
 

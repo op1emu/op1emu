@@ -66,7 +66,6 @@ protected:
 
     u16 irqmask = 0x1F;
     u16 transferCount = 0;
-    u32 eccValue = 0;
     u16 ecc[4] = {0, 0, 0, 0};
 
     bool pageReadStart = false;
