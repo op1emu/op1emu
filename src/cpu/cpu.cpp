@@ -3,6 +3,7 @@
 #include "bootrom.h"
 #include "twi.h"
 #include "sic.h"
+#include "coretimer.h"
 #include "otp.h"
 #include "gptimer.h"
 #include "dma.h"
@@ -192,6 +193,13 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
         });
     });
     devices.push_back(sic);
+    coreTimer = std::make_shared<CoreTimer>(0xFFE03000);
+    coreTimer->BindInterrupt(IVG_IVTMR, [this, cec](int ivt, int level) {
+        QueueEvent([cec, ivt, level]() {
+            cec->RaiseInterrupt(ivt, level);
+        });
+    });
+    devices.emplace_back(coreTimer);
 
     std::shared_ptr<TWI> twi = std::make_shared<TWI>(0xFFC01400);
     devices.push_back(twi);
@@ -307,6 +315,7 @@ HaltReason BlackFinCpu::Run() {
     auto cyclesElapsed = microSecondsElapsed * 400; // assuming 400MHz CPU clock
     // Sync cycles with system time
     SetBfinCycles(wrapper, cyclesElapsed);
+    coreTimer->UpdateCycles(cyclesElapsed);
 
     CPU->did_jump = false;
     u32 pc = PC();

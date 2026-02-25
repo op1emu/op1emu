@@ -26,6 +26,7 @@ enum RegIndex {
 };
 
 class SIC;
+class CoreTimer;
 class GPIO;
 class PPI;
 class Display;
@@ -75,6 +76,7 @@ protected:
     void ProcessEvents();
 
     std::shared_ptr<SIC> sic;
+    std::shared_ptr<CoreTimer> coreTimer;
     std::shared_ptr<GPIO> portG;
     std::shared_ptr<PPI> ppi;
     std::shared_ptr<OLED> oled;
