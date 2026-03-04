@@ -269,8 +269,9 @@ bool RegisterI2CPeripheral::Write(const u8* buffer, u32 length) {
     }
     for (; index < length; index++) {
         u32 value = buffer[index];
+        u32 addr = writeRegister->addr;
         writeRegister->Write32(value);
-        writeRegister = Next(writeRegister->addr);
+        writeRegister = Next(addr);
     }
     readRegister = writeRegister;
     return true;
