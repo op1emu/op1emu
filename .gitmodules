@@ -1,3 +1,6 @@
 [submodule "ext/bfin_sim"]
 	path = ext/bfin_sim
 	url = https://github.com/op1emu/bfin_sim
+[submodule "ext/bcore"]
+	path = ext/bcore
+	url = https://github.com/op1emu/bcore.git

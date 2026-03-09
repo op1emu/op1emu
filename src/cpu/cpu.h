@@ -5,15 +5,10 @@
 #include <vector>
 #include <chrono>
 
-class BlackFinCpu;
-
-struct BlackFinCpuWrapper {
-    BlackFinCpu* host;
-    void* cpu;  // SIM_CPU*
-
-    BlackFinCpuWrapper(BlackFinCpu* host);
-    ~BlackFinCpuWrapper();
-};
+// Forward declarations for bcore types (headers included in cpu.cpp only)
+struct CpuState;
+class Core;
+class EmulatorMemory;
 
 enum RegIndex {
     FP,
@@ -69,8 +64,6 @@ public:
     void SetAcceleration(int16_t x, int16_t y, int16_t z);
     void SetPotentiometerValue(u8 value);
 
-    static BlackFinCpu& FromCPU(void* cpu);
-
 protected:
     void ProcessInterrupt(int pin, int level);
     void ProcessEvents();
@@ -91,7 +84,9 @@ protected:
     std::recursive_mutex eventQueueMutex;
     std::chrono::nanoseconds elapsedTime{0};
     std::chrono::system_clock::time_point startTime;
-    BlackFinCpuWrapper wrapper;
     Emulator emulator;
+    std::unique_ptr<CpuState> cpuState_;
+    std::unique_ptr<EmulatorMemory> bcoreMemory_;
+    std::shared_ptr<Core> core_;
     uint32_t pc;
 };
