@@ -1,4 +1,5 @@
 #include "cpu.h"
+#include "bcore_memory.h"
 #include "ebiu.h"
 #include "bootrom.h"
 #include "twi.h"
@@ -14,7 +15,6 @@
 #include "rtc.h"
 #include "usb.h"
 #include "sport.h"
-#include "simhw.h"
 #include "emu.h"
 #include "peripheral/mcp230xx.h"
 #include "peripheral/adxl345.h"
@@ -24,55 +24,19 @@
 #include "peripheral/potentiometer.h"
 #include "utils/log.h"
 
-extern "C" {
-#include "bfin_sim/sim-main.h"
-#include "bfin_sim/bfin-sim.h"
-#include "bfin_sim/devices.h"
-#include "bfin_sim/dv-bfin_cec.h"
-void bfin_trace_queue (SIM_CPU *, bu32 src_pc, bu32 dst_pc, int hwloop) {
+#include "core.h"
+#include "cpu_state.h"
+#include "mmr.h"
+#include <cstring>
 
-}
+// bcore CEC functions (extern "C" in bcore's src/cec.h)
+extern "C" void cec_raise(CpuState* cpu, uint32_t ivg);
+extern "C" void cec_check_pending(CpuState* cpu);
 
-void bfin_syscall (SIM_CPU *cpu) {
+// bcore EVT init (extern in bcore's src/evt.h)
+void evt_init();
 
-}
-
-void hw_event_queue_deschedule(struct hw *me, struct hw_event *event) {
-}
-
-struct hw_event* hw_event_queue_schedule (struct hw *me,
-			 int64_t delta_time,
-			 hw_event_callback *callback,
-			 void *data) {
-    BlackFinCpu& self = BlackFinCpu::FromCPU(STATE_CPU(me->system_of_hw, 0));
-    self.QueueEvent([data, callback, me]() {
-        callback(me, data);
-    });
-    return (struct hw_event*)-1;
-}
-
-unsigned sim_core_read_buffer (SIM_DESC sd,
-                sim_cpu *cpu,
-                unsigned map,
-                void *buffer,
-                address_word addr,
-                unsigned len) {
-    BlackFinCpu& self = BlackFinCpu::FromCPU(cpu);
-    self.GetEmulator().MemoryRead(addr, buffer, len);
-    return len;
-}
-
-unsigned sim_core_write_buffer (SIM_DESC sd,
-                sim_cpu *cpu,
-                unsigned map,
-                const void *buffer,
-                address_word addr,
-                unsigned len) {
-    BlackFinCpu& self = BlackFinCpu::FromCPU(cpu);
-    self.GetEmulator().MemoryWrite(addr, buffer, len);
-    return len;
-}
-}  // extern "C"
+static constexpr int IVG_IVTMR = 6;
 
 static constexpr int IRQ_TWI = 20;
 static constexpr int IRQ_PORTF_A = 45;
@@ -92,28 +56,60 @@ static constexpr int IRQ_USB_INT1 = 53;
 static constexpr int IRQ_USB_INT2 = 54;
 static constexpr int IRQ_USB_DMAINT = 55;
 
-BlackFinCpuWrapper::BlackFinCpuWrapper(BlackFinCpu* host)
-    : host(host) {
-    SIM_CPU* cpu = (SIM_CPU*)calloc(1, sizeof(SIM_CPU));
-    bfin_cpu_state* bfin = (bfin_cpu_state*)calloc(1, sizeof(bfin_cpu_state));
-    cpu->arch_data = bfin;
-    cpu->state = (sim_state*)calloc(1, sizeof(sim_state));
-    cpu->state->cpu = cpu;
-    cpu->state->environment = OPERATING_ENVIRONMENT;
-    cpu->host = host;
-    this->cpu = cpu;
-}
+// Thin CEC device shim so the Emulator device map covers the CEC MMR range.
+// bcore intercepts these internally during JIT execution, but the Emulator
+// needs a device registered to avoid "unmapped address" warnings.
+// Note: CEC state is process-global (module-level statics in bcore's cec.cpp).
+// Only one BlackFinCpu instance may exist per process.
+class BcoreCECDevice : public Device {
+public:
+    BcoreCECDevice(CpuState* cpu)
+        : Device("CEC", CEC_MMR_BASE, CEC_MMR_SIZE), cpu_(cpu) {}
+    void Read(u32 offset, void* buffer, u32 length) override {
+        u32 val = cec_mmr_read(cpu_, baseAddress + offset);
+        memcpy(buffer, &val, std::min(length, (u32)sizeof(val)));
+    }
+    void Write(u32 offset, const void* buffer, u32 length) override {
+        u32 val = 0;
+        memcpy(&val, buffer, std::min(length, (u32)sizeof(val)));
+        cec_mmr_write(cpu_, baseAddress + offset, val);
+    }
+    u32 Read32(u32 offset) override {
+        return cec_mmr_read(cpu_, baseAddress + offset);
+    }
+    void Write32(u32 offset, u32 value) override {
+        cec_mmr_write(cpu_, baseAddress + offset, value);
+    }
+private:
+    CpuState* cpu_;
+};
 
-BlackFinCpuWrapper::~BlackFinCpuWrapper() {
-    free(((SIM_CPU*)cpu)->arch_data);
-    free(((SIM_CPU*)cpu)->state);
-    free(cpu);
-}
+// Thin EVT device shim for the same reason.
+class BcoreEVTDevice : public Device {
+public:
+    BcoreEVTDevice()
+        : Device("EVT", EVT_BASE, EVT_SIZE) {}
+    void Read(u32 offset, void* buffer, u32 length) override {
+        u32 val = evt_read(baseAddress + offset);
+        memcpy(buffer, &val, std::min(length, (u32)sizeof(val)));
+    }
+    void Write(u32 offset, const void* buffer, u32 length) override {
+        u32 val = 0;
+        memcpy(&val, buffer, std::min(length, (u32)sizeof(val)));
+        evt_write(baseAddress + offset, val);
+    }
+    u32 Read32(u32 offset) override {
+        return evt_read(baseAddress + offset);
+    }
+    void Write32(u32 offset, u32 value) override {
+        evt_write(baseAddress + offset, value);
+    }
+};
 
-#define SIM reinterpret_cast<SIM_CPU*>(wrapper.cpu)
-#define CPU reinterpret_cast<bfin_cpu_state*>(SIM->arch_data)
+BlackFinCpu::BlackFinCpu() : pc(0) {
+    cpuState_ = std::make_unique<CpuState>();
+    memset(cpuState_.get(), 0, sizeof(CpuState));
 
-BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     auto irqHandler = [this](int q, int level) { this->ProcessInterrupt(q, level); };
     devices.emplace_back(std::make_shared<MemoryDevice>("L1 SRAM", 0xFFB00000, 0x1000));
     devices.emplace_back(std::make_shared<MemoryDevice>("PORT_MUX", 0xFFC03200, 0x100));
@@ -125,8 +121,13 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     devices.emplace_back(std::make_shared<MemoryDevice>("Inst B",   0xFFA08000, 0x4000));
     devices.emplace_back(std::make_shared<MemoryDevice>("Inst Cache", 0xFFA10000, 0x4000));
     devices.emplace_back(std::make_shared<MemoryDevice>("SDRAM", 0, 0x8000000));
-    devices.emplace_back(std::make_shared<SimEVTDevice>(BFIN_COREMMR_EVT_BASE, SIM->state));
-    devices.emplace_back(std::make_shared<SimMMUDevice>(BFIN_COREMMR_MMU_BASE, SIM->state));
+
+    // CEC/EVT shim devices for emulator device map coverage
+    devices.emplace_back(std::make_shared<BcoreEVTDevice>());
+    devices.emplace_back(std::make_shared<BcoreCECDevice>(cpuState_.get()));
+    // MMU region — register as plain memory (bcore does not use a separate MMU device)
+    devices.emplace_back(std::make_shared<MemoryDevice>("MMU", 0xFFE00000, 0x2000));
+
     devices.emplace_back(std::make_shared<EBIU>(0xFFC00A00));
     devices.emplace_back(std::make_shared<OTP>(0xFFC03600, "otp.bin"));
     std::shared_ptr<USB> usb = std::make_shared<USB>(0xFFC03800);
@@ -184,20 +185,20 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     portH->BindInterruptB(IRQ_PORTH_B, irqHandler);
     devices.emplace_back(portH);
 
-    std::shared_ptr<SimCECDevice> cec = std::make_shared<SimCECDevice>(BFIN_COREMMR_CEC_BASE, SIM->state);
-    devices.push_back(cec);
     sic = std::make_shared<SIC>(0xFFC00100);
-    sic->SetInterruptForwardCallback([this, cec](int ivg, int level) {
-        QueueEvent([ivg, level, cec]() {
-            cec->RaiseInterrupt(ivg, level);
-        });
+    sic->SetInterruptForwardCallback([this](int ivg, int level) {
+        if (level) {
+            QueueEvent([this, ivg]() {
+                cec_raise(cpuState_.get(), ivg);
+            });
+        }
     });
     devices.push_back(sic);
     coreTimer = std::make_shared<CoreTimer>(0xFFE03000);
-    coreTimer->BindInterrupt(IVG_IVTMR, [this, cec](int ivg, int level) {
+    coreTimer->BindInterrupt(IVG_IVTMR, [this](int ivg, int level) {
         if (level) {
-            QueueEvent([cec, ivg, level]() {
-                cec->RaiseInterrupt(ivg, level);
+            QueueEvent([this, ivg]() {
+                cec_raise(cpuState_.get(), ivg);
             });
         }
     });
@@ -270,20 +271,25 @@ BlackFinCpu::BlackFinCpu() : wrapper(this), pc(0) {
     std::tuple<GPIOPeripheral&, int> oledRs {*portG, 2};
     oled = std::make_shared<OLED>(oledDatabus, oledCs, oledRs, oledRd, oledWr);
 
+    // Initialize bcore after all devices are bound
+    bcoreMemory_ = std::make_unique<EmulatorMemory>(emulator);
+    core_ = std::make_shared<Core>(cpuState_.get(), bcoreMemory_.get());
+    core_->init(2);
+
+    // Initialize bcore CEC and EVT
+    cec_init();
+    evt_init();
+
     SetRegister(RegIndex::SP, 0x7000000); // Set stack pointer to top of SDRAM
     SetRegister(RegIndex::FP, 0x7000000); // Set frame pointer to top of SDRAM
-    CPU->ksp = 0x7000000;
-    CPU->usp = 0x7000000;
-    CPU->syscfg = 0x30;
+    cpuState_->ksp = 0x7000000;
+    cpuState_->usp = 0x7000000;
+    cpuState_->syscfg = 0x30;
 
     startTime = std::chrono::system_clock::now();
 }
 
 BlackFinCpu::~BlackFinCpu() {
-}
-
-BlackFinCpu& BlackFinCpu::FromCPU(void* cpu) {
-    return *(BlackFinCpu*)(((SIM_CPU*)cpu)->host);
 }
 
 void BlackFinCpu::ProcessInterrupt(int pin, int level) {
@@ -302,38 +308,31 @@ void BlackFinCpu::RestoreContext() {
     // TODO
 }
 
-static u64 GetBfinCycles(BlackFinCpuWrapper& wrapper) {
-    return ((u64)CPU->cycles[2]) | CPU->cycles[0];
-}
-
-static void SetBfinCycles(BlackFinCpuWrapper& wrapper, u64 cycles) {
-    CPU->cycles[0] = (u32)(cycles & 0xffffffff);
-    CPU->cycles[1] = (u32)(cycles >> 32);
-    CPU->cycles[2] = CPU->cycles[1];
+static void SetBfinCycles(CpuState& cpu_state, u64 cycles) {
+    cpu_state.cycles[0] = (u32)(cycles & 0xffffffff);
+    cpu_state.cycles[1] = (u32)(cycles >> 32);
+    cpu_state.cycles[2] = cpu_state.cycles[1];
 }
 
 HaltReason BlackFinCpu::Run() {
     auto microSecondsElapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - startTime).count();
     auto cyclesElapsed = microSecondsElapsed * 400; // assuming 400MHz CPU clock
     // Sync cycles with system time
-    SetBfinCycles(wrapper, cyclesElapsed);
+    SetBfinCycles(*cpuState_, cyclesElapsed);
     coreTimer->UpdateCycles(cyclesElapsed);
 
-    CPU->did_jump = false;
-    u32 pc = PC();
-    u32 len = interp_insn_bfin(SIM, pc);
-    if (!CPU->did_jump) {
-        SetPC(hwloop_get_next_pc(SIM, pc, len));
+    // Hit entry point, invalidating core to reset cached translations
+    if (cpuState_->pc == 0xFFA00000) {
+        core_->invalidate();
     }
-    for (int i = 1; i >= 0; --i) {
-        if(CPU->lc[i] && pc == CPU->lb[i]) {
-	        CPU->lc[i]--;
-	        if (CPU->lc[i]) {
-	            break;
-            }
-        }
-    }
-    int ivg = cec_get_ivg(SIM);
+    // Execute one basic block — bcore updates cpuState_->pc internally.
+    // Hardware loops, PC advance, and hwloop counters are all handled by bcore.
+    core_->run(cpuState_->pc);
+    cpuState_->did_jump = false; // Clear jump flag set by bcore, since we handle it in the emulator loop
+    cec_check_pending(cpuState_.get());
+
+    // Get active IVG from CEC
+    int ivg = cec_current_ivg();
     for (const auto& device : devices) {
         device->ProcessWithInterrupt(ivg);
     }
@@ -346,19 +345,19 @@ void BlackFinCpu::SetRegister(int index, u32 value) {
     switch (index)
     {
     case RegIndex::FP:
-        CPU->dpregs[15] = value;
+        cpuState_->dpregs[15] = value;
         break;
     case RegIndex::SP:
-        CPU->dpregs[14] = value;
+        cpuState_->dpregs[14] = value;
         break;
     case RegIndex::RETS:
-        CPU->rets = value;
+        cpuState_->rets = value;
         break;
     case RegIndex::R0...RegIndex::R2:
-        CPU->dpregs[index - RegIndex::R0] = value;
+        cpuState_->dpregs[index - RegIndex::R0] = value;
         break;
     case RegIndex::P1:
-        CPU->dpregs[9] = value;
+        cpuState_->dpregs[9] = value;
         break;
     default:
         break;
@@ -369,26 +368,26 @@ u32 BlackFinCpu::GetRegister(int index) {
     switch (index)
     {
     case RegIndex::FP:
-        return CPU->dpregs[15];
+        return cpuState_->dpregs[15];
     case RegIndex::SP:
-        return CPU->dpregs[14];
+        return cpuState_->dpregs[14];
     case RegIndex::RETS:
-        return CPU->rets;
+        return cpuState_->rets;
     case RegIndex::R0...RegIndex::R2:
-        return CPU->dpregs[index - RegIndex::R0];
+        return cpuState_->dpregs[index - RegIndex::R0];
     case RegIndex::P1:
-        return CPU->dpregs[9];
+        return cpuState_->dpregs[9];
     default:
         return 0;
     }
 }
 
 void BlackFinCpu::SetPC(u32 value) {
-    CPU->pc = value;
+    cpuState_->pc = value;
 }
 
 u32 BlackFinCpu::PC() {
-    return CPU->pc;
+    return cpuState_->pc;
 }
 
 void BlackFinCpu::QueueEvent(const std::function<void()>& event, std::chrono::nanoseconds delay) {

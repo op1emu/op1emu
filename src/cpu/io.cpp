@@ -88,17 +88,24 @@ void Register::Write32(u32 value)
 
 void RegisterDevice::Read(u32 offset, void* buffer, u32 length)
 {
-    u32* ptr = (u32*)buffer;
-    for (int i = 0; i < length; i += 4, offset += 4) {
-        *ptr++ = Read32(offset);
+    u8* ptr = (u8*)buffer;
+    for (int i = 0; i < (int)length; i += 4, offset += 4) {
+        u32 val = Read32(offset);
+        u32 bytes = std::min(4u, length - (u32)i);
+        memcpy(ptr, &val, bytes);
+        ptr += bytes;
     }
 }
 
 void RegisterDevice::Write(u32 offset, const void* buffer, u32 length)
 {
-    u32* ptr = (u32*)buffer;
-    for (int i = 0; i < length; i += 4, offset += 4) {
-        Write32(offset, *ptr++);
+    const u8* ptr = (const u8*)buffer;
+    for (int i = 0; i < (int)length; i += 4, offset += 4) {
+        u32 bytes = std::min(4u, length - (u32)i);
+        u32 val = 0;
+        memcpy(&val, ptr, bytes);
+        Write32(offset, val);
+        ptr += bytes;
     }
 }
 
