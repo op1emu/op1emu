@@ -41,8 +41,8 @@ void CoreTimer::UpdateCycles(u64 cycles)
     u64 elapsed = cycles - startCycles;
     u64 scale = tscale + 1; // Scale is 0-based (0 means divide by 1)
     u64 ticks = elapsed / scale;
-    // FIXME: currently the emulator runs too slow, so let ticks /= 1000;
-    ticks /= 1000;
+    // FIXME: currently the emulator runs slow, so let ticks /= 10;
+    ticks /= 10;
 
     if (ticks >= tperiod) {
         tcount = 0;

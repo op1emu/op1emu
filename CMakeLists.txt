@@ -78,10 +78,7 @@ FetchContent_MakeAvailable(uvw)
 message(STATUS "uvw fetched successfully")
 
 
-file(GLOB_RECURSE SOURCES ext/bfin_sim/*.c)
-add_library(bfin_sim ${SOURCES})
-target_compile_definitions(bfin_sim PUBLIC "-DWITH_HW=1")
-target_include_directories(bfin_sim INTERFACE ext)
+add_subdirectory(ext/bcore EXCLUDE_FROM_ALL)
 
 file(GLOB SOURCES ext/cqueue/*.cpp)
 add_library(ext ${SOURCES})
@@ -91,14 +88,15 @@ target_include_directories(ext PUBLIC ext)
 target_link_libraries(ext PRIVATE cqueue)
 
 file(GLOB_RECURSE SOURCES src/*.cpp)
-add_library(emu ${SOURCES})
-target_include_directories(emu PUBLIC src)
-target_link_libraries(emu PRIVATE bfin_sim spdlog::spdlog)
+add_library(emulator ${SOURCES})
+target_include_directories(emulator PUBLIC src)
+target_include_directories(emulator PRIVATE ext)
+target_link_libraries(emulator PRIVATE bfin-core spdlog::spdlog)
 
 add_executable(ldrdump tools/ldrdump.cpp)
-target_link_libraries(ldrdump emu)
+target_link_libraries(ldrdump emulator)
 
 file(GLOB_RECURSE SOURCES gui/*.cpp)
 add_executable(op1emu ${SOURCES})
-target_link_libraries(op1emu PRIVATE emu glfw OpenGL::GL nlohmann_json::nlohmann_json uvw ext)
+target_link_libraries(op1emu PRIVATE emulator glfw OpenGL::GL nlohmann_json::nlohmann_json uvw ext)
 target_include_directories(op1emu PRIVATE ${stb_SOURCE_DIR})

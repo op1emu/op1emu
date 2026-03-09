@@ -33,8 +33,6 @@ void LdrExecutionThread(BlackFinCpu& cpu, const LDRParser& parser) {
         }
         LogInfo("Start executing DXE");
 
-        int delay = 0;
-        std::chrono::steady_clock::time_point lastTime;
         while (!cpuShouldStop.load()) {
             cpu.Run();
 
@@ -42,22 +40,8 @@ void LdrExecutionThread(BlackFinCpu& cpu, const LDRParser& parser) {
                 LogInfo("Finished executing DXE");
                 break;
             }
-            if (cpu.PC() == 0xffa06e5c) {
-                delay = cpu.GetRegister(RegIndex::R0);
-                LogInfo("Hit delay(%d)", delay);
-                lastTime = std::chrono::steady_clock::now();
-            }
-            // Emulated delay is too slow, so we process it here
-            if (delay > 0) {
-                if (cpu.PC() >= 0xffa06e5c && cpu.PC() <= 0xffa06e62) {
-                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - lastTime).count();
-                    if (elapsed < delay) {
-                        cpu.SetPC(0xffa06e5c);
-                    } else {
-                        delay = 0;
-                        cpu.SetPC(0xffa06eec);
-                    }
-                }
+            if (cpu.PC() == 0xffa06e54) {
+                LogInfo("Hit delay(%d)", cpu.GetRegister(RegIndex::R0));
             }
             if (cpu.PC() == 0xffa06eec) {
                 LogInfo("Hit delay end");

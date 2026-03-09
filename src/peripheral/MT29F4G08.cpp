@@ -175,7 +175,7 @@ void MT29F4G08::SetBusy() {
     isBusy = true;
     cpu.QueueEvent([this]() {
         isBusy = false;
-    }, std::chrono::nanoseconds(100)); // Simulate 100ns operation time
+    }, std::chrono::nanoseconds(1)); // Simulate 1ns operation time
 }
 
 void MT29F4G08::StartPageRead() {
