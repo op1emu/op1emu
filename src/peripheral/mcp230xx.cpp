@@ -43,7 +43,8 @@ int MCP230XX::GetPinCount() const {
 }
 
 void MCP230XX::SwitchRegisterBank() {
-    registers.clear();
+    std::map<u32, Register> newRegisters;
+    registers.swap(newRegisters);
     for (int bank = 0; bank < gpioCount / BANKSIZE; bank++) {
         REG32(IODIR, REG_ADDR(MCP230XX_IODIR, bank));
         FIELD8(IODIR, IODIR, R(iodirInput[bank]), W(iodirInput[bank]));
