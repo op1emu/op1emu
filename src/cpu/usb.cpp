@@ -431,15 +431,16 @@ void USB::ProcessTransfer() {
     for (int i = 0; i < USB_NUM_ENDPOINTS; i++) {
         auto& ep = endpoints[i];
         // Process TX endpoints
-        if ((epTxEnabled & (1 << i)) && ep.dataPacketInFIFO) {
+        if ((epTxEnabled & (1 << i))) {
             ep.txBuffer.reserve(ep.txFifo.size() + ep.txBuffer.size());
-            while (!ep.txFifo.empty()) {
-                ep.txBuffer.push_back(ep.txFifo.front());
-                ep.txFifo.pop();
+            if (ep.dataPacketInFIFO) {
+                while (!ep.txFifo.empty()) {
+                    ep.txBuffer.push_back(ep.txFifo.front());
+                    ep.txFifo.pop();
+                }
+                ep.dataPacketInFIFO = false;
+                epTxInterrupts |= (1 << i);
             }
-            ep.dataPacketInFIFO = false;
-            epTxInterrupts |= (1 << i);
-
             if (ep.txCallback && ep.txBuffer.size() >= ep.txLimit) {
                 ep.txCallback(ep.txBuffer.data(), ep.txLimit);
                 ep.txBuffer.erase(ep.txBuffer.begin(), ep.txBuffer.begin() + ep.txLimit);
