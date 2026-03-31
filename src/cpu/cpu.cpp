@@ -56,6 +56,7 @@ static constexpr int IRQ_USB_INT0 = 52;
 static constexpr int IRQ_USB_INT1 = 53;
 static constexpr int IRQ_USB_INT2 = 54;
 static constexpr int IRQ_USB_DMAINT = 55;
+static constexpr int IRQ_GPTIMER_0 = 32;
 
 // Thin CEC device shim so the Emulator device map covers the CEC MMR range.
 // bcore intercepts these internally during JIT execution, but the Emulator
@@ -142,7 +143,11 @@ BlackFinCpu::BlackFinCpu() : pc(0) {
     // OP-1 seems only use last byte of DSPID, which is 0x02 for BF524 rev 02
     devices.emplace_back(std::make_shared<Jtag>(0xFFE05000, 0x02));
     devices.emplace_back(std::make_shared<BootROM>(0xEF000000));
-    devices.emplace_back(std::make_shared<GPTimer>(0xFFC00600));
+    gptimer = std::make_shared<GPTimer>(0xFFC00600);
+    for (int i = 0; i < 8; i++) {
+        gptimer->BindInterrupt(i, IRQ_GPTIMER_0 + i, irqHandler);
+    }
+    devices.emplace_back(gptimer);
     nfc = std::make_shared<NFC>(0xFFC03700);
     nfc->BindInterrupt(IRQ_NFC, irqHandler);
     devices.emplace_back(nfc);
@@ -336,6 +341,12 @@ HaltReason BlackFinCpu::Run() {
     int ivg = cec_current_ivg();
     for (const auto& device : devices) {
         device->ProcessWithInterrupt(ivg);
+    }
+    // FIXME: use correct clock
+    if (cyclesElapsed % 10000 == 0) {
+        gptimer->Tick(GPTimerClockTypeSCLK);
+        gptimer->Tick(GPTimerClockTypeTACLK);
+        gptimer->Tick(GPTimerClockTypeTMRCLK);
     }
 
     ProcessEvents();
