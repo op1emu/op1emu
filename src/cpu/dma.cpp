@@ -66,14 +66,14 @@ DMAChannel::DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defa
     REG32(CONFIG, 0x08);
     FIELD(CONFIG, DMAEN, 0, 1, R(enabled), W(enabled));
     FIELD(CONFIG, WNR, 1, 1, R(memoryWrite), W(memoryWrite));
-    FIELD(CONFIG, WDSIZE, 2, 2, R(wordSize), W(wordSize));;
+    FIELD(CONFIG, WDSIZE, 2, 2, R(wordSize), W(wordSize));
     FIELD(CONFIG, DMA2D, 4, 1, R(mode2D), W(mode2D));
     FIELD(CONFIG, SYNC, 5, 1, R(synchronized), W(synchronized));
     FIELD(CONFIG, DI_SEL, 6, 1, R(mode2DInterruptEachRow), W(mode2DInterruptEachRow));
     FIELD(CONFIG, DI_EN, 7, 1, R(dataInterruptEnabled), W(dataInterruptEnabled));
     FIELD(CONFIG, NDSIZE, 8, 4, R(descriptorSize), W(descriptorSize));
     FIELD(CONFIG, FLOW, 12, 3, R(next), [this](u32 v) {
-        next = (DMANextOperation)next;
+        next = (DMANextOperation)v;
     });
     CONFIG.writeCallback = [this](u32 value) {
         if (enabled) {
@@ -186,8 +186,10 @@ void DMAChannel::ProcessTransfer() {
         if (xModify == elementBytes) {
             dma.GetEmulator().MemoryWrite(currAddr, buffer, totalBytes);
         } else {
+            u32 addr = currAddr;
             for (u32 i = 0; i < totalBytes; i += elementBytes) {
-                dma.GetEmulator().MemoryWrite(currAddr + i * xModify, buffer + i, elementBytes);
+                dma.GetEmulator().MemoryWrite(addr, buffer + i, elementBytes);
+                addr += xModify;
             }
         }
     } else {
@@ -195,8 +197,10 @@ void DMAChannel::ProcessTransfer() {
         if (xModify == elementBytes) {
             dma.GetEmulator().MemoryRead(currAddr, buffer, totalBytes);
         } else {
+            u32 addr = currAddr;
             for (u32 i = 0; i < totalBytes; i += elementBytes) {
-                dma.GetEmulator().MemoryRead(currAddr + i * xModify, buffer + i, elementBytes);
+                dma.GetEmulator().MemoryRead(addr, buffer + i, elementBytes);
+                addr += xModify;
             }
         }
         totalBytes = bus->DMAWrite(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
@@ -208,25 +212,28 @@ void DMAChannel::ProcessTransfer() {
     currXCount -= count;
 
     if (currXCount == 0) {
+        bool transferComplete = true;
         if (mode2D) {
-            if (currYCount > 1) {
-                currYCount--;
+            currYCount--;
+            if (currYCount > 0) {
                 currXCount = xCount;
                 currAddr = currAddr - xModify + yModify;
-                return;
+                transferComplete = false;
             }
-        }
-        completed = true;
-        if (next == DMANextOperation::Stop) {
-            running = false;
-        } else {
-            ProcessDescriptor();
         }
         if (dataInterruptEnabled) {
             if (!mode2D || mode2DInterruptEachRow) {
                 TriggerInterrupt(1);
             } else if (currYCount == 0) {
                 TriggerInterrupt(1);
+            }
+        }
+        if (transferComplete) {
+            completed = true;
+            running = false;
+            if (next != DMANextOperation::Stop) {
+                running = true;
+                ProcessDescriptor();
             }
         }
     }
