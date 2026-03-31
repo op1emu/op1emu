@@ -82,6 +82,8 @@ void SPORT::SetTransmitEnable() {
         transmitOverflow = false;
         transmitUnderflow = false;
         transmitHoldRegister.reset();
+        dmaTxActive_ = false;
+        totalTxSamplesDelivered_ = 0;
     }
 }
 
@@ -90,6 +92,8 @@ void SPORT::SetReceiveEnable() {
         receiveOverflow = false;
         receiveUnderflow = false;
         receiveHoldRegister.reset();
+        dmaRxActive_ = false;
+        totalRxSamplesDelivered_ = 0;
     }
 }
 
@@ -102,15 +106,38 @@ u32 SPORT::DMARead(int x, int y, void* dest, u32 length)
     int wordSize = receiveWordLength > 16 ? 4 : 2;
     int channels = receiveStereoFrameSync ? 2 : 1;
     int bitsPerSample = receiveWordLength;
-    size_t samples = length / wordSize / channels;
+    int frameSize = wordSize * channels;
+    size_t requestedSamples = length / frameSize;
+    if (requestedSamples == 0) return 0;
+
+    // Start timing on first DMA call after SPORT enable
+    if (!dmaRxActive_) {
+        dmaRxStartTime_ = std::chrono::steady_clock::now();
+        totalRxSamplesDelivered_ = 0;
+        dmaRxActive_ = true;
+    }
+
+    // How many samples are due based on elapsed time?
+    auto elapsed = std::chrono::steady_clock::now() - dmaRxStartTime_;
+    uint64_t elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+    uint64_t totalDue = (elapsedNs * sampleRateHz_) / 1'000'000'000ULL;
+    // FIXME: too slow, / 10
+    totalDue = totalDue / 10;
+    uint64_t available = (totalDue > totalRxSamplesDelivered_)
+                         ? (totalDue - totalRxSamplesDelivered_) : 0;
+
+    if (available > requestedSamples) available = requestedSamples;
+    if (available == 0) return 0;  // Not time yet — DMA retries next cycle
 
     if (audioInputCallback) {
-        size_t read = audioInputCallback(dest, samples, channels, bitsPerSample);
-        return read * wordSize * channels;
+        size_t read = audioInputCallback(dest, available, channels, bitsPerSample);
+        totalRxSamplesDelivered_ += read;
+        return static_cast<u32>(read * frameSize);
     }
 
     // Fill with silence
-    return length;
+    totalRxSamplesDelivered_ += available;
+    return static_cast<u32>(available * frameSize);
 }
 
 u32 SPORT::DMAWrite(int x, int y, const void* source, u32 length)
@@ -122,13 +149,33 @@ u32 SPORT::DMAWrite(int x, int y, const void* source, u32 length)
     int wordSize = transmitWordLength > 16 ? 4 : 2;
     int channels = transmitStereoFrameSync ? 2 : 1;
     int bitsPerSample = transmitWordLength;
-    size_t samples = length / wordSize / channels;
+    int frameSize = wordSize * channels;
+    size_t requestedSamples = length / frameSize;
+    if (requestedSamples == 0) return 0;
 
-    if (audioOutputCallback) {
-        audioOutputCallback(source, samples, channels, bitsPerSample);
-        return length;
+    // Start timing on first DMA call after SPORT enable
+    if (!dmaTxActive_) {
+        dmaTxStartTime_ = std::chrono::steady_clock::now();
+        totalTxSamplesDelivered_ = 0;
+        dmaTxActive_ = true;
     }
 
-    // Discard data
-    return length;
+    // How many samples are due based on elapsed time?
+    auto elapsed = std::chrono::steady_clock::now() - dmaTxStartTime_;
+    uint64_t elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+    uint64_t totalDue = (elapsedNs * sampleRateHz_) / 1'000'000'000ULL;
+    // FIXME: too slow, / 10
+    totalDue = totalDue / 10;
+    uint64_t available = (totalDue > totalTxSamplesDelivered_)
+                         ? (totalDue - totalTxSamplesDelivered_) : 0;
+
+    if (available > requestedSamples) available = requestedSamples;
+    if (available == 0) return 0;  // Not time yet — DMA retries next cycle
+
+    if (audioOutputCallback) {
+        audioOutputCallback(source, available, channels, bitsPerSample);
+    }
+
+    totalTxSamplesDelivered_ += available;
+    return static_cast<u32>(available * frameSize);
 }

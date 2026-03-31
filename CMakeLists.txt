@@ -77,6 +77,18 @@ set(BUILD_UVW_LIBS ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(uvw)
 message(STATUS "uvw fetched successfully")
 
+# Fetch miniaudio (single-header audio library)
+message(STATUS "Fetching miniaudio...")
+FetchContent_Declare(
+    miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG 0.11.21
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(miniaudio)
+message(STATUS "miniaudio fetched successfully")
+
+find_package(Threads REQUIRED)
 
 add_subdirectory(ext/bcore EXCLUDE_FROM_ALL)
 
@@ -98,5 +110,5 @@ target_link_libraries(ldrdump emulator)
 
 file(GLOB_RECURSE SOURCES gui/*.cpp)
 add_executable(op1emu ${SOURCES})
-target_link_libraries(op1emu PRIVATE emulator glfw OpenGL::GL nlohmann_json::nlohmann_json uvw ext)
-target_include_directories(op1emu PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(op1emu PRIVATE emulator glfw OpenGL::GL nlohmann_json::nlohmann_json uvw ext Threads::Threads ${CMAKE_DL_LIBS})
+target_include_directories(op1emu PRIVATE ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR})

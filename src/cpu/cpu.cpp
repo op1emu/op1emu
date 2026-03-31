@@ -22,6 +22,7 @@
 #include "peripheral/display.h"
 #include "peripheral/keyboard.h"
 #include "peripheral/potentiometer.h"
+#include "peripheral/audio_output.h"
 #include "utils/log.h"
 
 #include "core.h"
@@ -134,9 +135,9 @@ BlackFinCpu::BlackFinCpu() : pc(0) {
     usb->BindInterrupt(IRQ_USB_INT0, IRQ_USB_INT1, IRQ_USB_INT2, IRQ_USB_DMAINT, irqHandler);
     devices.emplace_back(usb);
     this->usb = usb;
-    std::shared_ptr<SPORT> sport0 = std::make_shared<SPORT>(0xFFC00800, 0);
+    sport0 = std::make_shared<SPORT>(0xFFC00800, 0);
     devices.emplace_back(sport0);
-    std::shared_ptr<SPORT> sport1 = std::make_shared<SPORT>(0xFFC00900, 1);
+    sport1 = std::make_shared<SPORT>(0xFFC00900, 1);
     devices.emplace_back(sport1);
     // OP-1 seems only use last byte of DSPID, which is 0x02 for BF524 rev 02
     devices.emplace_back(std::make_shared<Jtag>(0xFFE05000, 0x02));
@@ -440,6 +441,14 @@ void BlackFinCpu::AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard) {
             gpioExpanders[bank]->SetPinInput(index, pressed ? GPIOPinLevel::Low : GPIOPinLevel::High);
         });
     });
+}
+
+void BlackFinCpu::AttachAudioOutput(const std::shared_ptr<AudioOutput>& audioOutput) {
+    auto cb = [audioOutput](const void* data, size_t samples, int channels, int bitsPerSample) {
+        audioOutput->WriteSamples(data, samples, channels, bitsPerSample);
+    };
+    sport0->SetAudioOutputCallback(cb);
+    sport1->SetAudioOutputCallback(cb);
 }
 
 void BlackFinCpu::SetAcceleration(int16_t x, int16_t y, int16_t z) {

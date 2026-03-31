@@ -34,6 +34,8 @@ class MCP230XX;
 class ADXL345;
 class Potentiometer;
 class GPIOPeripheral;
+class SPORT;
+class AudioOutput;
 
 class BlackFinCpu : public CpuInterface {
 public:
@@ -61,6 +63,7 @@ public:
     void AttachDisplay(const std::shared_ptr<Display>& display);
     void AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard);
     void AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash);
+    void AttachAudioOutput(const std::shared_ptr<AudioOutput>& audioOutput);
     void SetAcceleration(int16_t x, int16_t y, int16_t z);
     void SetPotentiometerValue(u8 value);
 
@@ -75,6 +78,8 @@ protected:
     std::shared_ptr<OLED> oled;
     std::shared_ptr<NFC> nfc;
     std::shared_ptr<USBDevice> usb;
+    std::shared_ptr<SPORT> sport0;
+    std::shared_ptr<SPORT> sport1;
     std::shared_ptr<ADXL345> adxl345;
     std::shared_ptr<Potentiometer> potentiometer;
     std::shared_ptr<GPIOPeripheral> gpioOrConnection;

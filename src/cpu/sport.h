@@ -6,6 +6,8 @@
 #include <queue>
 #include <optional>
 #include <functional>
+#include <chrono>
+#include <cstdint>
 
 class SPORT : public RegisterDevice, public DMABus {
 public:
@@ -57,4 +59,17 @@ protected:
     // Audio callbacks
     AudioOutputCallback audioOutputCallback;
     AudioInputCallback audioInputCallback;
+
+    // DMA timing state — TX path
+    std::chrono::steady_clock::time_point dmaTxStartTime_;
+    uint64_t totalTxSamplesDelivered_ = 0;
+    bool dmaTxActive_ = false;
+
+    // DMA timing state — RX path
+    std::chrono::steady_clock::time_point dmaRxStartTime_;
+    uint64_t totalRxSamplesDelivered_ = 0;
+    bool dmaRxActive_ = false;
+
+    // Nominal sample rate in Hz (future: derive from TCLKDIV/TFSDIV registers)
+    uint32_t sampleRateHz_ = 48000;
 };

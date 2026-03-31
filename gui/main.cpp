@@ -4,6 +4,7 @@
 #include "peripheral/MT29F4G08.h"
 #include "utils/log.h"
 #include "glfw_display.h"
+#include "audio_output_miniaudio.h"
 #include "usbipd.h"
 #include <vector>
 #include <iostream>
@@ -76,6 +77,8 @@ int main(int argc, char* argv[]) {
     BlackFinCpu cpu;
     cpu.AttachDisplay(display);
     cpu.AttachKeyboard(display);
+    auto audioOutput = std::make_shared<MiniaudioOutput>();
+    cpu.AttachAudioOutput(audioOutput);
     cpu.SetBootMode(0x0D); // Set BMODE to 0b1101, boot from NAND flash with port H
 
     auto loop = uvw::loop::get_default();
