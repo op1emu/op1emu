@@ -14,16 +14,29 @@ public:
 
     virtual u32 DMARead(int x, int y, void* dest, u32 length) = 0;
     virtual u32 DMAWrite(int x, int y, const void* source, u32 length) = 0;
+    // Discard any buffered data. MDMA's internal FIFO is flushed when a new
+    // transfer starts; peripheral buses ignore this.
+    virtual void DMAFlush() {}
 };
 
+// MDMA source/destination channels are just two ordinary DMA channels
+// connected through an internal FIFO: the source channel does memory->FIFO
+// (WNR=0), the destination channel does FIFO->memory (WNR=1). Both sides run
+// through the normal DMAChannel::ProcessTransfer(), so this bus only needs to
+// hold bytes in flight; it decouples the two channels' independent 1D/2D
+// stride advancement and provides backpressure via short reads/writes.
 class MemorySrcDMABus : public DMABus {
 public:
     MemorySrcDMABus() {}
     u32 DMARead(int x, int y, void* dest, u32 length) override;
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
+    void DMAFlush() override { head = tail = 0; }
 
 protected:
-    u8 buffer[512];
+    static constexpr u32 CAPACITY = 4096; // matches ProcessTransfer's staging buffer
+    u8 buffer[CAPACITY];
+    u32 head = 0; // dequeue offset
+    u32 tail = 0; // enqueue offset
 };
 
 class MemoryDestDMABus : public DMABus {
@@ -31,6 +44,7 @@ public:
     MemoryDestDMABus(MemorySrcDMABus& source) : source(source) {}
     u32 DMARead(int x, int y, void* dest, u32 length) override;
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
+    void DMAFlush() override { source.DMAFlush(); }
 
 protected:
     MemorySrcDMABus& source;
