@@ -15,8 +15,11 @@ public:
     DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defaultPeripheralMap);
     bool IsEnabled() const { return enabled; }
     bool IsRunning() const { return running; }
+    bool IsMDMA() const;
+    bool IsMDMASource() const;
+    DMAPeripheralType GetPeripheralType() const { return peripheralType; }
 
-    void ProcessTransfer();
+    u32 ProcessTransfer();
 
 protected:
     void ProcessDescriptor();
@@ -76,10 +79,10 @@ DMAChannel::DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defa
         next = (DMANextOperation)v;
     });
     CONFIG.writeCallback = [this](u32 value) {
-        if (enabled) {
-            running = true;
-        } else {
-            running = false;
+        running = enabled;
+        if (enabled && IsMDMASource()) {
+            // A new MDMA transfer starts from an empty FIFO.
+            if (auto bus = this->dma.GetDMABus(peripheralType)) bus->DMAFlush();
         }
         ProcessDescriptor();
     };
@@ -165,14 +168,25 @@ void DMAChannel::ProcessDescriptor()
     currYCount = yCount ?: 0xFFFF;
 }
 
-void DMAChannel::ProcessTransfer() {
-    if (!enabled || !running) return;
-    if (channelIsMemory) return; // Memory-to-memory not supported
+bool DMAChannel::IsMDMA() const {
+    return peripheralType >= DMAPeripheralMDMADest0 && peripheralType <= DMAPeripheralMDMASrc1;
+}
+
+bool DMAChannel::IsMDMASource() const {
+    return peripheralType == DMAPeripheralMDMASrc0 || peripheralType == DMAPeripheralMDMASrc1;
+}
+
+// Returns the number of bytes transferred in this call (0 if the channel is
+// idle, unattached, or blocked). MDMA channels are ordinary DMA channels
+// bound to a MemorySrcDMABus/MemoryDestDMABus pair (see dma.h) rather than a
+// special-cased transfer path.
+u32 DMAChannel::ProcessTransfer() {
+    if (!enabled || !running) return 0;
 
     auto bus = dma.GetDMABus(peripheralType);
     if (!bus) {
         LogWarn("DMA channel %s: No DMA bus attached for peripheral type %d", Name().c_str(), peripheralType);
-        return;
+        return 0;
     }
 
     int elementBytes = 1 << wordSize;
@@ -183,6 +197,7 @@ void DMAChannel::ProcessTransfer() {
     dma.GetEmulator().Lock();
     if (memoryWrite) {
         totalBytes = bus->DMARead(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
+        totalBytes -= totalBytes % elementBytes; // only write whole elements
         if (xModify == elementBytes) {
             dma.GetEmulator().MemoryWrite(currAddr, buffer, totalBytes);
         } else {
@@ -204,6 +219,7 @@ void DMAChannel::ProcessTransfer() {
             }
         }
         totalBytes = bus->DMAWrite(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
+        totalBytes -= totalBytes % elementBytes; // only count whole elements accepted
     }
     dma.GetEmulator().Unlock();
 
@@ -237,21 +253,30 @@ void DMAChannel::ProcessTransfer() {
             }
         }
     }
-}
 
-u32 MemorySrcDMABus::DMARead(int x, int y, void* dest, u32 length) {
-    if (length > sizeof(buffer)) {
-        length = sizeof(buffer);
-    }
-    std::copy(buffer, buffer + length, static_cast<u8*>(dest));
-    return length;
+    return count * elementBytes;
 }
 
 u32 MemorySrcDMABus::DMAWrite(int x, int y, const void* source, u32 length) {
-    if (length > sizeof(buffer)) {
-        length = sizeof(buffer);
+    if (head == tail) {
+        head = tail = 0;                                 // empty queue: rewind to the front
+    } else if (head > 0 && length > CAPACITY - tail) {
+        std::copy(buffer + head, buffer + tail, buffer); // compact to make room at the tail
+        tail -= head;
+        head = 0;
     }
-    std::copy(static_cast<const u8*>(source), static_cast<const u8*>(source) + length, buffer);
+    length = std::min(length, CAPACITY - tail);
+    auto src = static_cast<const u8*>(source);
+    std::copy(src, src + length, buffer + tail);
+    tail += length;
+    return length;
+}
+
+u32 MemorySrcDMABus::DMARead(int x, int y, void* dest, u32 length) {
+    length = std::min(length, tail - head);
+    std::copy(buffer + head, buffer + head + length, static_cast<u8*>(dest));
+    head += length;
+    if (head == tail) head = tail = 0;
     return length;
 }
 
@@ -286,9 +311,25 @@ u32 DMA::Read32(u32 offset) {
     return 0;
 }
 
+// MDMA channels aren't rate-limited by a peripheral, so pump them until their
+// internal FIFO blocks (source full / destination empty). Every byte
+// returned necessarily moved in or out of the FIFO, so the loop is naturally
+// bounded by FIFO capacity; MDMA_BURST_BYTES is just an extra guard against
+// FLOW=Autobuffer auto-restarting the transfer indefinitely.
+static constexpr u32 MDMA_BURST_BYTES = 4096;
+
 void DMA::ProcessWithInterrupt(int ivg) {
     for (auto& channel : channels) {
-        channel->ProcessTransfer();
+        if (!channel->IsMDMA()) {
+            channel->ProcessTransfer();
+            continue;
+        }
+        u32 total = 0;
+        while (total < MDMA_BURST_BYTES) {
+            u32 moved = channel->ProcessTransfer();
+            if (!moved) break;
+            total += moved;
+        }
     }
 }
 
