@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <string>
 
 std::atomic<bool> cpuShouldStop(false);
 
@@ -65,8 +66,24 @@ void BootExcutionThread(BlackFinCpu& cpu) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <nand_flash_file> [ldr_file]" << std::endl;
+    // Separate NAND-mode flags from positional args so flag order relative to
+    // <nand_flash_file> [ldr_file] doesn't matter.
+    std::vector<std::string> positional;
+    // Persist guest writes by default, matching real hardware. --nand-snapshot
+    // opens the image copy-on-write (backing file untouched) for disposable
+    // runs or deterministic tests; --nand-rw is accepted as an explicit
+    // persistent-mode selector.
+    bool nandSnapshot = false;
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--nand-rw") nandSnapshot = false;
+        else if (arg == "--nand-snapshot") nandSnapshot = true;
+        else positional.push_back(arg);
+    }
+
+    if (positional.empty()) {
+        std::cerr << "Usage: " << argv[0]
+                  << " <nand_flash_file> [ldr_file] [--nand-rw|--nand-snapshot]" << std::endl;
         return 1;
     }
 
@@ -92,18 +109,20 @@ int main(int argc, char* argv[]) {
 
     // Load LDR file
     LDRParser parser;
-    if (argc > 2 && !parser.loadFile(argv[2])) {
-        std::cerr << "Failed to load LDR file: " << argv[2] << std::endl;
+    if (positional.size() > 1 && !parser.loadFile(positional[1])) {
+        std::cerr << "Failed to load LDR file: " << positional[1] << std::endl;
         return 1;
     }
 
     // Load NAND Flash underlying storage
-    auto nandFlash = std::make_shared<MT29F4G08>(cpu, argv[1]);
+    auto nandFlash = std::make_shared<MT29F4G08>(cpu, positional[0], nandSnapshot);
+    if (nandSnapshot)
+        LogInfo("NAND flash image opened read-only (snapshot mode; guest writes will be discarded)");
     cpu.AttachNandFlash(nandFlash);
 
     // Start CPU execution thread
     std::thread cpuThread;
-    if (argc > 2) {
+    if (positional.size() > 1) {
         cpuThread = std::thread(LdrExecutionThread, std::ref(cpu), std::ref(parser));
     } else {
         // If no LDR file is provided, just run the CPU without loading any code

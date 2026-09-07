@@ -17,6 +17,10 @@ public:
 
     void SetBootMode(u8 mode) { bmode = mode; }
 
+    // Core IVG (7..15) that system interrupt `pin` is currently routed to by
+    // SIC_IARx, or -1 if `pin` is out of range.
+    int GetIVG(int pin) const;
+
 private:
     void InitRegisters();
     void ForwardInterrupts();

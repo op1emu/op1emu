@@ -58,13 +58,24 @@ static constexpr u8 ID_ONFI[] = {
     0xFF,
 };
 
-MT29F4G08::MT29F4G08(BlackFinCpu& cpu, const std::string& storagePath)
+MT29F4G08::MT29F4G08(BlackFinCpu& cpu, const std::string& storagePath, bool snapshot)
     : cpu(cpu)
     , storagePath(storagePath)
+    , snapshot_(snapshot)
     , pageBuffer(PAGE_TOTAL_SIZE, ERASED_VALUE)
     , programBuffer(PAGE_TOTAL_SIZE, ERASED_VALUE)
     , statusRegister(NandStatus::Ready | NandStatus::WriteEnabled)
 {
+    if (snapshot_) {
+        // Snapshot mode only ever reads the backing file; dirtied pages go to
+        // dirtyPages_ instead, so the image on disk is never modified.
+        storageFile.open(storagePath, std::ios::in | std::ios::binary);
+        if (!storageFile.is_open()) {
+            LogError("MT29F4G08: Failed to open snapshot storage file: %s", storagePath.c_str());
+        }
+        return;
+    }
+
     // Try to open existing file, or create new one
     storageFile.open(storagePath, std::ios::in | std::ios::out | std::ios::binary);
     if (!storageFile.is_open()) {
@@ -270,6 +281,14 @@ void MT29F4G08::LoadPage(u32 pageNumber) {
         return;
     }
 
+    if (snapshot_) {
+        auto it = dirtyPages_.find(pageNumber);
+        if (it != dirtyPages_.end()) {
+            pageBuffer = it->second;
+            return;
+        }
+    }
+
     if (!storageFile.is_open()) {
         std::fill(pageBuffer.begin(), pageBuffer.end(), ERASED_VALUE);
         return;
@@ -296,16 +315,22 @@ void MT29F4G08::SavePage(u32 pageNumber) {
         return;
     }
 
-    if (!storageFile.is_open()) {
-        return;
-    }
-
     // Load current page data
     LoadPage(pageNumber);
 
     // Apply program operation (AND with program buffer - can only clear bits)
     for (u32 i = 0; i < PAGE_TOTAL_SIZE; ++i) {
         pageBuffer[i] &= programBuffer[i];
+    }
+
+    if (snapshot_) {
+        // Guest writes stay in the overlay; the backing file is never touched.
+        dirtyPages_[pageNumber] = pageBuffer;
+        return;
+    }
+
+    if (!storageFile.is_open()) {
+        return;
     }
 
     // Write page data
@@ -352,6 +377,16 @@ void MT29F4G08::ExecuteErase() {
         return;
     }
 
+    u32 startPage = blockNumber * PAGES_PER_BLOCK;
+
+    if (snapshot_) {
+        std::vector<u8> erased(PAGE_TOTAL_SIZE, ERASED_VALUE);
+        for (u32 i = 0; i < PAGES_PER_BLOCK; ++i) {
+            dirtyPages_[startPage + i] = erased;
+        }
+        return;
+    }
+
     if (!storageFile.is_open()) {
         return;
     }
@@ -359,7 +394,6 @@ void MT29F4G08::ExecuteErase() {
     // Erase all pages in the block
     std::vector<u8> erasedPage(PAGE_SIZE, ERASED_VALUE);
     std::vector<u8> erasedOob(OOB_SIZE, ERASED_VALUE);
-    u32 startPage = blockNumber * PAGES_PER_BLOCK;
 
     for (u32 i = 0; i < PAGES_PER_BLOCK; ++i) {
         u32 pageNumber = startPage + i;
