@@ -3,12 +3,21 @@
 #include "cpu/nand.h"
 #include <vector>
 #include <fstream>
+#include <unordered_map>
 
 class BlackFinCpu;
 
 class MT29F4G08 : public NandFlash {
 public:
-    MT29F4G08(BlackFinCpu& cpu, const std::string& storagePath);
+    // snapshot=true: the backing file is opened read-only and never written;
+    // dirtied pages are kept in an in-memory overlay instead. This sidesteps a
+    // firmware fragility: the OP-1's yaffs2 writes block summaries mid-session,
+    // and a kill without a clean unmount can leave them stale — the next
+    // boot's mount scan then loses recently-written files (assert
+    // "db2.cpp:273 Can't open /yaffs2/content/op1.db", stuck on the "Missing
+    // content folder / Please connect USB" screen). Guest changes (settings,
+    // tape recordings) are discarded on exit.
+    MT29F4G08(BlackFinCpu& cpu, const std::string& storagePath, bool snapshot = false);
     ~MT29F4G08();
 
     void SendCommand(u8 command) override;
@@ -41,6 +50,8 @@ protected:
     BlackFinCpu& cpu;
     std::string storagePath;
     std::fstream storageFile;
+    bool snapshot_ = false;
+    std::unordered_map<u32, std::vector<u8>> dirtyPages_;
     std::vector<u8> pageBuffer;
     std::vector<u8> programBuffer;
 

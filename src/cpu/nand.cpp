@@ -1,4 +1,5 @@
 #include "nand.h"
+#include "mmr.h"
 #include <cstring>
 
 NFC::NFC(u32 baseAddr) : RegisterDevice("NFC", baseAddr, 0x50) {
@@ -128,7 +129,6 @@ u32 NFC::DMAWrite(int x, int y, const void* source, u32 length)
     if (transferCount >= PageSize()) {
         pageWritePending = false;
         pageWriteDone = true;
-        UpdateInterrupts();
     }
     return len;
 }
@@ -185,7 +185,18 @@ void NFC::UpdateInterrupts() {
     u16 intStat = Read32(0x08);
     // NOTE that irqmask bits are active low
     if (intStat & (~irqmask)) {
-        TriggerInterrupt(1);
+        // WR_DONE is a level until the guest W1C acknowledgement. Do not
+        // re-latch it while the NFC ISR itself is active: the ISR advances a
+        // four-sector page-write state machine, so a duplicate invocation
+        // skips the next 512-byte sector. Once RTI completes, a still-pending
+        // source can be presented again normally. The NFC's IVG is read from
+        // SIC_IARx each time because the firmware remaps it at runtime (the
+        // OP-1 moves it from the reset IVG7 to IVG9 during NAND setup).
+        bool inNfcIsr = pageWriteDone && ivgResolver
+                        && cec_current_ivg() == ivgResolver();
+        if (!inNfcIsr) {
+            TriggerInterrupt(1);
+        }
     } else {
         TriggerInterrupt(0);
     }
@@ -196,7 +207,6 @@ void NFC::SetNotBusy(bool value) {
     notBusy = value;
     if (notBusy && !oldNotBusy) {
         notBusyRising = true;
-        UpdateInterrupts();
     }
 }
 

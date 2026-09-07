@@ -64,6 +64,17 @@ SIC::SIC(u32 baseAddr) : RegisterDevice("SIC", baseAddr, 0x100) {
     }
 }
 
+int SIC::GetIVG(int pin) const {
+    if (pin < 0 || pin >= 64) return -1;
+
+    // The IAR registers map the System input to the Core output.
+    // Every 4 bits in the IAR are used to map to IVG{7..15}.
+    int iar_idx = pin / 8;
+    int iar_off = (pin % 8) * 4;
+    int iar_val = (iar[iar_idx] >> iar_off) & 0xF;
+    return 7 + iar_val;
+}
+
 void SIC::SetInterruptLevel(int pin, int level) {
     if (pin < 0 || pin >= 64) return;
 
@@ -91,13 +102,7 @@ void SIC::ForwardInterrupts() {
             // This bit isn't pending, check next one
             if (!(ipend & bit)) continue;
 
-            // The IAR registers map the System input to the Core output.
-            // Every 4 bits in the IAR are used to map to IVG{7..15}.
-            int iar_idx = i * 4 + pin / 8;
-            int iar_off = (pin % 8) * 4;
-            int iar_val = (iar[iar_idx] >> iar_off) & 0xF;
-
-            forwardInterrupt(7 + iar_val, 1);
+            forwardInterrupt(GetIVG(i * 32 + pin), 1);
         }
     }
 }

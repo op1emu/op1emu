@@ -35,6 +35,12 @@ public:
         this->nandFlash = nandFlash;
     }
 
+    // Returns the core IVG the NFC interrupt is currently routed to (from
+    // SIC_IARx), so the NFC can tell when its own ISR is running.
+    void SetIVGResolver(std::function<int()> resolver) {
+        ivgResolver = std::move(resolver);
+    }
+
     // DMABus interface
     u32 DMARead(int x, int y, void* dest, u32 length) override;
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
@@ -77,4 +83,5 @@ protected:
     u8 writeData = 0;
 
     std::shared_ptr<NandFlash> nandFlash;
+    std::function<int()> ivgResolver;
 };

@@ -200,6 +200,7 @@ BlackFinCpu::BlackFinCpu() : pc(0) {
         }
     });
     devices.push_back(sic);
+    nfc->SetIVGResolver([this]() { return sic->GetIVG(IRQ_NFC); });
     coreTimer = std::make_shared<CoreTimer>(0xFFE03000);
     coreTimer->BindInterrupt(IVG_IVTMR, [this](int ivg, int level) {
         if (level) {

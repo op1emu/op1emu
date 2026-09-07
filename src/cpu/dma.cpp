@@ -85,6 +85,15 @@ DMAChannel::DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defa
             if (auto bus = this->dma.GetDMABus(peripheralType)) bus->DMAFlush();
         }
         ProcessDescriptor();
+        // NFC DMA is an unpaced 512-byte controller transfer. Running it only
+        // from the global one-channel-per-BB round robin lets the previous
+        // WR_DONE interrupt advance the firmware's sector state machine before
+        // this newly armed transfer gets a turn; the skipped transfer then
+        // arrives after the NAND column has moved into OOB. Complete it at the
+        // CONFIG write, matching the hardware DMA/controller handshake.
+        if (enabled && peripheralType == DMAPeripheralNFC) {
+            ProcessTransfer();
+        }
     };
 
     REG32(X_COUNT, 0x10);
