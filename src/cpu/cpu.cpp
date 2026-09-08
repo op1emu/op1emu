@@ -349,11 +349,34 @@ HaltReason BlackFinCpu::Run() {
     for (const auto& device : devices) {
         device->ProcessWithInterrupt(ivg);
     }
-    // FIXME: use correct clock
-    if (cyclesElapsed % 10000 == 0) {
-        gptimer->Tick(GPTimerClockTypeSCLK);
-        gptimer->Tick(GPTimerClockTypeTACLK);
-        gptimer->Tick(GPTimerClockTypeTMRCLK);
+    // Drive the GP timers off the *delta* in cyclesElapsed, not off it landing
+    // on a multiple. `cyclesElapsed % 10000 == 0` only fires when the sampled
+    // value happens to be an exact multiple of 10000, which is essentially
+    // never true for a value derived from wall-clock microseconds -- most
+    // ticks were silently dropped, and occasionally the value sat on a
+    // multiple across calls and ticked repeatedly, so the emulated GP timer
+    // rate was erratic (measured: programmed period=200 firing at 10-19 ms
+    // instead of the 5 ms that rate implies).
+    //
+    // An accumulator is both correct and cheap: catch-up is capped so a host
+    // scheduling stall cannot deliver a huge burst of timer interrupts at
+    // once.
+    // FIXME: still one shared rate for all three clock domains, which is not
+    // how SCLK/TACLK/TMRCLK relate on real hardware.
+    constexpr uint64_t kCyclesPerTimerTick = 10000;
+    constexpr uint64_t kMaxCatchupTicks = 64;
+    uint64_t cyclesElapsedU64 = (uint64_t)cyclesElapsed;
+    if (cyclesElapsedU64 >= lastTimerCycles_) {
+        uint64_t ticks = (cyclesElapsedU64 - lastTimerCycles_) / kCyclesPerTimerTick;
+        if (ticks) {
+            lastTimerCycles_ += ticks * kCyclesPerTimerTick;
+            if (ticks > kMaxCatchupTicks) ticks = kMaxCatchupTicks;
+            for (uint64_t i = 0; i < ticks; ++i) {
+                gptimer->Tick(GPTimerClockTypeSCLK);
+                gptimer->Tick(GPTimerClockTypeTACLK);
+                gptimer->Tick(GPTimerClockTypeTMRCLK);
+            }
+        }
     }
 
     ProcessEvents();

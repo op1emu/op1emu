@@ -96,6 +96,8 @@ protected:
     std::recursive_mutex eventQueueMutex;
     std::chrono::nanoseconds elapsedTime{0};
     std::chrono::system_clock::time_point startTime;
+    // Last cyclesElapsed value the GP timers were advanced to (see Run()).
+    uint64_t lastTimerCycles_ = 0;
     Emulator emulator;
     std::unique_ptr<CpuState> cpuState_;
     std::unique_ptr<EmulatorMemory> bcoreMemory_;
