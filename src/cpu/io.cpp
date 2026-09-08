@@ -51,7 +51,18 @@ void* MemoryDevice::Map(u32 offset)
 
 bool MemoryDevice::UpdatePageTable(std::array<u8*, NUM_PAGE_TABLE_ENTRIES>& table)
 {
-    for (u32 offset = 0; offset < size; offset += 1 << PAGE_BITS) {
+    constexpr u32 kPageSize = 1u << PAGE_BITS;
+    constexpr u32 kPageMask = kPageSize - 1;
+    // The fast path computes the host pointer as table[addr>>PAGE_BITS] +
+    // (addr & kPageMask), which is only correct if this device's backing
+    // store starts exactly at the start of a page. A device that isn't
+    // page-aligned/page-sized (e.g. PORT_MUX at 0xFFC03200, size 0x100)
+    // shares its page with unmapped space; leave that page out of the table
+    // so accesses fall back to the slow (but correct) device-dispatch path.
+    if ((baseAddress & kPageMask) != 0 || (size & kPageMask) != 0) {
+        return false;
+    }
+    for (u32 offset = 0; offset < size; offset += kPageSize) {
         u32 addr = baseAddress + offset;
         table[addr >> PAGE_BITS] = memAddress + offset;
     }
