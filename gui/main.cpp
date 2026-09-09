@@ -1,9 +1,9 @@
-#include <GLFW/glfw3.h>
 #include "loader/ldr.h"
 #include "cpu/cpu.h"
 #include "peripheral/MT29F4G08.h"
 #include "utils/log.h"
 #include "glfw_display.h"
+#include "headless.h"
 #include "audio_output_miniaudio.h"
 #include "usbipd.h"
 #include <vector>
@@ -13,9 +13,21 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <csignal>
 #include <string>
+#include <stdexcept>
+#include <fcntl.h>
+#include <unistd.h>
 
 std::atomic<bool> cpuShouldStop(false);
+
+// Headless runs are stopped with SIGTERM/SIGINT. Default termination bypasses
+// destructors and loses buffered output, so request a clean shutdown instead.
+// The handler only stores to a lock-free atomic on the supported host.
+static_assert(std::atomic<bool>::is_always_lock_free);
+static void StopSigHandler(int) {
+    cpuShouldStop.store(true);
+}
 
 void LdrExecutionThread(BlackFinCpu& cpu, const LDRParser& parser) {
     const auto& dxes = parser.getDXEs();
@@ -54,6 +66,7 @@ void LdrExecutionThread(BlackFinCpu& cpu, const LDRParser& parser) {
             break;
         }
     }
+    cpuShouldStop.store(true);
     LogInfo("CPU thread exiting");
 }
 
@@ -62,11 +75,12 @@ void BootExcutionThread(BlackFinCpu& cpu) {
     while (!cpuShouldStop.load()) {
         cpu.Run();
     }
+    cpuShouldStop.store(true);
     LogInfo("CPU thread exiting");
 }
 
-int main(int argc, char* argv[]) {
-    // Separate NAND-mode flags from positional args so flag order relative to
+static int RunEmulator(int argc, char* argv[]) {
+    // Separate flags from positional args so flag order relative to
     // <nand_flash_file> [ldr_file] doesn't matter.
     std::vector<std::string> positional;
     // Persist guest writes by default, matching real hardware. --nand-snapshot
@@ -74,28 +88,74 @@ int main(int argc, char* argv[]) {
     // runs or deterministic tests; --nand-rw is accepted as an explicit
     // persistent-mode selector.
     bool nandSnapshot = false;
+    bool headless = false;
+    bool help = false;
+    bool options = true;
+    std::string inputScript;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--nand-rw") nandSnapshot = false;
-        else if (arg == "--nand-snapshot") nandSnapshot = true;
-        else positional.push_back(arg);
+        if (options && arg == "--") options = false;
+        else if (options && arg == "--nand-rw") nandSnapshot = false;
+        else if (options && arg == "--nand-snapshot") nandSnapshot = true;
+        else if (options && arg == "--headless") headless = true;
+        else if (options && (arg == "--help" || arg == "-h")) help = true;
+        else if (options && arg == "--input-script") {
+            if (++i == argc) throw std::runtime_error("--input-script requires a path");
+            inputScript = argv[i];
+            if (inputScript.empty()) throw std::runtime_error("--input-script requires a nonempty path");
+        } else if (options && arg.rfind("-", 0) == 0) {
+            throw std::runtime_error("Unknown option: " + arg);
+        } else positional.push_back(arg);
     }
 
-    if (positional.empty()) {
-        std::cerr << "Usage: " << argv[0]
-                  << " <nand_flash_file> [ldr_file] [--nand-rw|--nand-snapshot]" << std::endl;
-        return 1;
+    if (help || positional.empty()) {
+        std::cout << "Usage: " << argv[0]
+                  << " <nand_flash_file> [ldr_file] [--nand-rw|--nand-snapshot]\n"
+                     "  --headless            No GLFW window or host audio device\n"
+                     "  --input-script PATH   Read headless commands from PATH instead of stdin\n"
+                     "Headless commands (one per line):\n"
+                     "  keys | press KEY | release KEY | tap KEY [MS] | wait MS | quit\n"
+                     "Keys are button names from gui/ui.json. Tap defaults to 100ms.\n"
+                     "Wait/tap use wall time. EOF leaves the emulator running; quit or Ctrl-C stops it.\n";
+        return help ? 0 : 1;
+    }
+    if (positional.size() > 2) throw std::runtime_error("Expected NAND and optional LDR paths");
+    if (!inputScript.empty() && !headless)
+        throw std::runtime_error("--input-script requires --headless");
+
+    std::shared_ptr<GLFWDisplay> window;
+    std::shared_ptr<HeadlessFrontend> console;
+    std::shared_ptr<Display> display;
+    std::shared_ptr<Keyboard> keyboard;
+    if (headless) {
+        int fd = inputScript.empty() ? STDIN_FILENO : open(inputScript.c_str(), O_RDONLY | O_NONBLOCK);
+        if (fd < 0) throw std::runtime_error("Failed to open input script: " + inputScript);
+        try {
+            console = std::make_shared<HeadlessFrontend>("gui/ui.json", fd);
+        } catch (...) {
+            if (!inputScript.empty()) close(fd);
+            throw;
+        }
+        if (!inputScript.empty()) close(fd);
+        display = console;
+        keyboard = console;
+        LogInfo("Headless mode: commands from %s", inputScript.empty() ? "stdin" : inputScript.c_str());
+    } else {
+        window = std::make_shared<GLFWDisplay>();
+        display = window;
+        keyboard = window;
     }
 
-    // Create GLFW Display
-    auto display = std::make_shared<GLFWDisplay>();
+    std::signal(SIGTERM, StopSigHandler);
+    std::signal(SIGINT, StopSigHandler);
 
     // Create BlackFin CPU
     BlackFinCpu cpu;
     cpu.AttachDisplay(display);
-    cpu.AttachKeyboard(display);
-    auto audioOutput = std::make_shared<MiniaudioOutput>();
-    cpu.AttachAudioOutput(audioOutput);
+    cpu.AttachKeyboard(keyboard);
+    // SPORT still drains DMA and advances its sample accounting without a
+    // host sink. Avoid opening ALSA/PulseAudio devices on headless hosts.
+    if (!headless) cpu.AttachAudioOutput(std::make_shared<MiniaudioOutput>());
     cpu.SetBootMode(0x0D); // Set BMODE to 0b1101, boot from NAND flash with port H
 
     auto loop = uvw::loop::get_default();
@@ -104,6 +164,10 @@ int main(int argc, char* argv[]) {
             loop->run();
         }
     });
+    // Detached: this thread intentionally runs until process exit. A joinable
+    // std::thread destroyed at return would call std::terminate, masking the
+    // exit code of a clean quit/SIGTERM shutdown.
+    uvloop.detach();
     USBIPServer usbipd(*loop, cpu.GetUSB());
     usbipd.Start();
 
@@ -129,17 +193,25 @@ int main(int argc, char* argv[]) {
         cpuThread = std::thread(BootExcutionThread, std::ref(cpu));
     }
 
-    // Main thread handles GLFW display
-    while (!display->ShouldClose()) {
-        display->PollEvents();
-        int16_t ax = static_cast<int16_t>((std::rand() % (540 - 50 + 1)) + 50); // ax in [50, 540]
-        int16_t ay = static_cast<int16_t>((std::rand() % (-50 - (-540) + 1)) + (-540)); // ay in [-540, -50]
-        int16_t az = static_cast<int16_t>((std::rand() % (874 - 75 + 1)) + 75); // az in [75, 874]
-        cpu.SetAcceleration(ax, ay, az); // Placeholder for random accelerometer data
-        cpu.SetPotentiometerValue(0xFF - display->GetVolumeValue()); // Update potentiometer (volume) value
+    // Main thread handles GLFW display or headless input. cpuShouldStop is in
+    // the condition so SIGTERM/SIGINT and CPU thread exit end the loop too.
+    int result = 0;
+    try {
+        while (!cpuShouldStop.load() && !(headless ? console->ShouldClose() : window->ShouldClose())) {
+            if (headless) console->PollEvents();
+            else window->PollEvents();
+            int16_t ax = static_cast<int16_t>((std::rand() % (540 - 50 + 1)) + 50); // ax in [50, 540]
+            int16_t ay = static_cast<int16_t>((std::rand() % (-50 - (-540) + 1)) + (-540)); // ay in [-540, -50]
+            int16_t az = static_cast<int16_t>((std::rand() % (874 - 75 + 1)) + 75); // az in [75, 874]
+            cpu.SetAcceleration(ax, ay, az); // Placeholder for random accelerometer data
+            cpu.SetPotentiometerValue(0xFF - (headless ? 128 : window->GetVolumeValue()));
 
-        // Small sleep to prevent busy-waiting
-        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
+            // Preserve the existing host frame/input cadence, without a GL swap.
+            std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
+        }
+    } catch (const std::exception& e) {
+        LogError("Headless input: %s", e.what());
+        result = 1;
     }
 
     // Signal CPU thread to stop and wait for it
@@ -147,5 +219,14 @@ int main(int argc, char* argv[]) {
     cpuShouldStop.store(true);
     cpuThread.join();
 
-    return 0;
+    return result;
+}
+
+int main(int argc, char* argv[]) {
+    try {
+        return RunEmulator(argc, argv);
+    } catch (const std::exception& e) {
+        LogError("%s", e.what());
+        return 1;
+    }
 }
