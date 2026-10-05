@@ -3,7 +3,20 @@ cmake_minimum_required(VERSION 3.20)
 project(op1emu)
 set(CMAKE_CXX_STANDARD 17)
 
+option(OP1EMU_BUILD_GUI "Build the upstream graphical emulator" ON)
+option(OP1EMU_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
+
 include(FetchContent)
+
+# Safe metadata inspection is intentionally independent of the emulator,
+# GUI, submodules, and all upstream execution code.
+if(NOT OP1EMU_BUILD_GUI)
+    find_package(LibLZMA REQUIRED)
+    enable_testing()
+    add_subdirectory(src/inspection)
+    add_subdirectory(tests/inspection)
+    return()
+endif()
 
 # Fetch spdlog
 message(STATUS "Fetching spdlog...")

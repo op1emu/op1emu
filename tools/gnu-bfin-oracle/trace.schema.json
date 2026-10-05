@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://op1emu.invalid/schemas/gnu-bfin-oracle-trace-v1.json",
+  "title": "OP-1 emulator differential instruction trace",
+  "type": "object",
+  "required": ["seq", "pc"],
+  "properties": {
+    "seq": { "type": "integer", "minimum": 0 },
+    "pc": { "$ref": "#/$defs/hex" },
+    "instruction": {
+      "type": "object",
+      "properties": {
+        "bytes": { "type": "string", "pattern": "^[0-9a-f]*$" },
+        "disassembly": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "register_changes": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/hex" }
+    },
+    "memory_reads": { "$ref": "#/$defs/memoryAccesses" },
+    "memory_writes": { "$ref": "#/$defs/memoryAccesses" },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": { "enum": ["exception", "interrupt"] },
+          "number": { "type": "integer", "minimum": 0 },
+          "detail": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "hex": { "type": "string", "pattern": "^0x[0-9a-f]+$" },
+    "memoryAccesses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["address", "size", "value"],
+        "properties": {
+          "address": { "$ref": "#/$defs/hex" },
+          "size": { "type": "integer", "minimum": 1 },
+          "value": { "$ref": "#/$defs/hex" }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

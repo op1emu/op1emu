@@ -1,0 +1,18 @@
+add_library(op1inspection firmware.cpp ldr.cpp)
+target_include_directories(op1inspection PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(op1inspection PUBLIC LibLZMA::LibLZMA)
+target_compile_features(op1inspection PUBLIC cxx_std_20)
+
+add_executable(op1inspect main.cpp)
+target_link_libraries(op1inspect PRIVATE op1inspection)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  set(OP1INSPECTION_WARNINGS -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+  target_compile_options(op1inspection PRIVATE ${OP1INSPECTION_WARNINGS})
+  target_compile_options(op1inspect PRIVATE ${OP1INSPECTION_WARNINGS})
+  if(OP1EMU_ENABLE_SANITIZERS)
+    target_compile_options(op1inspection PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined)
+    target_compile_options(op1inspect PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined)
+    target_link_options(op1inspect PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined)
+  endif()
+endif()

@@ -37,5 +37,9 @@
 *.out
 *.app
 
+# Local headless builds and external GNU Blackfin oracle artifacts
+/build-headless*/
+/.cache/gnu-bfin-oracle/
+
 # debug information files
 *.dwo
