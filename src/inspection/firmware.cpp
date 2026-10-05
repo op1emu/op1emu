@@ -234,6 +234,7 @@ std::vector<Member> parse_tar(const std::vector<std::byte>& archive, const Limit
   std::uint64_t aggregate_size = 0U;
   std::size_t offset = 0U;
   bool found_terminator = false;
+  bool found_root_ldr = false;
   bool gnu = false;
 
   while (offset <= archive.size() && archive.size() - offset >= kTarBlockSize) {
@@ -285,6 +286,9 @@ std::vector<Member> parse_tar(const std::vector<std::byte>& archive, const Limit
     aggregate_size += size;
     const auto normalized = validate_path(name, directory);
     validate_collision(normalized, directory, paths, files);
+    if (normalized == "OP1_vdk.ldr" && !directory) {
+      found_root_ldr = true;
+    }
 
     const auto payload = offset + kTarBlockSize;
     if (size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) ||
@@ -304,6 +308,9 @@ std::vector<Member> parse_tar(const std::vector<std::byte>& archive, const Limit
   }
   if (!found_terminator) {
     throw std::runtime_error("tar archive is missing its two-block terminator");
+  }
+  if (!found_root_ldr) {
+    throw std::runtime_error("tar archive must contain a regular root OP1_vdk.ldr member");
   }
   archive_type = gnu ? "old GNU tar" : "ustar";
   return members;

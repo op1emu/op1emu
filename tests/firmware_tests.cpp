@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -225,6 +226,32 @@ void run_tests() {
       !std::filesystem::is_regular_file(output / "assets/readme.txt")) {
     throw std::runtime_error("valid fixture extraction failed");
   }
+
+  const std::array<std::pair<std::string_view, std::string_view>, 3U> root_lookalikes{{
+      {"op1_vdk.ldr", "wrong case"},
+      {"nested/OP1_vdk.ldr", "nested"},
+      {"OP1_vdk.ldr", "directory"},
+  }};
+  for (std::size_t index = 0U; index < root_lookalikes.size(); ++index) {
+    Bytes lookalike_tar;
+    const auto& [name, kind] = root_lookalikes[index];
+    append_member(lookalike_tar, name, kind == "directory" ? "" : "lookalike",
+                  kind == "directory" ? '5' : '0');
+    const auto lookalike_path = write_fixture(
+        temporary.path(), "lookalike-" + std::to_string(index) + ".op1",
+        compress_tar(finish_tar(std::move(lookalike_tar))));
+    expect_failure_message(
+        [&] { static_cast<void>(op1emu::inspect_firmware(lookalike_path)); },
+        "tar archive must contain a regular root OP1_vdk.ldr member", "root LDR lookalike");
+  }
+
+  Bytes missing_root_tar;
+  append_member(missing_root_tar, "assets/readme.txt", "fixture\n");
+  const auto missing_root_path = write_fixture(
+      temporary.path(), "missing-root.op1", compress_tar(finish_tar(std::move(missing_root_tar))));
+  expect_failure_message(
+      [&] { static_cast<void>(op1emu::inspect_firmware(missing_root_path)); },
+      "tar archive must contain a regular root OP1_vdk.ldr member", "missing root LDR");
 
   const auto tiny = write_fixture(temporary.path(), "tiny.op1", Bytes(3U));
   expect_failure([&] { static_cast<void>(op1emu::inspect_firmware(tiny)); }, "short wrapper");
