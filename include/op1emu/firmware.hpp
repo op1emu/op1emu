@@ -38,8 +38,10 @@ struct Firmware {
   std::vector<std::byte> archive;
 };
 
-Firmware inspect_firmware(const std::filesystem::path& input, const Limits& limits = {});
-void extract_firmware(const Firmware& firmware, const std::filesystem::path& output);
-std::string format_inspection(const Firmware& firmware);
+Firmware inspect_firmware(const std::filesystem::path &input,
+                          const Limits &limits = {});
+void extract_firmware(const Firmware &firmware,
+                      const std::filesystem::path &output);
+std::string format_inspection(const Firmware &firmware);
 
 } // namespace op1emu

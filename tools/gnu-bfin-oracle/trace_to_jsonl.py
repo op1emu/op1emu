@@ -5,7 +5,6 @@ import json
 import re
 import sys
 
-
 INSN_RE = re.compile(
     r"^disasm:\s+(?P<pc>0x[0-9a-fA-F]+)\s+-(?P<disasm>.*)$"
 )

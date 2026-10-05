@@ -18,7 +18,7 @@ Commands:
 
 } // namespace
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   if (argc == 1) {
     std::cout << kUsage;
     return 0;
@@ -36,21 +36,24 @@ int main(int argc, char* argv[]) {
       return firmware.stored_crc == firmware.computed_crc ? 0 : 1;
     }
     if (command == "inspect-ldr" && argc == 3) {
-      const auto inspection = op1emu::inspect_ldr_file(argv[2], op1emu::LdrFormat::bf52x);
+      const auto inspection =
+          op1emu::inspect_ldr_file(argv[2], op1emu::LdrFormat::bf52x);
       std::cout << op1emu::format_ldr_inspection(inspection);
       return inspection.validity == op1emu::LdrValidity::invalid ? 1 : 0;
     }
     if (command == "extract" && argc == 4) {
       const auto firmware = op1emu::inspect_firmware(argv[2]);
       op1emu::extract_firmware(firmware, argv[3]);
-      std::cout << "Extracted " << firmware.members.size() << " members to " << argv[3] << '\n';
+      std::cout << "Extracted " << firmware.members.size() << " members to "
+                << argv[3] << '\n';
       return 0;
     }
 
-    std::cerr << "op1emu: unknown command or invalid arguments: " << command << '\n';
+    std::cerr << "op1emu: unknown command or invalid arguments: " << command
+              << '\n';
     std::cerr << kUsage;
     return 2;
-  } catch (const std::exception& error) {
+  } catch (const std::exception &error) {
     std::cerr << "op1emu: " << error.what() << '\n';
     return 1;
   }

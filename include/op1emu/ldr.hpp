@@ -69,8 +69,10 @@ struct LdrInspection {
 };
 
 LdrInspection inspect_ldr(std::span<const std::byte> data, LdrFormat format);
-LdrInspection inspect_ldr_file(const std::filesystem::path& input, LdrFormat format);
-std::string format_ldr_summary(const LdrInspection& inspection, std::string_view indent = {});
-std::string format_ldr_inspection(const LdrInspection& inspection);
+LdrInspection inspect_ldr_file(const std::filesystem::path &input,
+                               LdrFormat format);
+std::string format_ldr_summary(const LdrInspection &inspection,
+                               std::string_view indent = {});
+std::string format_ldr_inspection(const LdrInspection &inspection);
 
 } // namespace op1emu
