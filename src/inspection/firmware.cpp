@@ -372,6 +372,9 @@ Firmware inspect_firmware(const std::filesystem::path& input, const Limits& limi
   firmware.computed_crc =
       lzma_crc32(reinterpret_cast<const std::uint8_t*>(wrapper.data() + kCrcSize),
                  wrapper.size() - kCrcSize, 0U);
+  if (firmware.stored_crc != firmware.computed_crc) {
+    throw std::runtime_error("firmware CRC mismatch");
+  }
   firmware.dictionary_size = read_le32(wrapper, kCrcSize + 1U);
   const auto properties = byte_at(wrapper, kCrcSize);
   firmware.lc = static_cast<std::uint8_t>(properties % 9U);

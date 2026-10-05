@@ -176,6 +176,20 @@ void expect_failure(const std::function<void()>& operation, const std::string_vi
   throw std::runtime_error(std::string("expected failure: ") + std::string(label));
 }
 
+void expect_failure_message(const std::function<void()>& operation,
+                            const std::string_view expected_message,
+                            const std::string_view label) {
+  try {
+    operation();
+  } catch (const std::exception& error) {
+    if (error.what() == expected_message) {
+      return;
+    }
+    throw std::runtime_error(std::string(label) + ": unexpected error: " + error.what());
+  }
+  throw std::runtime_error(std::string("expected failure: ") + std::string(label));
+}
+
 Bytes valid_tar() {
   Bytes tar;
   append_member(tar, "OP1_vdk.ldr",
@@ -216,14 +230,15 @@ void run_tests() {
   expect_failure([&] { static_cast<void>(op1emu::inspect_firmware(tiny)); }, "short wrapper");
 
   auto bad_crc_bytes = compress_tar(valid_tar());
+  bad_crc_bytes[4] = std::byte{0};
   bad_crc_bytes[0] ^= std::byte{1};
   const auto bad_crc_path = write_fixture(temporary.path(), "bad-crc.op1", bad_crc_bytes);
-  auto bad_crc = op1emu::inspect_firmware(bad_crc_path);
-  if (bad_crc.stored_crc == bad_crc.computed_crc) {
-    throw std::runtime_error("CRC mismatch was not reported");
-  }
+  expect_failure_message([&] { static_cast<void>(op1emu::inspect_firmware(bad_crc_path)); },
+                         "firmware CRC mismatch", "CRC must precede malformed payload error");
+  auto bad_crc_firmware = firmware;
+  ++bad_crc_firmware.stored_crc;
   const auto crc_output = temporary.path() / "crc-output";
-  expect_failure([&] { op1emu::extract_firmware(bad_crc, crc_output); }, "CRC extraction");
+  expect_failure([&] { op1emu::extract_firmware(bad_crc_firmware, crc_output); }, "CRC extraction");
   if (std::filesystem::exists(crc_output)) {
     throw std::runtime_error("CRC failure published output");
   }
