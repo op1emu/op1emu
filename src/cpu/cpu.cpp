@@ -293,7 +293,7 @@ BlackFinCpu::BlackFinCpu() : pc(0) {
     cpuState_->usp = 0x7000000;
     cpuState_->syscfg = 0x30;
 
-    startTime = std::chrono::system_clock::now();
+    startTime = std::chrono::steady_clock::now();
 }
 
 BlackFinCpu::~BlackFinCpu() {
@@ -322,7 +322,7 @@ static void SetBfinCycles(CpuState& cpu_state, u64 cycles) {
 }
 
 HaltReason BlackFinCpu::Run() {
-    auto microSecondsElapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - startTime).count();
+    auto microSecondsElapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - startTime).count();
     auto cyclesElapsed = microSecondsElapsed * 400; // assuming 400MHz CPU clock
     // Sync cycles with system time
     SetBfinCycles(*cpuState_, cyclesElapsed);
@@ -358,24 +358,23 @@ HaltReason BlackFinCpu::Run() {
     // rate was erratic (measured: programmed period=200 firing at 10-19 ms
     // instead of the 5 ms that rate implies).
     //
-    // An accumulator is both correct and cheap: catch-up is capped so a host
-    // scheduling stall cannot deliver a huge burst of timer interrupts at
-    // once.
+    // An accumulator is both correct and cheap. At most kMaxCatchupTicks are
+    // delivered per call and the rest of a long gap is dropped on purpose
+    // (the accumulator still advances by the full gap): after a host stall or
+    // suspend/resume, replaying the backlog would make the guest storm timer
+    // interrupts for as long as the gap was.
     // FIXME: still one shared rate for all three clock domains, which is not
     // how SCLK/TACLK/TMRCLK relate on real hardware.
     constexpr uint64_t kCyclesPerTimerTick = 10000;
     constexpr uint64_t kMaxCatchupTicks = 64;
-    uint64_t cyclesElapsedU64 = (uint64_t)cyclesElapsed;
-    if (cyclesElapsedU64 >= lastTimerCycles_) {
-        uint64_t ticks = (cyclesElapsedU64 - lastTimerCycles_) / kCyclesPerTimerTick;
-        if (ticks) {
-            lastTimerCycles_ += ticks * kCyclesPerTimerTick;
-            if (ticks > kMaxCatchupTicks) ticks = kMaxCatchupTicks;
-            for (uint64_t i = 0; i < ticks; ++i) {
-                gptimer->Tick(GPTimerClockTypeSCLK);
-                gptimer->Tick(GPTimerClockTypeTACLK);
-                gptimer->Tick(GPTimerClockTypeTMRCLK);
-            }
+    uint64_t ticks = ((uint64_t)cyclesElapsed - lastTimerCycles_) / kCyclesPerTimerTick;
+    if (ticks) {
+        lastTimerCycles_ += ticks * kCyclesPerTimerTick;
+        if (ticks > kMaxCatchupTicks) ticks = kMaxCatchupTicks;
+        for (uint64_t i = 0; i < ticks; ++i) {
+            gptimer->Tick(GPTimerClockTypeSCLK);
+            gptimer->Tick(GPTimerClockTypeTACLK);
+            gptimer->Tick(GPTimerClockTypeTMRCLK);
         }
     }
 
