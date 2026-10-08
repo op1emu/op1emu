@@ -334,7 +334,13 @@ HaltReason BlackFinCpu::Run() {
     }
     // Execute one basic block — bcore updates cpuState_->pc internally.
     // Hardware loops, PC advance, and hwloop counters are all handled by bcore.
-    core_->run(cpuState_->pc);
+    if (!core_->run(cpuState_->pc)) {
+        // Translation/JIT failure: PC is unchanged, so retrying would loop
+        // forever. Skip device processing and let the host stop the run.
+        LogError("JIT execution failed at PC 0x%08x", cpuState_->pc);
+        failed_.store(true, std::memory_order_release);
+        return HaltReason::Break;
+    }
     cpuState_->did_jump = false; // Clear jump flag set by bcore, since we handle it in the emulator loop
     cec_check_pending(cpuState_.get());
 

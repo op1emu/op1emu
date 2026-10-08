@@ -49,6 +49,7 @@ void LdrExecutionThread(BlackFinCpu& cpu, const LDRParser& parser) {
 
         while (!cpuShouldStop.load()) {
             cpu.Run();
+            if (cpu.Failed()) cpuShouldStop.store(true);
 
             if (cpu.PC() == 0x8000000) {
                 LogInfo("Finished executing DXE");
@@ -74,6 +75,7 @@ void BootExcutionThread(BlackFinCpu& cpu) {
     cpu.SetPC(0xEF000000); // Boot entry point
     while (!cpuShouldStop.load()) {
         cpu.Run();
+        if (cpu.Failed()) cpuShouldStop.store(true);
     }
     cpuShouldStop.store(true);
     LogInfo("CPU thread exiting");
@@ -115,6 +117,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --input-script PATH   Read headless commands from PATH instead of stdin\n"
                      "Headless commands (one per line):\n"
                      "  keys | press KEY | release KEY | tap KEY [MS] | wait MS | quit\n"
+                     "  accel X Y Z | accel random | volume 0..255\n"
+                     "  wait-frames N [TIMEOUT_MS] | screenshot PATH.ppm\n"
                      "Keys are button names from gui/ui.json. Tap defaults to 100ms.\n"
                      "Wait/tap use wall time. EOF leaves the emulator running; quit or Ctrl-C stops it.\n";
         return help ? 0 : 1;
@@ -196,15 +200,30 @@ static int RunEmulator(int argc, char* argv[]) {
     // Main thread handles GLFW display or headless input. cpuShouldStop is in
     // the condition so SIGTERM/SIGINT and CPU thread exit end the loop too.
     int result = 0;
+    uint64_t sensorVersion = UINT64_MAX; // forces the first headless push
     try {
         while (!cpuShouldStop.load() && !(headless ? console->ShouldClose() : window->ShouldClose())) {
             if (headless) console->PollEvents();
             else window->PollEvents();
-            int16_t ax = static_cast<int16_t>((std::rand() % (540 - 50 + 1)) + 50); // ax in [50, 540]
-            int16_t ay = static_cast<int16_t>((std::rand() % (-50 - (-540) + 1)) + (-540)); // ay in [-540, -50]
-            int16_t az = static_cast<int16_t>((std::rand() % (874 - 75 + 1)) + 75); // az in [75, 874]
-            cpu.SetAcceleration(ax, ay, az); // Placeholder for random accelerometer data
-            cpu.SetPotentiometerValue(0xFF - (headless ? 128 : window->GetVolumeValue()));
+            const bool fixedAccel = headless && console->GetSensors().accelFixed;
+            const bool sensorsChanged = headless && console->SensorVersion() != sensorVersion;
+            if (!fixedAccel) {
+                int16_t ax = static_cast<int16_t>((std::rand() % (540 - 50 + 1)) + 50); // ax in [50, 540]
+                int16_t ay = static_cast<int16_t>((std::rand() % (-50 - (-540) + 1)) + (-540)); // ay in [-540, -50]
+                int16_t az = static_cast<int16_t>((std::rand() % (874 - 75 + 1)) + 75); // az in [75, 874]
+                cpu.SetAcceleration(ax, ay, az); // Placeholder for random accelerometer data
+            }
+            if (headless) {
+                // Script-set sensors are pushed once per change; the CPU keeps the value.
+                if (sensorsChanged) {
+                    const auto& sensors = console->GetSensors();
+                    if (sensors.accelFixed) cpu.SetAcceleration(sensors.ax, sensors.ay, sensors.az);
+                    cpu.SetPotentiometerValue(0xFF - sensors.volume);
+                    sensorVersion = console->SensorVersion();
+                }
+            } else {
+                cpu.SetPotentiometerValue(0xFF - window->GetVolumeValue()); // Update potentiometer (volume) value
+            }
 
             // Preserve the existing host frame/input cadence, without a GL swap.
             std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
@@ -218,6 +237,10 @@ static int RunEmulator(int argc, char* argv[]) {
     LogInfo("Stopping CPU thread...");
     cpuShouldStop.store(true);
     cpuThread.join();
+    if (cpu.Failed()) {
+        LogError("Emulation stopped: CPU execution failed");
+        result = 1;
+    }
 
     return result;
 }

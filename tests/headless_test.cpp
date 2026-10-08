@@ -1,10 +1,12 @@
 #include "headless.h"
 #include "cpu/cpu.h"
 #include "peripheral/mcp230xx.h"
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <stdexcept>
 #include <tuple>
@@ -49,6 +51,20 @@ public:
         Require(portG->GetPinOutput(3) == GPIOPinLevel::High, "CPU queue completes delayed frame pulse");
     }
 };
+
+// A frame of `width` x `height` pixels, written one row at a time like the PPI DMA.
+static uint16_t PixelAt(int x, int y) { return static_cast<uint16_t>(1 + y * 4 + x); } // R field only
+static void FeedRows(HeadlessFrontend& frontend, int width, int from, int to) {
+    for (int y = from; y < to; ++y) {
+        std::vector<uint16_t> row(width);
+        for (int x = 0; x < width; ++x) row[x] = static_cast<uint16_t>(PixelAt(x, y) << 11);
+        frontend.UpdateRowBuffer(0, y, row.data(), width * 2);
+    }
+}
+static std::string ReadFile(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
 
 int main() {
     const auto config = std::filesystem::absolute("gui/ui.json").string();
@@ -100,7 +116,13 @@ int main() {
     }
     for (const auto& bad : {"press missing", "release play extra", "tap play 0", "tap play -1",
                             "tap play 1.5", "tap play 86400001", "wait nan", "wait 999999999999999999999",
-                            "wait", "quit extra", "unknown", "press"}) {
+                            "wait", "quit extra", "unknown", "press",
+                            "accel", "accel 1 2", "accel 1 2 3 4", "accel random 1", "accel 32768 0 0",
+                            "accel 0 -32769 0", "accel a b c", "accel 1.5 0 0", "accel +1 0 0",
+                            "volume", "volume 256", "volume -1", "volume 1 2", "volume 0x10",
+                            "wait-frames", "wait-frames 0", "wait-frames -1", "wait-frames 100001",
+                            "wait-frames 1 0", "wait-frames 1 2 3", "wait-frames x",
+                            "screenshot", "screenshot a b", "screenshot /tmp/op1-no-frame.ppm"}) {
         Pipe pipe;
         HeadlessFrontend frontend(config, pipe.fds[0]);
         int keys = 0;
@@ -118,6 +140,103 @@ int main() {
         bool rejected = false;
         try { frontend.PollEvents(start); } catch (const std::exception&) { rejected = true; }
         Require(rejected, "overlong unterminated input is bounded");
+    }
+    {
+        Pipe pipe;
+        HeadlessFrontend frontend(config, pipe.fds[0]);
+        Require(!frontend.GetSensors().accelFixed && frontend.GetSensors().volume == 128 &&
+                    frontend.SensorVersion() == 0, "sensors default to random acceleration and mid volume");
+        pipe.Send("accel 64 -64 512\nvolume 200\n");
+        frontend.PollEvents(start);
+        const auto& sensors = frontend.GetSensors();
+        Require(sensors.accelFixed && sensors.ax == 64 && sensors.ay == -64 && sensors.az == 512 &&
+                    sensors.volume == 200 && frontend.SensorVersion() == 2, "accel and volume set sensors");
+        pipe.Send("accel -32768 32767 0\naccel random\nvolume 0\n");
+        frontend.PollEvents(start + 16ms);
+        Require(!sensors.accelFixed && sensors.volume == 0 && frontend.SensorVersion() == 5,
+                "accel random resumes random feed; int16 limits and volume 0 accepted");
+    }
+    {
+        Pipe pipe;
+        HeadlessFrontend frontend(config, pipe.fds[0]);
+        frontend.Initialize(4, 2);
+        FeedRows(frontend, 4, 1, 2); // the tail of a frame we did not see from the start
+        Require(frontend.FrameCount() == 0, "rows before the frame origin never complete a frame");
+        FeedRows(frontend, 4, 0, 1);
+        Require(frontend.FrameCount() == 0, "half a frame is not a frame");
+        frontend.Initialize(4, 2); // firmware rewrites PPI_CONTROL: same geometry keeps pixels
+        FeedRows(frontend, 4, 1, 2);
+        Require(frontend.FrameCount() == 1, "same-geometry Initialize does not discard a frame in progress");
+        FeedRows(frontend, 4, 1, 2);
+        Require(frontend.FrameCount() == 1, "rows after completion wait for the next frame origin");
+        const std::string path = std::string("/tmp/op1-headless-shot-") + std::to_string(getpid()) + ".ppm";
+        pipe.Send("screenshot " + path + "\n");
+        frontend.PollEvents(start);
+        // 4x2 portrait rotated 90 degrees clockwise is 2x4: output (xd, yd) = source (yd, 1 - xd).
+        const std::string ppm = ReadFile(path);
+        const std::string header = "P6\n2 4\n255\n";
+        Require(ppm.size() == header.size() + 2 * 4 * 3 && ppm.compare(0, header.size(), header) == 0,
+                "screenshot is a 2x4 binary PPM");
+        for (int yd = 0; yd < 4; ++yd) {
+            for (int xd = 0; xd < 2; ++xd) {
+                const unsigned r = PixelAt(yd, 1 - xd);
+                const auto* out = reinterpret_cast<const uint8_t*>(ppm.data()) + header.size() + (yd * 2 + xd) * 3;
+                Require(out[0] == ((r << 3) | (r >> 2)) && out[1] == 0 && out[2] == 0,
+                        "screenshot rotates clockwise and expands RGB565");
+            }
+        }
+        std::filesystem::remove(path);
+        pipe.Send("screenshot /nonexistent-op1-dir/x.ppm\n");
+        bool rejected = false;
+        try { frontend.PollEvents(start + 16ms); } catch (const std::exception&) { rejected = true; }
+        Require(rejected, "screenshot to an unwritable path fails loudly");
+    }
+    {
+        // Full-scale colors survive the RGB565 -> RGB888 expansion.
+        Pipe pipe;
+        HeadlessFrontend frontend(config, pipe.fds[0]);
+        frontend.Initialize(1, 2);
+        const uint16_t pixels[2] = {0xFFFF, 0x07E0}; // white, pure green
+        frontend.UpdateRowBuffer(0, 0, &pixels[0], 2);
+        frontend.UpdateRowBuffer(0, 1, &pixels[1], 2);
+        const std::string path = std::string("/tmp/op1-headless-color-") + std::to_string(getpid()) + ".ppm";
+        pipe.Send("screenshot " + path + "\n");
+        frontend.PollEvents(start);
+        const std::string ppm = ReadFile(path);
+        const std::string header = "P6\n2 1\n255\n";
+        const auto* out = reinterpret_cast<const uint8_t*>(ppm.data()) + header.size();
+        Require(ppm.size() == header.size() + 6 && out[0] == 0 && out[1] == 255 && out[2] == 0 &&
+                    out[3] == 255 && out[4] == 255 && out[5] == 255,
+                "white and green expand to full-scale channels");
+        std::filesystem::remove(path);
+    }
+    {
+        Pipe pipe;
+        HeadlessFrontend frontend(config, pipe.fds[0]);
+        frontend.Initialize(4, 2);
+        int frames = 0;
+        frontend.SetOnFrameStartCallback([&](Display&) { ++frames; });
+        pipe.Send("wait-frames 2\nvolume 7\n");
+        frontend.PollEvents(start);
+        FeedRows(frontend, 4, 0, 2);
+        frontend.PollEvents(start + 16ms);
+        Require(frontend.SensorVersion() == 0 && frames == 2, "wait-frames holds later commands, frame sync continues");
+        FeedRows(frontend, 4, 0, 2);
+        frontend.PollEvents(start + 32ms);
+        Require(frontend.SensorVersion() == 1 && frontend.GetSensors().volume == 7, "wait-frames resumes after N new frames");
+    }
+    {
+        Pipe pipe;
+        HeadlessFrontend frontend(config, pipe.fds[0]);
+        frontend.Initialize(4, 2);
+        FeedRows(frontend, 4, 0, 2); // an older frame does not count
+        pipe.Send("wait-frames 1 100\nvolume 7\n");
+        frontend.PollEvents(start);
+        frontend.PollEvents(start + 99ms);
+        Require(frontend.SensorVersion() == 0, "wait-frames ignores frames from before the command");
+        bool timedOut = false;
+        try { frontend.PollEvents(start + 100ms); } catch (const std::exception&) { timedOut = true; }
+        Require(timedOut, "wait-frames times out instead of hanging");
     }
     // Isolate OTP creation performed by BlackFinCpu's constructor.
     char directory[] = "/tmp/op1-headless-test-XXXXXX";
