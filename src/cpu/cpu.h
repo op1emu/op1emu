@@ -1,6 +1,7 @@
 #pragma once
 
 #include "emu.h"
+#include <atomic>
 #include <memory>
 #include <vector>
 #include <chrono>
@@ -59,6 +60,10 @@ public:
 
     void SetBootMode(int mode);
 
+    // True once the JIT could not translate or run a block. The CPU state is
+    // then no longer advancing, so the host should stop instead of retrying.
+    bool Failed() const { return failed_.load(std::memory_order_acquire); }
+
     void QueueEvent(const std::function<void()>& event, std::chrono::nanoseconds delay = std::chrono::nanoseconds(1));
 
     void AttachDisplay(const std::shared_ptr<Display>& display);
@@ -96,4 +101,5 @@ protected:
     std::unique_ptr<EmulatorMemory> bcoreMemory_;
     std::shared_ptr<Core> core_;
     uint32_t pc;
+    std::atomic<bool> failed_{false};
 };
