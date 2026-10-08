@@ -153,6 +153,8 @@ void DMAChannel::ProcessDescriptor()
         return;
     }
 
+    const bool largeList = descriptorSize && next == DMANextOperation::DescriptorListLargeModel;
+    const u32 descriptorEnd = nextDescPtr + 2u * descriptorSize;
     if (descriptorSize) {
         u32 offset = 0;
         u16 flows[9];
@@ -171,7 +173,10 @@ void DMAChannel::ProcessDescriptor()
         Write(0x00, flows, descriptorSize * sizeof(u16));
     }
 
-    currDescPtr = nextDescPtr;
+    // BF52x HRM, DMA Current Descriptor Pointer Registers (6-87): after
+    // fetching a descriptor, CURR_DESC_PTR addresses the next halfword.
+    // NEXT_DESC_PTR now holds the next link, not the descriptor just fetched.
+    currDescPtr = largeList ? descriptorEnd : nextDescPtr;
     currAddr = startAddr;
     currXCount = xCount ?: 0xFFFF;
     currYCount = yCount ?: 0xFFFF;
