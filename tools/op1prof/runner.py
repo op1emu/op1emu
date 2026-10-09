@@ -67,6 +67,8 @@ class RunSpec:
     cpu: Optional[int] = None
     trace: bool = True
     census: bool = False
+    prefix: List[str] = field(default_factory=list)   # e.g. perf record ... --
+    env: dict = field(default_factory=dict)           # added after cleaning
 
     def __post_init__(self) -> None:
         reserved = reserved_args(self.args)
@@ -144,6 +146,7 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
     if spec.census:
         command += ["--profile-census", "census"]
     command += spec.args
+    command = spec.prefix + command
 
     before = machine.snapshot(spec.cpu).to_json()
     marks: List[Mark] = []
@@ -151,7 +154,7 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
     start = time.monotonic()
     log = open(directory / "log.txt", "wb")
     preexec = (lambda: os.sched_setaffinity(0, {spec.cpu})) if spec.cpu is not None else None
-    proc = subprocess.Popen(command, cwd=directory, env=clean_env(), stdin=subprocess.DEVNULL,
+    proc = subprocess.Popen(command, cwd=directory, env={**clean_env(), **spec.env}, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             start_new_session=True, preexec_fn=preexec)
     try:

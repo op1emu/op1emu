@@ -258,3 +258,88 @@ def test_ab_requires_balanced_pairs(files, tmp_path):
     with pytest.raises(ValueError):
         ab.compare(None, None, spec(files), 3, tmp_path, ("start", "main-frame"), 2.0, False)
 
+
+# ---- perf ----
+
+from op1prof import census, perf  # noqa: E402
+
+
+def test_precise_events():
+    assert perf.is_precise("cycles:pp") and perf.is_precise("cycles:p")
+    assert not perf.is_precise("cpu-clock:u") and not perf.is_precise("cycles")
+
+
+def test_window_must_be_in_mark_order(tmp_path):
+    marks = tmp_path / "marks.json"
+    marks.write_text(json.dumps({"marks": [{"name": "a"}, {"name": "b"}], "frame": {"name": "f"}}))
+    assert perf.check_window(marks, ("a", "f")) is None
+    assert "empty" in perf.check_window(marks, ("b", "a"))
+    assert "unknown" in perf.check_window(marks, ("a", "zz"))
+
+
+def test_samples_are_attributed_outside_compilation():
+    lines = [
+        " 42 10.000000100:  7f00 bb_0x01a5e27e (/tmp/jitted-42-1.so)",
+        " 42 10.000000200:  7f01 bb_0x01a5e27e (/tmp/jitted-42-1.so)",
+        " 42 10.000000300:  4000 EmulatorMemory::read32 (/x/op1emu)",
+        " 42 10.000000550:  7f02 bb_0x00000000 (/tmp/jitted-42-2.so)",   # inside a translate span
+        " 43 10.000000300:  4000 glfwPollEvents (/x/libglfw.so)",          # another thread
+        " 42 11.000000000:  7f00 bb_0x01a5e27e (/tmp/jitted-42-1.so)",    # after the window
+        "unrelated line",
+    ]
+    samples = list(perf.parse_samples(lines))
+    assert samples[0] == (42, 10_000_000_100, "bb_0x01a5e27e", "jitted-42-1.so")
+    trace_data = {"cpu_thread_tid": 42, "traceEvents": [
+        {"name": "a", "cat": "mark", "ts": 10_000_000.0},
+        {"name": "translate", "ph": "X", "ts": 10_000_000.5, "dur": 0.1},
+        {"name": "b", "cat": "mark", "ts": 10_000_001.0},
+    ]}
+    result = perf.attribute(samples, trace_data, ("a", "b"))
+    assert result["counts"] == {"execution": 3, "compile": 1, "other_threads": 1, "outside_window": 1}
+    assert result["blocks"]["bb_0x01a5e27e"] == 2
+    assert result["symbols"]["EmulatorMemory::read32 (op1emu)"] == 1
+
+
+# ---- census ----
+
+def _census(path, records):
+    path.write_bytes(b"".join(census.RECORD.pack(*r) for r in records))
+
+
+def test_census_phase_differences_and_report(tmp_path):
+    prefix = tmp_path / "census"
+    _census(Path(f"{prefix}.pc.a"), [(0x100, 10, 30), (0x200, 1, 1)])
+    _census(Path(f"{prefix}.pc.b"), [(0x100, 15, 45), (0x200, 1, 1), (0x300, 4, 40)])
+    _census(Path(f"{prefix}.mmio.a"), [(0xFFE02108, 5, 0)])
+    _census(Path(f"{prefix}.mmio.b"), [(0xFFE02108, 9, 0), (0xFFC00000, 0, 2)])
+    pcs = census.phase(prefix, "pc", "a", "b")
+    assert pcs == {0x100: (5, 15), 0x300: (4, 40)}  # unchanged 0x200 dropped
+    symbols = tmp_path / "syms.txt"
+    symbols.write_text("0x00000100 fir_loop\n0x00000300 main\n")
+    text = census.report(prefix, "a", "b", 10, census.Symbols(symbols))
+    assert "0x00000300" in text.splitlines()[5] and "main" in text  # most packets first
+    assert "fir_loop" in text and "0xffe02108" in text
+    with pytest.raises(ValueError):
+        census.phase(prefix, "pc", "b", "a")
+
+
+def test_perf_preflight_explains_paranoid(monkeypatch):
+    class Failed:
+        returncode, stderr = 255, "perf_event_open(..., PERF_FLAG_FD_CLOEXEC) failed"
+
+    def with_paranoid(value):
+        class FakePath:
+            def __init__(self, *_):
+                pass
+
+            def read_text(self):
+                return f"{value}\n"
+        monkeypatch.setattr(perf, "Path", FakePath)
+
+    monkeypatch.setattr(perf.subprocess, "run", lambda *a, **k: Failed())
+    with_paranoid(4)
+    message = perf.preflight("cpu-clock:u", ["-F", "999"])
+    assert "paranoid=2" in message and "restore 4" in message
+    with_paranoid(2)
+    assert "cycles:upp" in perf.preflight("cycles:pp", ["-c", "400000"])
+    assert "u modifier" not in perf.preflight("cpu-clock:u", ["-F", "999"])
