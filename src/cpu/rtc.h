@@ -3,9 +3,11 @@
 #include "io.h"
 #include <chrono>
 
+class TimeSource;
+
 class RTC : public RegisterDevice {
 public:
-    RTC(u32 baseAddr);
+    RTC(u32 baseAddr, const TimeSource& time);
 
     void Tick();  // Called periodically to update RTC state
     void ProcessWithInterrupt(int ivg) override;
@@ -41,4 +43,5 @@ private:
     u32 statShadow = 0;
     u32 lastStat = 0;
     std::chrono::system_clock::time_point baseTime;
+    const TimeSource& time_;
 };

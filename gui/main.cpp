@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <csignal>
 #include <string>
+#include <optional>
 #include <stdexcept>
 #include <fcntl.h>
 #include <unistd.h>
@@ -91,6 +92,8 @@ static int RunEmulator(int argc, char* argv[]) {
     // persistent-mode selector.
     bool nandSnapshot = false;
     bool headless = false;
+    bool deterministic = false;
+    std::optional<long long> rtcEpoch;
     bool help = false;
     bool options = true;
     std::string inputScript;
@@ -100,6 +103,16 @@ static int RunEmulator(int argc, char* argv[]) {
         else if (options && arg == "--nand-rw") nandSnapshot = false;
         else if (options && arg == "--nand-snapshot") nandSnapshot = true;
         else if (options && arg == "--headless") headless = true;
+        else if (options && arg == "--deterministic") deterministic = true;
+        else if (options && arg == "--rtc-epoch") {
+            if (++i == argc) throw std::runtime_error("--rtc-epoch requires seconds since 1970");
+            size_t used = 0;
+            long long seconds = -1;
+            try { seconds = std::stoll(argv[i], &used); } catch (const std::exception&) {}
+            if (used == 0 || argv[i][used] != '\0' || seconds < 0)
+                throw std::runtime_error(std::string("Invalid --rtc-epoch: ") + argv[i]);
+            rtcEpoch = seconds;
+        }
         else if (options && (arg == "--help" || arg == "-h")) help = true;
         else if (options && arg == "--input-script") {
             if (++i == argc) throw std::runtime_error("--input-script requires a path");
@@ -115,6 +128,9 @@ static int RunEmulator(int argc, char* argv[]) {
                   << " <nand_flash_file> [ldr_file] [--nand-rw|--nand-snapshot]\n"
                      "  --headless            No GLFW window or host audio device\n"
                      "  --input-script PATH   Read headless commands from PATH instead of stdin\n"
+                     "  --deterministic       Guest time from executed instructions, not host time:\n"
+                     "                        repeatable runs, as fast as the host allows\n"
+                     "  --rtc-epoch SECONDS   RTC time at boot with --deterministic (default 2024-01-01)\n"
                      "Headless commands (one per line):\n"
                      "  keys | press KEY | release KEY | tap KEY [MS] | wait MS | quit\n"
                      "  accel X Y Z | accel random | volume 0..255\n"
@@ -126,6 +142,8 @@ static int RunEmulator(int argc, char* argv[]) {
     if (positional.size() > 2) throw std::runtime_error("Expected NAND and optional LDR paths");
     if (!inputScript.empty() && !headless)
         throw std::runtime_error("--input-script requires --headless");
+    if (rtcEpoch && !deterministic)
+        throw std::runtime_error("--rtc-epoch requires --deterministic");
 
     std::shared_ptr<GLFWDisplay> window;
     std::shared_ptr<HeadlessFrontend> console;
@@ -154,7 +172,8 @@ static int RunEmulator(int argc, char* argv[]) {
     std::signal(SIGINT, StopSigHandler);
 
     // Create BlackFin CPU
-    BlackFinCpu cpu;
+    BlackFinCpu cpu(deterministic);
+    if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
     cpu.AttachDisplay(display);
     cpu.AttachKeyboard(keyboard);
     // SPORT still drains DMA and advances its sample accounting without a
@@ -188,6 +207,37 @@ static int RunEmulator(int argc, char* argv[]) {
         LogInfo("NAND flash image opened read-only (snapshot mode; guest writes will be discarded)");
     cpu.AttachNandFlash(nandFlash);
 
+    uint64_t sensorVersion = UINT64_MAX; // forces the first headless push
+    auto pushSensors = [&]() {
+        const bool fixedAccel = headless && console->GetSensors().accelFixed;
+        const bool sensorsChanged = headless && console->SensorVersion() != sensorVersion;
+        if (!fixedAccel) {
+            int16_t ax = static_cast<int16_t>((std::rand() % (540 - 50 + 1)) + 50); // ax in [50, 540]
+            int16_t ay = static_cast<int16_t>((std::rand() % (-50 - (-540) + 1)) + (-540)); // ay in [-540, -50]
+            int16_t az = static_cast<int16_t>((std::rand() % (874 - 75 + 1)) + 75); // az in [75, 874]
+            cpu.SetAcceleration(ax, ay, az); // Placeholder for random accelerometer data
+        }
+        if (headless) {
+            // Script-set sensors are pushed once per change; the CPU keeps the value.
+            if (sensorsChanged) {
+                const auto& sensors = console->GetSensors();
+                if (sensors.accelFixed) cpu.SetAcceleration(sensors.ax, sensors.ay, sensors.az);
+                cpu.SetPotentiometerValue(0xFF - sensors.volume);
+                sensorVersion = console->SensorVersion();
+            }
+        } else {
+            cpu.SetPotentiometerValue(0xFF - window->GetVolumeValue()); // Update potentiometer (volume) value
+        }
+    };
+    // With --deterministic, a script's leading commands (up to its first wait)
+    // take effect before the CPU starts, so fixed sensor values reach the guest
+    // at the same point of every run instead of whenever the first host poll
+    // happens to land.
+    if (headless && deterministic) {
+        console->PollEvents();
+        pushSensors();
+    }
+
     // Start CPU execution thread
     std::thread cpuThread;
     if (positional.size() > 1) {
@@ -200,30 +250,11 @@ static int RunEmulator(int argc, char* argv[]) {
     // Main thread handles GLFW display or headless input. cpuShouldStop is in
     // the condition so SIGTERM/SIGINT and CPU thread exit end the loop too.
     int result = 0;
-    uint64_t sensorVersion = UINT64_MAX; // forces the first headless push
     try {
         while (!cpuShouldStop.load() && !(headless ? console->ShouldClose() : window->ShouldClose())) {
             if (headless) console->PollEvents();
             else window->PollEvents();
-            const bool fixedAccel = headless && console->GetSensors().accelFixed;
-            const bool sensorsChanged = headless && console->SensorVersion() != sensorVersion;
-            if (!fixedAccel) {
-                int16_t ax = static_cast<int16_t>((std::rand() % (540 - 50 + 1)) + 50); // ax in [50, 540]
-                int16_t ay = static_cast<int16_t>((std::rand() % (-50 - (-540) + 1)) + (-540)); // ay in [-540, -50]
-                int16_t az = static_cast<int16_t>((std::rand() % (874 - 75 + 1)) + 75); // az in [75, 874]
-                cpu.SetAcceleration(ax, ay, az); // Placeholder for random accelerometer data
-            }
-            if (headless) {
-                // Script-set sensors are pushed once per change; the CPU keeps the value.
-                if (sensorsChanged) {
-                    const auto& sensors = console->GetSensors();
-                    if (sensors.accelFixed) cpu.SetAcceleration(sensors.ax, sensors.ay, sensors.az);
-                    cpu.SetPotentiometerValue(0xFF - sensors.volume);
-                    sensorVersion = console->SensorVersion();
-                }
-            } else {
-                cpu.SetPotentiometerValue(0xFF - window->GetVolumeValue()); // Update potentiometer (volume) value
-            }
+            pushSensors();
 
             // Preserve the existing host frame/input cadence, without a GL swap.
             std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS

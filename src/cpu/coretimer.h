@@ -2,9 +2,11 @@
 
 #include "io.h"
 
+class TimeSource;
+
 class CoreTimer : public RegisterDevice {
 public:
-    CoreTimer(u32 baseAddr);
+    CoreTimer(u32 baseAddr, const TimeSource& time);
 
     // Called each instruction step with elapsed core clock cycles
     void UpdateCycles(u64 cycles);
@@ -24,4 +26,5 @@ protected:
     u32 tperiod = 0;
     u32 tcount  = 0;
     u64 startCycles = 0;
+    const TimeSource& time_;
 };

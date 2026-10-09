@@ -113,12 +113,44 @@ when firmware handled it. NAND writes are persistent unless `--nand-snapshot` is
 selected. When comparing timings, use the same frontend mode for every run:
 removing GL swaps and host audio changes host overhead and frame cadence.
 
-Frontend regressions (including the CPU input event queue) can be built with:
+## Deterministic runs
+
+By default the guest sees host time: CYCLES, the core timer, the GP timers, SPORT
+sample pacing and the RTC all follow the host's clock. A slower or busier host
+therefore makes the guest see more time pass per instruction (more timer
+interrupts, more polling), and no two boots do the same work. That is fine for
+playing the instrument and useless for measuring the emulator.
+
+`--deterministic` takes guest time from what the core executed instead: one
+cycle per instruction packet at 400 MHz (an issue model with no pipeline, cache
+or PLL timing). With the same NAND, OTP, input script and RTC epoch, every run
+executes the same instructions and draws the same frames, however fast or loaded
+the host is.
+
+```bash
+./build/op1emu nand.bin --nand-snapshot --headless --deterministic --input-script boot.txt
+```
+
+- Execution is not paced to real time: it runs as fast as the host allows, which
+  is currently much slower than real time, so animation and audio are slow.
+  Use it headless, for measurement and regression runs.
+- The core timer and SPORT run at their programmed rates. Host-time mode divides
+  both by 10 to make up for an emulator slower than real time.
+- Panel frame sync (TE, PORTG3) is a 60 Hz guest-time oscillator instead of the
+  frontend's 16 ms host poll.
+- The RTC starts at 2024-01-01 00:00 UTC; `--rtc-epoch SECONDS` sets another start
+  (only with `--deterministic`).
+- A script's leading `accel`/`volume` commands are applied before the CPU starts.
+  Key presses, `wait` and `tap` are still host-timed, so a run that presses keys
+  is not repeatable.
+
+Frontend regressions (including the CPU input event queue) and the time model
+tests can be built with:
 
 ```bash
 cmake -S . -B build -DOP1_BUILD_HEADLESS_TESTS=ON
-cmake --build build --target op1-headless-test
-ctest --test-dir build -R headless-test --output-on-failure
+cmake --build build --target op1-headless-test op1-time-source-test
+ctest --test-dir build -R "headless-test|time-source-test" --output-on-failure
 ```
 
 ## Acknowledgements

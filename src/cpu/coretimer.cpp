@@ -1,8 +1,10 @@
 #include "coretimer.h"
+#include "time_source.h"
 
 constexpr int IVG_IVTMR = 6;
 
-CoreTimer::CoreTimer(u32 baseAddr) : RegisterDevice("CoreTimer", baseAddr, 0x10) {
+CoreTimer::CoreTimer(u32 baseAddr, const TimeSource& time)
+    : RegisterDevice("CoreTimer", baseAddr, 0x10), time_(time) {
     REG32(TCNTL, 0x00);
     FIELD(TCNTL, TMPWR, 0, 1, R(power), W(power));
     FIELD(TCNTL, TMREN, 1, 1, R(enabled), W(enabled));
@@ -41,8 +43,9 @@ void CoreTimer::UpdateCycles(u64 cycles)
     u64 elapsed = cycles - startCycles;
     u64 scale = tscale + 1; // Scale is 0-based (0 means divide by 1)
     u64 ticks = elapsed / scale;
-    // FIXME: currently the emulator runs slow, so let ticks /= 10;
-    ticks /= 10;
+    // FIXME: wall time runs the emulator slower than real time, so it divides
+    // ticks by TimeSource::kWallSlowdown; deterministic guest time does not.
+    ticks /= time_.Slowdown();
 
     if (ticks >= tperiod) {
         tcount = 0;

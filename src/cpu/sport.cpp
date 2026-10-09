@@ -1,5 +1,6 @@
 #include "sport.h"
 #include "emu.h"
+#include "time_source.h"
 #include "utils/log.h"
 
 enum DataFormat {
@@ -10,8 +11,8 @@ enum DataFormat {
 
 constexpr std::size_t FIFO_SIZE = 8; // 8x16-bit words or 4x32-bit words
 
-SPORT::SPORT(u32 baseAddr, int sportNum)
-    : RegisterDevice("SPORT" + std::to_string(sportNum), baseAddr, 0x60), sportNumber(sportNum) {
+SPORT::SPORT(u32 baseAddr, int sportNum, const TimeSource& time)
+    : RegisterDevice("SPORT" + std::to_string(sportNum), baseAddr, 0x60), sportNumber(sportNum), time_(time) {
 
     REG32(SPORT_TCR1, 0x00);
     FIELD(SPORT_TCR1, TSPEN, 0, 1, R(transmitEnabled), W(transmitEnabled));
@@ -112,17 +113,17 @@ u32 SPORT::DMARead(int x, int y, void* dest, u32 length)
 
     // Start timing on first DMA call after SPORT enable
     if (!dmaRxActive_) {
-        dmaRxStartTime_ = std::chrono::steady_clock::now();
+        dmaRxStartNs_ = time_.Nanoseconds();
         totalRxSamplesDelivered_ = 0;
         dmaRxActive_ = true;
     }
 
     // How many samples are due based on elapsed time?
-    auto elapsed = std::chrono::steady_clock::now() - dmaRxStartTime_;
-    uint64_t elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+    uint64_t elapsedNs = time_.Nanoseconds() - dmaRxStartNs_;
     uint64_t totalDue = (elapsedNs * sampleRateHz_) / 1'000'000'000ULL;
-    // FIXME: too slow, / 10
-    totalDue = totalDue / 10;
+    // FIXME: wall time runs the emulator slower than real time, so it divides
+    // the rate by TimeSource::kWallSlowdown; deterministic guest time does not.
+    totalDue = totalDue / time_.Slowdown();
     uint64_t available = (totalDue > totalRxSamplesDelivered_)
                          ? (totalDue - totalRxSamplesDelivered_) : 0;
 
@@ -155,17 +156,17 @@ u32 SPORT::DMAWrite(int x, int y, const void* source, u32 length)
 
     // Start timing on first DMA call after SPORT enable
     if (!dmaTxActive_) {
-        dmaTxStartTime_ = std::chrono::steady_clock::now();
+        dmaTxStartNs_ = time_.Nanoseconds();
         totalTxSamplesDelivered_ = 0;
         dmaTxActive_ = true;
     }
 
     // How many samples are due based on elapsed time?
-    auto elapsed = std::chrono::steady_clock::now() - dmaTxStartTime_;
-    uint64_t elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+    uint64_t elapsedNs = time_.Nanoseconds() - dmaTxStartNs_;
     uint64_t totalDue = (elapsedNs * sampleRateHz_) / 1'000'000'000ULL;
-    // FIXME: too slow, / 10
-    totalDue = totalDue / 10;
+    // FIXME: wall time runs the emulator slower than real time, so it divides
+    // the rate by TimeSource::kWallSlowdown; deterministic guest time does not.
+    totalDue = totalDue / time_.Slowdown();
     uint64_t available = (totalDue > totalTxSamplesDelivered_)
                          ? (totalDue - totalTxSamplesDelivered_) : 0;
 

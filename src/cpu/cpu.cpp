@@ -108,7 +108,7 @@ public:
     }
 };
 
-BlackFinCpu::BlackFinCpu() : pc(0) {
+BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     cpuState_ = std::make_unique<CpuState>();
     memset(cpuState_.get(), 0, sizeof(CpuState));
 
@@ -136,9 +136,9 @@ BlackFinCpu::BlackFinCpu() : pc(0) {
     usb->BindInterrupt(IRQ_USB_INT0, IRQ_USB_INT1, IRQ_USB_INT2, IRQ_USB_DMAINT, irqHandler);
     devices.emplace_back(usb);
     this->usb = usb;
-    sport0 = std::make_shared<SPORT>(0xFFC00800, 0);
+    sport0 = std::make_shared<SPORT>(0xFFC00800, 0, time_);
     devices.emplace_back(sport0);
-    sport1 = std::make_shared<SPORT>(0xFFC00900, 1);
+    sport1 = std::make_shared<SPORT>(0xFFC00900, 1, time_);
     devices.emplace_back(sport1);
     // OP-1 seems only use last byte of DSPID, which is 0x02 for BF524 rev 02
     devices.emplace_back(std::make_shared<Jtag>(0xFFE05000, 0x02));
@@ -152,7 +152,7 @@ BlackFinCpu::BlackFinCpu() : pc(0) {
     nfc->BindInterrupt(IRQ_NFC, irqHandler);
     devices.emplace_back(nfc);
 
-    std::shared_ptr<RTC> rtc = std::make_shared<RTC>(0xFFC00300);
+    std::shared_ptr<RTC> rtc = std::make_shared<RTC>(0xFFC00300, time_);
     rtc->BindInterrupt(IRQ_RTC, irqHandler);
     devices.emplace_back(rtc);
 
@@ -201,7 +201,7 @@ BlackFinCpu::BlackFinCpu() : pc(0) {
     });
     devices.push_back(sic);
     nfc->SetIVGResolver([this]() { return sic->GetIVG(IRQ_NFC); });
-    coreTimer = std::make_shared<CoreTimer>(0xFFE03000);
+    coreTimer = std::make_shared<CoreTimer>(0xFFE03000, time_);
     coreTimer->BindInterrupt(IVG_IVTMR, [this](int ivg, int level) {
         if (level) {
             QueueEvent([this, ivg]() {
@@ -298,8 +298,6 @@ BlackFinCpu::BlackFinCpu() : pc(0) {
     cpuState_->ksp = 0x7000000;
     cpuState_->usp = 0x7000000;
     cpuState_->syscfg = 0x30;
-
-    startTime = std::chrono::steady_clock::now();
 }
 
 BlackFinCpu::~BlackFinCpu() {
@@ -328,9 +326,9 @@ static void SetBfinCycles(CpuState& cpu_state, u64 cycles) {
 }
 
 HaltReason BlackFinCpu::Run() {
-    auto microSecondsElapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - startTime).count();
-    auto cyclesElapsed = microSecondsElapsed * 400; // assuming 400MHz CPU clock
-    // Sync cycles with system time
+    // Guest time at the start of this block: host time, or in deterministic
+    // mode the packets every earlier block executed (see TimeSource).
+    const uint64_t cyclesElapsed = time_.Cycles();
     SetBfinCycles(*cpuState_, cyclesElapsed);
     coreTimer->UpdateCycles(cyclesElapsed);
 
@@ -347,6 +345,7 @@ HaltReason BlackFinCpu::Run() {
         failed_.store(true, std::memory_order_release);
         return HaltReason::Break;
     }
+    time_.Retire(cpuState_->packets);
     cpuState_->did_jump = false; // Clear jump flag set by bcore, since we handle it in the emulator loop
     cec_check_pending(cpuState_.get());
 
@@ -384,8 +383,14 @@ HaltReason BlackFinCpu::Run() {
         }
     }
 
+    if (time_.Deterministic()) ServicePanel();
     ProcessEvents();
     return HaltReason::Break;
+}
+
+void BlackFinCpu::ServicePanel() {
+    if (auto low = panel_.Service(time_.Nanoseconds()))
+        portG->SetPinInput(3, *low ? GPIOPinLevel::Low : GPIOPinLevel::High);
 }
 
 void BlackFinCpu::SetRegister(int index, u32 value) {
@@ -466,6 +471,9 @@ void BlackFinCpu::ProcessEvents() {
 
 void BlackFinCpu::AttachDisplay(const std::shared_ptr<Display>& display) {
     ppi->AttachDisplay(display);
+    // Deterministic mode drives TE from guest time (ServicePanel); the
+    // frontend only presents pixels. Wall mode keeps the frontend's host poll.
+    if (time_.Deterministic()) return;
     display->SetOnFrameStartCallback([this](Display& disp) {
         this->QueueEvent([this]() {
             this->portG->SetPinInput(3, GPIOPinLevel::Low);
