@@ -111,6 +111,9 @@ static int RunEmulator(int argc, char* argv[]) {
             try { seconds = std::stoll(argv[i], &used); } catch (const std::exception&) {}
             if (used == 0 || argv[i][used] != '\0' || seconds < 0)
                 throw std::runtime_error(std::string("Invalid --rtc-epoch: ") + argv[i]);
+            if (seconds > TimeSource::kMaxEpochSeconds)
+                throw std::runtime_error(std::string("--rtc-epoch past the RTC's range (2059-09-18, ") +
+                                         std::to_string(TimeSource::kMaxEpochSeconds) + "): " + argv[i]);
             rtcEpoch = seconds;
         }
         else if (options && (arg == "--help" || arg == "-h")) help = true;
