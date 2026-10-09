@@ -69,11 +69,17 @@ prove the guest filesystem was clean. The child must be a foreground program,
 must not daemonise and must retain the inherited profile lock descriptor.
 Console stdin is disabled; use an explicit headless input script.
 
-Checkpoint and rerun refuse FAILED/stale-RUNNING profiles. Restore a previous
+Checkpoint after each successful run before rerunning. Checkpoint and rerun
+refuse FAILED/stale-RUNNING profiles. Restore a previous
 checkpoint into a new workspace instead. If the manager dies, a surviving child
 retains the lock, and its run stays incomplete even after that child exits.
 Pre-existing unknown entries refuse launch without tainting the workspace.
 Only reserved interrupted manager manifest temporary files are cleaned up.
+If launch fails before any child exists and the prior images are still verified,
+the prior STOPPED state and run provenance are preserved. Missing/moved public
+GUI assets prevent launch but never prevent saving the NAND/OTP pair. Do not
+browse the workspace in Finder during a run: generated `.DS_Store` entries are
+unknown state under this first version's closed allowlist.
 No user-profile deletion, pruning or in-place restore command is provided.
 
 Every named object is built in `.pending` and published by a final directory
@@ -83,6 +89,9 @@ so verify it rather than overwriting it. Files and directories are fsynced; on
 macOS this is not F_FULLFSYNC and no universal power-loss guarantee is claimed.
 Read-only checkpoints still belong to you and can be deliberately tampered with;
 verification checks their recorded byte identities, not authenticity.
+Checkpoint parents refer to sealed checkpoint manifest hashes. A separate
+workspace-manifest hash records the mutable source generation, and the successful
+source run's executable hash/argv survives checkpoint/restore.
 
 `--copy` on import/restore/checkpoint forces a normal copy. Automatic fallback
 is limited to unsupported/cross-filesystem clone errors. Permission, full-disk

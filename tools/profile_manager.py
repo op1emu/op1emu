@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native disk-profile checkpoints. Restores reboot; this is not a live save state."""
 import argparse
+import copy
 from contextlib import contextmanager
 import ctypes
 import errno
@@ -245,7 +246,7 @@ class Store:
     def read(self, kind, name):
         path = self.path(kind, name)
         m = load_json(path / 'PROFILE.json')
-        fields = {'schema', 'kind', 'name', 'compatibility', 'build_id', 'parent', 'files', 'copy_methods', 'created_ns', 'state', 'assets_dir', 'run', 'source_run'}
+        fields = {'schema', 'kind', 'name', 'compatibility', 'build_id', 'parent', 'workspace_manifest_sha256', 'files', 'copy_methods', 'created_ns', 'state', 'assets_dir', 'run', 'source_run'}
         if set(m) != fields:
             raise ProfileError('Incomplete or unexpected profile manifest fields')
         if (m.get('schema'), m.get('kind'), m.get('name')) != (1, kind, name):
@@ -261,6 +262,9 @@ class Store:
             raise ProfileError('Invalid parent manifest identity')
         if kind == 'workspaces' and parent is None:
             raise ProfileError('Workspace needs a checkpoint parent identity')
+        workspace_hash = m['workspace_manifest_sha256']
+        if workspace_hash is not None and (kind != 'checkpoints' or not isinstance(workspace_hash, str) or not SHA.fullmatch(workspace_hash)):
+            raise ProfileError('Invalid originating workspace manifest identity')
         if type(m['created_ns']) is not int or m['created_ns'] <= 0:
             raise ProfileError('Invalid creation time')
         methods = m['copy_methods']
@@ -287,7 +291,7 @@ class Store:
             if m['kind'] != 'workspaces' or not isinstance(assets, str) or not Path(assets).is_absolute():
                 raise ProfileError('Invalid GUI asset directory')
             link = path / 'gui'
-            if not link.is_symlink() or os.readlink(link) != assets or not Path(assets).is_dir():
+            if os.path.lexists(link) and (not link.is_symlink() or os.readlink(link) != assets):
                 raise ProfileError('GUI asset link differs from recorded directory')
             allowed.add('gui')
         unknown = {p.name for p in path.iterdir()} - allowed
@@ -315,7 +319,7 @@ class Store:
                 return self._verify(kind, name, compatibility)
         return self._verify(kind, name, compatibility)
 
-    def build(self, kind, name, sources, identities, compatibility, build_id, parent=None, force_copy=False, source_run=None):
+    def build(self, kind, name, sources, identities, compatibility, build_id, parent=None, force_copy=False, source_run=None, workspace_manifest_sha256=None):
         checked_name(name)
         if kind not in ('checkpoints', 'workspaces') or set(sources) != set(FILES) or set(identities) != set(FILES):
             raise ProfileError('Invalid construction role or data pair')
@@ -333,7 +337,7 @@ class Store:
         if any(snapshot(sources[n]) != before[n] for n in FILES):
             raise ProfileError('Source pair changed during checkpoint construction')
         m = {'schema': 1, 'kind': kind, 'name': name, 'compatibility': compatibility, 'build_id': build_id,
-             'parent': parent, 'files': identities, 'copy_methods': methods, 'created_ns': time.time_ns(),
+             'parent': parent, 'workspace_manifest_sha256': workspace_manifest_sha256, 'files': identities, 'copy_methods': methods, 'created_ns': time.time_ns(),
              'state': 'SEALED' if kind == 'checkpoints' else 'STOPPED', 'assets_dir': None, 'run': None, 'source_run': source_run}
         atomic_json(stage / 'PROFILE.json', m)
         if kind == 'checkpoints':
@@ -377,7 +381,7 @@ class Store:
             path, m = self._verify('workspaces', workspace, compatibility)
             if m['state'] != 'STOPPED':
                 raise ProfileError('Incomplete/failed workspace cannot be checkpointed; restore a fresh workspace')
-            return self.build('checkpoints', name, {n: path / n for n in FILES}, m['files'], compatibility, m['build_id'], content(path / 'PROFILE.json')['sha256'], force_copy, m['run'] or m['source_run'])
+            return self.build('checkpoints', name, {n: path / n for n in FILES}, m['files'], compatibility, m['build_id'], m['parent'], force_copy, m['run'] or m['source_run'], content(path / 'PROFILE.json')['sha256'])
 
     def run(self, workspace, argv, compatibility, assets=None):
         if not argv or not any('{nand}' in arg for arg in argv):
@@ -397,15 +401,20 @@ class Store:
                 if m.get('assets_dir') not in (None, str(resolved)):
                     raise ProfileError('Workspace GUI asset binding is already set')
                 if m.get('assets_dir') is None:
-                    (path / 'gui').symlink_to(resolved, target_is_directory=True)
                     m['assets_dir'] = str(resolved)
                     atomic_json(path / 'PROFILE.json', m)
+            if m.get('assets_dir') is not None:
+                if not Path(m['assets_dir']).is_dir():
+                    raise ProfileError('GUI assets unavailable for launch; disk checkpointing remains available')
+                if not os.path.lexists(path / 'gui'):
+                    (path / 'gui').symlink_to(m['assets_dir'], target_is_directory=True)
             command = [arg.replace('{nand}', str(path / FILES[0])).replace('{otp}', str(path / FILES[1])) for arg in argv]
             executable = shutil.which(command[0])
             if executable is None:
                 raise ProfileError('Executable not found')
             command[0] = str(Path(executable).resolve(strict=True))
             executable_hash = content(Path(command[0]))['sha256']
+            prior_manifest = copy.deepcopy(m)
             requests = []
             child = None
             forced = False
@@ -454,7 +463,19 @@ class Store:
                 if child is not None and child.poll() is None:
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait()
-                m['state'] = 'FAILED'
+                # No child ever existed: retain prior progress if its bytes and
+                # entry set are still verified. Never clear taint after a writer.
+                unchanged = False
+                if child is None:
+                    try:
+                        self.allowlist(path, prior_manifest)
+                        unchanged = all(content(path / n) == prior_manifest['files'][n] for n in FILES)
+                    except (OSError, ProfileError):
+                        pass
+                if unchanged:
+                    m = prior_manifest
+                else:
+                    m['state'] = 'FAILED'
                 try:
                     atomic_json(path / 'PROFILE.json', m)
                 except OSError:

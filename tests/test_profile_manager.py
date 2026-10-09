@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -303,6 +304,52 @@ while not Path(sys.argv[4]).exists(): time.sleep(.02)
         self.assertEqual(self.store.run('work',self.writer("from pathlib import Path; assert Path('gui/ui.json').exists()"),'owned-v1',assets),0)
         self.store.checkpoint('work','saved','owned-v1')
         self.assertEqual({p.name for p in (self.store.root/'checkpoints/saved').iterdir()},set(pm.FILES)|{'PROFILE.json'})
+
+    def test_missing_gui_assets_do_not_prevent_checkpoint(self):
+        self.workspace(); assets=self.root/'public-gui'; assets.mkdir()
+        self.assertEqual(self.store.run('work',self.writer('pass'),'owned-v1',assets),0)
+        assets.rmdir()
+        self.store.checkpoint('work','saved','owned-v1')
+        with self.assertRaisesRegex(pm.ProfileError,'unavailable for launch'):
+            self.store.run('work',self.writer('pass'),'owned-v1')
+        self.assertEqual(self.store.read('workspaces','work')[1]['state'],'STOPPED')
+
+    def test_gui_assets_removed_during_run_preserve_success(self):
+        self.workspace(); assets=self.root/'public-gui'; assets.mkdir()
+        command=self.writer("import shutil,sys; shutil.rmtree(sys.argv[3])")+[str(assets)]
+        self.assertEqual(self.store.run('work',command,'owned-v1',assets),0)
+        self.assertEqual(self.store.read('workspaces','work')[1]['state'],'STOPPED')
+        self.store.checkpoint('work','saved','owned-v1')
+
+    def test_failed_exec_preserves_prior_successful_unsaved_run(self):
+        self.workspace()
+        command=self.writer("import sys; f=open(sys.argv[2],'r+b'); f.write(b'X'); f.close()")
+        self.assertEqual(self.store.run('work',command,'owned-v1'),0)
+        before=self.store.read('workspaces','work')[1]
+        with patch.object(pm.subprocess,'Popen',side_effect=OSError(errno.ENOEXEC,'invalid executable')):
+            with self.assertRaises(OSError): self.store.run('work',self.writer('pass'),'owned-v1')
+        after=self.store.read('workspaces','work')[1]
+        self.assertEqual(after,before)
+        self.store.checkpoint('work','saved','owned-v1')
+        self.assertEqual((self.store.root/'checkpoints/saved/otp.bin').read_bytes()[0],ord('X'))
+
+    def test_checkpoint_parent_remains_resolvable_after_later_workspace_run(self):
+        self.workspace()
+        base_hash=pm.content(self.store.root/'checkpoints/base/PROFILE.json')['sha256']
+        self.assertEqual(self.store.run('work',self.writer('pass'),'owned-v1'),0)
+        workspace_hash=pm.content(self.store.root/'workspaces/work/PROFILE.json')['sha256']
+        m=self.store.checkpoint('work','saved','owned-v1')
+        self.assertEqual(m['parent'],base_hash)
+        self.assertEqual(m['workspace_manifest_sha256'],workspace_hash)
+        self.assertEqual(self.store.run('work',self.writer('pass'),'owned-v1'),0)
+        self.assertEqual(pm.content(self.store.root/'checkpoints/base/PROFILE.json')['sha256'],m['parent'])
+
+    def test_interrupted_asset_manifest_binding_preserves_checkpointability(self):
+        self.workspace(); assets=self.root/'public-gui'; assets.mkdir()
+        with patch.object(pm,'atomic_json',side_effect=OSError(errno.EIO,'binding failed')):
+            with self.assertRaises(OSError): self.store.run('work',self.writer('pass'),'owned-v1',assets)
+        self.assertFalse(os.path.lexists(self.store.root/'workspaces/work/gui'))
+        self.store.checkpoint('work','saved','owned-v1')
 
 
 if __name__ == '__main__': unittest.main()
