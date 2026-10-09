@@ -141,6 +141,8 @@ the host is.
 - The RTC starts at 2024-01-01 00:00 UTC; `--rtc-epoch SECONDS` sets another start
   (only with `--deterministic`).
 - A script's leading `accel`/`volume` commands are applied before the CPU starts.
+  The random accelerometer feed sends one sample then (and one per later script
+  change) instead of one every 16 ms, so it no longer depends on host speed.
   Key presses, `wait` and `tap` are still host-timed, so a run that presses keys
   is not repeatable.
 

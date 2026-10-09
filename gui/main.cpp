@@ -211,10 +211,17 @@ static int RunEmulator(int argc, char* argv[]) {
     cpu.AttachNandFlash(nandFlash);
 
     uint64_t sensorVersion = UINT64_MAX; // forces the first headless push
+    bool randomAccelSent = false;
     auto pushSensors = [&]() {
         const bool fixedAccel = headless && console->GetSensors().accelFixed;
         const bool sensorsChanged = headless && console->SensorVersion() != sensorVersion;
-        if (!fixedAccel) {
+        // The random feed sends a sample, and so an ADXL interrupt, on every
+        // host poll: how many, and at which guest instruction, depends on host
+        // load. --deterministic sends one when the feed starts and on each
+        // script change, so the guest sees the same samples on every run.
+        const bool randomDue = !deterministic || !randomAccelSent || sensorsChanged;
+        if (!fixedAccel && randomDue) {
+            randomAccelSent = true;
             int16_t ax = static_cast<int16_t>((std::rand() % (540 - 50 + 1)) + 50); // ax in [50, 540]
             int16_t ay = static_cast<int16_t>((std::rand() % (-50 - (-540) + 1)) + (-540)); // ay in [-540, -50]
             int16_t az = static_cast<int16_t>((std::rand() % (874 - 75 + 1)) + 75); // az in [75, 874]
@@ -233,11 +240,11 @@ static int RunEmulator(int argc, char* argv[]) {
         }
     };
     // With --deterministic, a script's leading commands (up to its first wait)
-    // take effect before the CPU starts, so fixed sensor values reach the guest
-    // at the same point of every run instead of whenever the first host poll
+    // take effect before the CPU starts, so sensor values reach the guest at
+    // the same point of every run instead of whenever the first host poll
     // happens to land.
-    if (headless && deterministic) {
-        console->PollEvents();
+    if (deterministic) {
+        if (headless) console->PollEvents();
         pushSensors();
     }
 
