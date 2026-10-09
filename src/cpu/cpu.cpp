@@ -16,6 +16,9 @@
 #include "usb.h"
 #include "sport.h"
 #include "emu.h"
+#ifdef ENABLE_PROFILING
+#include "profiling/profiler.h"
+#endif
 #include "peripheral/mcp230xx.h"
 #include "peripheral/adxl345.h"
 #include "peripheral/oled.h"
@@ -334,6 +337,10 @@ HaltReason BlackFinCpu::Run() {
     SetBfinCycles(*cpuState_, cyclesElapsed);
     coreTimer->UpdateCycles(cyclesElapsed);
 
+#ifdef ENABLE_PROFILING
+    const uint32_t blockPc = cpuState_->pc;
+    if (profiler_) profiler_->BeforeRun(blockPc);
+#endif
     // Hit entry point, invalidating core to reset cached translations
     if (cpuState_->pc == 0xFFA00000) {
         core_->invalidate();
@@ -348,6 +355,9 @@ HaltReason BlackFinCpu::Run() {
         return HaltReason::Break;
     }
     time_.Retire(cpuState_->packets);
+#ifdef ENABLE_PROFILING
+    if (profiler_) profiler_->AfterRun(blockPc, cpuState_->packets);
+#endif
     cpuState_->did_jump = false; // Clear jump flag set by bcore, since we handle it in the emulator loop
     cec_check_pending(cpuState_.get());
 
@@ -389,6 +399,19 @@ HaltReason BlackFinCpu::Run() {
     ProcessEvents();
     return HaltReason::Break;
 }
+
+#ifdef ENABLE_PROFILING
+void BlackFinCpu::SetProfiler(Profiler* profiler) {
+    profiler_ = profiler;
+    bcoreMemory_->SetProfiler(profiler);
+}
+
+BcoreStats BlackFinCpu::CoreStats() const { return core_->stats(); }
+
+void BlackFinCpu::SetCoreEventSink(BcoreEventSink* sink) { core_->setEventSink(sink); }
+
+void BlackFinCpu::SetPerfJitdump(bool enable) { core_->set_perf_jitdump(enable); }
+#endif
 
 void BlackFinCpu::ServicePanel() {
     if (auto low = panel_.Service(time_.Nanoseconds()))
@@ -456,6 +479,9 @@ void BlackFinCpu::ProcessEvents() {
     for (auto& [delay, event] : events) {
         if (delay <= std::chrono::nanoseconds(0)) {
             event();
+#ifdef ENABLE_PROFILING
+            ++eventsDelivered_;
+#endif
         }
     }
     // Remove processed events

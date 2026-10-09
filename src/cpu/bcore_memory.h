@@ -6,6 +6,8 @@
 // op1emu headers
 #include "emu.h"
 
+class Profiler;
+
 class EmulatorMemory : public Memory {
 public:
     explicit EmulatorMemory(Emulator& emulator);
@@ -26,6 +28,15 @@ public:
 
     uint32_t rawmem_limit() const override { return 0; }
 
+#ifdef ENABLE_PROFILING
+    // Counts guest accesses to the MMR space (0xFFC00000 and up). Not owned.
+    void SetProfiler(Profiler* profiler) { profiler_ = profiler; }
+#endif
+
 private:
     Emulator& emulator_;
+#ifdef ENABLE_PROFILING
+    Profiler* profiler_ = nullptr;
+    void Mmio(uint32_t addr, bool write) const;
+#endif
 };
