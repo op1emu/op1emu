@@ -298,6 +298,8 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     cpuState_->ksp = 0x7000000;
     cpuState_->usp = 0x7000000;
     cpuState_->syscfg = 0x30;
+
+    time_.StartWallClock();
 }
 
 BlackFinCpu::~BlackFinCpu() {

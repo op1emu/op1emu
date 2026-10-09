@@ -1,6 +1,7 @@
 #include "cpu/time_source.h"
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 
 static void Require(bool ok, const char* message) {
     if (!ok) {
@@ -32,6 +33,16 @@ int main() {
         time.Retire(1000000);
         Require(time.Packets() == 1000000, "wall mode still counts packets");
         Require(time.Cycles() < 1000000, "wall mode does not take time from packets");
+    }
+    {
+        TimeSource time(false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        time.StartWallClock();
+        Require(time.Cycles() < 400 * 100000, "wall time starts at StartWallClock, not construction");
+        TimeSource guest(true);
+        guest.Retire(10);
+        guest.StartWallClock();
+        Require(guest.Cycles() == 10, "StartWallClock leaves deterministic time alone");
     }
     {
         PanelOscillator panel;

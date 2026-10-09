@@ -27,12 +27,19 @@ public:
     static constexpr unsigned kWallSlowdown = 10;
     // RTC wall time at guest time zero in deterministic mode (2024-01-01 UTC).
     static constexpr int64_t kDefaultEpochSeconds = 1704067200;
+    // Latest epoch the RTC can show: its day field is 15 bits, counted here
+    // from 1970, so it ends on 2059-09-18.
+    static constexpr int64_t kMaxEpochSeconds = 32768LL * 86400 - 1;
 
     explicit TimeSource(bool deterministic)
         : deterministic_(deterministic), start_(SteadyClock::now()),
           epoch_(std::chrono::seconds(kDefaultEpochSeconds)) {}
 
     bool Deterministic() const { return deterministic_; }
+
+    // Wall mode: guest time zero is now. The CPU calls this once its devices
+    // and JIT are set up, so their construction time is not guest time.
+    void StartWallClock() { start_ = SteadyClock::now(); }
 
     // Packets the core has executed, in both models.
     void Retire(uint64_t packets) { packets_ += packets; }
