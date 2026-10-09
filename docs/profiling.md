@@ -127,3 +127,49 @@ blame a single instruction; use a precise event such as `cycles:upp` for that.
 Unprivileged perf needs `kernel.perf_event_paranoid` at most 2, which allows
 user-space events of your own processes (hence the `:u` modifiers); Ubuntu
 defaults to 4, which allows none.
+
+## Measuring with op1prof
+
+`tools/op1prof` drives profiling builds. It needs only Python 3. Run it from `tools/`:
+
+```sh
+cd tools
+B=../build-prof/op1emu; IN="--nand ../nand.bin --otp ../otp.bin --cpu 2"
+python3 -m op1prof run    --binary $B $IN                    # one boot: marks, compile/execution split
+python3 -m op1prof verify --binary $B $IN --runs 2           # the workload must repeat exactly
+python3 -m op1prof ab     --base-bin old/op1emu --new-bin $B $IN --pairs 4
+python3 -m op1prof ab     --base-bin $B $IN --aa --pairs 4   # noise floor
+```
+
+Every run uses `--deterministic`, fixed sensors, `--nand-snapshot`, its own
+directory with a copy of the OTP image, and an environment without any `OP1_*`
+variable. The binary is copied aside first (by content hash), so a rebuild in
+the middle of a batch cannot change what is measured. Runs end at
+`--until` (default `main-frame`). A run that exits nonzero, never reaches
+that mark, or goes `--progress-timeout` seconds without a new mark is a failed
+run; its process group is killed and kept in the results. Each command writes
+`results.json` with every run, its command line and the machine state before
+and after it.
+
+Before starting, op1prof refuses to run when another emulator is running (it
+would compete for CPU and memory, and a second instance cannot bind the USB/IP
+port and spins) or when MemAvailable is below `--min-mem-gb` (default 10).
+`--force` overrides; the results still record the machine state.
+
+### `ab`
+
+Pairs alternate AB and BA. Each pair is gated on the guest workload: both
+sides must fire the same marks with the same packets, cycles, MMIO accesses
+and delivered events (`runs` and `translated` may differ, since an
+optimization that forms longer blocks changes them legitimately). Each side
+must also reproduce its own workload across pairs. The verdict is reached on
+**execution CPU** (thread CPU between the phase marks minus translation CPU),
+with a 95% bootstrap interval over whole pairs and a practical threshold
+`--min-effect` (percent). Compile CPU is reported beside it. Wall-clock
+execution is reported only over clean pairs (both runs: wall at most 1.05x
+CPU and at most 1 s off-CPU).
+
+The status is `faster`, `slower` or `inconclusive`, or one of:
+`workload changed` (the sides did different guest work: no speed verdict
+unless `--allow-workload-change`), `unusable` (a configuration did not
+repeat itself), or `failed` (a run failed; the batch stopped).
