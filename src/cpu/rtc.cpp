@@ -1,16 +1,17 @@
 #include "rtc.h"
+#include "time_source.h"
 
 static constexpr int RTC_DAY_BITS_OFF  = 17;
 static constexpr int RTC_HOUR_BITS_OFF = 12;
 static constexpr int RTC_MIN_BITS_OFF  = 6;
 static constexpr int RTC_SEC_BITS_OFF  = 0;
 
-RTC::RTC(u32 baseAddr) : RegisterDevice("RTC", baseAddr, 0x18) {
+RTC::RTC(u32 baseAddr, const TimeSource& time) : RegisterDevice("RTC", baseAddr, 0x18), time_(time) {
     REG32(RTC_STAT, 0x00);
     FIELD(RTC_STAT, RTC_STAT, 0, 32, R(GetCurrentStat()), [this](u32 v) {
         writePending = true;
         statShadow = v;
-        baseTime = std::chrono::system_clock::now();
+        baseTime = time_.SystemNow();
         lastStat = statShadow;
     });
 
@@ -86,7 +87,7 @@ static std::chrono::system_clock::time_point BlackfinToTime(u32 rtcBfin) {
 }
 
 u32 RTC::GetCurrentStat() {
-    auto now = std::chrono::system_clock::now();
+    auto now = time_.SystemNow();
     return TimeToBlackfin(now - baseTime + BlackfinToTime(statShadow));
 }
 

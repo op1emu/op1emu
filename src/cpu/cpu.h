@@ -1,6 +1,7 @@
 #pragma once
 
 #include "emu.h"
+#include "time_source.h"
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -41,7 +42,8 @@ class AudioOutput;
 
 class BlackFinCpu : public CpuInterface {
 public:
-    BlackFinCpu();
+    // deterministic selects the guest-time model; see TimeSource.
+    explicit BlackFinCpu(bool deterministic = false);
     ~BlackFinCpu() override;
 
     void HaltExecution(HaltReason reason) override;
@@ -73,9 +75,18 @@ public:
     void SetAcceleration(int16_t x, int16_t y, int16_t z);
     void SetPotentiometerValue(u8 value);
 
+    const TimeSource& Time() const { return time_; }
+    // Deterministic mode only: RTC calendar time at guest time zero.
+    void SetRtcEpoch(std::chrono::system_clock::time_point epoch) { time_.SetEpoch(epoch); }
+
 protected:
     void ProcessInterrupt(int pin, int level);
+    void ServicePanel();
     void ProcessEvents();
+
+    // Declared before the devices, which keep a reference to it.
+    TimeSource time_;
+    PanelOscillator panel_;
 
     std::shared_ptr<SIC> sic;
     std::shared_ptr<CoreTimer> coreTimer;
@@ -95,7 +106,6 @@ protected:
     std::vector<std::tuple<std::chrono::nanoseconds, std::function<void()>>> eventQueue;
     std::recursive_mutex eventQueueMutex;
     std::chrono::nanoseconds elapsedTime{0};
-    std::chrono::steady_clock::time_point startTime;
     // Last cyclesElapsed value the GP timers were advanced to (see Run()).
     uint64_t lastTimerCycles_ = 0;
     Emulator emulator;

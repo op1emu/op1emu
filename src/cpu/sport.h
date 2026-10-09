@@ -6,15 +6,16 @@
 #include <queue>
 #include <optional>
 #include <functional>
-#include <chrono>
 #include <cstdint>
+
+class TimeSource;
 
 class SPORT : public RegisterDevice, public DMABus {
 public:
     using AudioOutputCallback = std::function<void(const void* data, size_t samples, int channels, int bitsPerSample)>;
     using AudioInputCallback = std::function<size_t(void* data, size_t samples, int channels, int bitsPerSample)>;
 
-    SPORT(u32 baseAddr, int sportNum);
+    SPORT(u32 baseAddr, int sportNum, const TimeSource& time);
 
     // DMABus interface
     u32 DMARead(int x, int y, void* dest, u32 length) override;
@@ -60,13 +61,15 @@ protected:
     AudioOutputCallback audioOutputCallback;
     AudioInputCallback audioInputCallback;
 
+    const TimeSource& time_;
+
     // DMA timing state — TX path
-    std::chrono::steady_clock::time_point dmaTxStartTime_;
+    uint64_t dmaTxStartNs_ = 0;
     uint64_t totalTxSamplesDelivered_ = 0;
     bool dmaTxActive_ = false;
 
     // DMA timing state — RX path
-    std::chrono::steady_clock::time_point dmaRxStartTime_;
+    uint64_t dmaRxStartNs_ = 0;
     uint64_t totalRxSamplesDelivered_ = 0;
     bool dmaRxActive_ = false;
 
