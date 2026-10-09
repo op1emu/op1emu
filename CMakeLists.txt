@@ -90,6 +90,16 @@ message(STATUS "miniaudio fetched successfully")
 
 find_package(Threads REQUIRED)
 
+# Measurement build (docs/profiling.md). OFF compiles every profiling hook out
+# of the emulator and of bcore, so a normal build carries none of it.
+option(ENABLE_PROFILING "Build the profiling hooks: phase marks, trace, census, perf/jitdump" OFF)
+set(BCORE_ENABLE_PROFILE ${ENABLE_PROFILING} CACHE BOOL "bcore observability API (follows ENABLE_PROFILING)" FORCE)
+set(BCORE_PERF_JIT_EVENTS ${ENABLE_PROFILING} CACHE BOOL "bcore jitdump support (follows ENABLE_PROFILING)" FORCE)
+if(ENABLE_PROFILING)
+    # perf call graphs through host code need frame pointers.
+    add_compile_options(-fno-omit-frame-pointer)
+endif()
+
 add_subdirectory(ext/bcore EXCLUDE_FROM_ALL)
 
 file(GLOB SOURCES ext/cqueue/*.cpp)
@@ -100,10 +110,17 @@ target_include_directories(ext PUBLIC ext)
 target_link_libraries(ext PRIVATE cqueue)
 
 file(GLOB_RECURSE SOURCES src/*.cpp)
+if(NOT ENABLE_PROFILING)
+    list(FILTER SOURCES EXCLUDE REGEX "/src/profiling/")
+endif()
 add_library(emulator ${SOURCES})
 target_include_directories(emulator PUBLIC src)
 target_include_directories(emulator PRIVATE ext)
 target_link_libraries(emulator PRIVATE bfin-core spdlog::spdlog)
+if(ENABLE_PROFILING)
+    target_compile_definitions(emulator PUBLIC ENABLE_PROFILING)
+    target_link_libraries(emulator PRIVATE nlohmann_json::nlohmann_json)
+endif()
 
 add_executable(ldrdump tools/ldrdump.cpp)
 target_link_libraries(ldrdump emulator)

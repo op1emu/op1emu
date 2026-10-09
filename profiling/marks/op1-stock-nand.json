@@ -1,0 +1,14 @@
+{
+  "comment": "Boot phase marks for the stock NAND image. Ranges are guest PC ranges that fire on entry, in order; 'after' arms a mark only once another has fired. main-display is a firmware address, not proof the UI is drawn; main-frame is: the first complete panel frame after main-display whose RGB565 bytes match the reference.",
+  "nand_sha256": "0527b38ab6d5a8a49300b18c57cddba343e7a50c7df04bb70ecdb452aa3fec20",
+  "marks": [
+    {"name": "bootrom",      "lo": "0xffa00000", "hi": "0xffa00020"},
+    {"name": "te-boot",      "lo": "0xffa00000", "hi": "0xffa00020", "after": "bootrom"},
+    {"name": "lap-begin",    "lo": "0x01a059d0", "hi": "0x01a059f0"},
+    {"name": "main-boot",    "lo": "0x019ab880", "hi": "0x019ab8d4"},
+    {"name": "lap-end",      "lo": "0x01967b28", "hi": "0x01967b48"},
+    {"name": "register_cb",  "lo": "0x01a2fac4", "hi": "0x01a2fae4"},
+    {"name": "main-display", "lo": "0x019ab8b6", "hi": "0x019ab8d6", "after": "register_cb"}
+  ],
+  "frame": {"name": "main-frame", "after": "main-display", "rgb565_sha256": "a9aa6ed5b83e5f95d34e8bf8eecf474b0ef4405353da1eff9102b0b0c5925dff"}
+}

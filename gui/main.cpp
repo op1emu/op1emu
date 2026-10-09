@@ -6,6 +6,10 @@
 #include "headless.h"
 #include "audio_output_miniaudio.h"
 #include "usbipd.h"
+#ifdef ENABLE_PROFILING
+#include "profiling/profiler.h"
+#endif
+#include <algorithm>
 #include <vector>
 #include <iostream>
 #include <memory>
@@ -97,6 +101,15 @@ static int RunEmulator(int argc, char* argv[]) {
     bool help = false;
     bool options = true;
     std::string inputScript;
+    // Profiling options (profiling builds only; see docs/profiling.md).
+    std::string profileMarks, profileTrace, profileCensus, perfFifo, perfWindow, profileUntil;
+    bool perfJitdump = false;
+    const std::pair<const char*, std::string*> valueOptions[] = {
+        {"--profile-marks", &profileMarks}, {"--profile-trace", &profileTrace},
+        {"--profile-census", &profileCensus}, {"--perf-ctl-fifo", &perfFifo},
+        {"--perf-window", &perfWindow}, {"--profile-until", &profileUntil},
+    };
+    bool anyProfiling = false;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (options && arg == "--") options = false;
@@ -116,6 +129,14 @@ static int RunEmulator(int argc, char* argv[]) {
                                          std::to_string(TimeSource::kMaxEpochSeconds) + "): " + argv[i]);
             rtcEpoch = seconds;
         }
+        else if (options && arg == "--perf-jitdump") perfJitdump = anyProfiling = true;
+        else if (options && std::any_of(std::begin(valueOptions), std::end(valueOptions),
+                                        [&](const auto& option) { return arg == option.first; })) {
+            if (++i == argc || !*argv[i]) throw std::runtime_error(arg + " requires a nonempty value");
+            for (const auto& [name, value] : valueOptions)
+                if (arg == name) *value = argv[i];
+            anyProfiling = true;
+        }
         else if (options && (arg == "--help" || arg == "-h")) help = true;
         else if (options && arg == "--input-script") {
             if (++i == argc) throw std::runtime_error("--input-script requires a path");
@@ -134,6 +155,14 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --deterministic       Guest time from executed instructions, not host time:\n"
                      "                        repeatable runs, as fast as the host allows\n"
                      "  --rtc-epoch SECONDS   RTC time at boot with --deterministic (default 2024-01-01)\n"
+                     "Profiling builds (-DENABLE_PROFILING=ON, see docs/profiling.md):\n"
+                     "  --profile-marks FILE  Phase marks (firmware PC ranges, verified frame)\n"
+                     "  --profile-trace FILE  Chrome/Perfetto trace of translations and marks\n"
+                     "  --profile-census PFX  Per-PC and MMIO census at every mark (diagnostic)\n"
+                     "  --profile-until MARK  Stop cleanly when MARK fires\n"
+                     "  --perf-ctl-fifo FIFO  perf record --control=fifo:FIFO\n"
+                     "  --perf-window A:B     Enable perf at mark A, disable at mark B\n"
+                     "  --perf-jitdump        Write LLVM jitdump for perf inject --jit\n"
                      "Headless commands (one per line):\n"
                      "  keys | press KEY | release KEY | tap KEY [MS] | wait MS | quit\n"
                      "  accel X Y Z | accel random | volume 0..255\n"
@@ -147,6 +176,10 @@ static int RunEmulator(int argc, char* argv[]) {
         throw std::runtime_error("--input-script requires --headless");
     if (rtcEpoch && !deterministic)
         throw std::runtime_error("--rtc-epoch requires --deterministic");
+#ifndef ENABLE_PROFILING
+    if (anyProfiling)
+        throw std::runtime_error("Profiling options need a build with -DENABLE_PROFILING=ON");
+#endif
 
     std::shared_ptr<GLFWDisplay> window;
     std::shared_ptr<HeadlessFrontend> console;
@@ -177,6 +210,24 @@ static int RunEmulator(int argc, char* argv[]) {
     // Create BlackFin CPU
     BlackFinCpu cpu(deterministic);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
+#ifdef ENABLE_PROFILING
+    std::unique_ptr<Profiler> profiler;
+    if (anyProfiling) {
+        ProfilerOptions profile;
+        profile.nandPath = positional[0];
+        profile.marksPath = profileMarks;
+        profile.tracePath = profileTrace;
+        profile.censusPrefix = profileCensus;
+        profile.perfFifo = perfFifo;
+        profile.perfWindow = perfWindow;
+        profile.until = profileUntil;
+        profile.jitdump = perfJitdump;
+        profiler = std::make_unique<Profiler>(profile, cpu, [] { cpuShouldStop.store(true); });
+        cpu.SetProfiler(profiler.get());
+        // The verified-frame mark sees exactly the pixels the frontend gets.
+        if (profiler->WantsFrames()) display = std::make_shared<FrameTap>(display, *profiler);
+    }
+#endif
     cpu.AttachDisplay(display);
     cpu.AttachKeyboard(keyboard);
     // SPORT still drains DMA and advances its sample accounting without a
@@ -282,6 +333,12 @@ static int RunEmulator(int argc, char* argv[]) {
         LogError("Emulation stopped: CPU execution failed");
         result = 1;
     }
+#ifdef ENABLE_PROFILING
+    if (profiler && !profiler->Finish()) {
+        LogError("Profiling output is incomplete");
+        result = 1;
+    }
+#endif
 
     return result;
 }

@@ -39,6 +39,9 @@ class Potentiometer;
 class GPIOPeripheral;
 class SPORT;
 class AudioOutput;
+class Profiler;
+struct BcoreStats;
+class BcoreEventSink;
 
 class BlackFinCpu : public CpuInterface {
 public:
@@ -76,6 +79,14 @@ public:
     void SetPotentiometerValue(u8 value);
 
     const TimeSource& Time() const { return time_; }
+#ifdef ENABLE_PROFILING
+    // Profiling hooks (see profiling/profiler.h). Not owned.
+    void SetProfiler(Profiler* profiler);
+    BcoreStats CoreStats() const;
+    void SetCoreEventSink(BcoreEventSink* sink);
+    void SetPerfJitdump(bool enable);
+    uint64_t EventsDelivered() const { return eventsDelivered_; }
+#endif
     // Deterministic mode only: RTC calendar time at guest time zero.
     void SetRtcEpoch(std::chrono::system_clock::time_point epoch) { time_.SetEpoch(epoch); }
 
@@ -106,6 +117,10 @@ protected:
     std::vector<std::tuple<std::chrono::nanoseconds, std::function<void()>>> eventQueue;
     std::recursive_mutex eventQueueMutex;
     std::chrono::nanoseconds elapsedTime{0};
+#ifdef ENABLE_PROFILING
+    Profiler* profiler_ = nullptr;
+    uint64_t eventsDelivered_ = 0;
+#endif
     // Last cyclesElapsed value the GP timers were advanced to (see Run()).
     uint64_t lastTimerCycles_ = 0;
     Emulator emulator;
