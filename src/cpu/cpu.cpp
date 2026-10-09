@@ -281,7 +281,13 @@ BlackFinCpu::BlackFinCpu() : pc(0) {
     // Initialize bcore after all devices are bound
     bcoreMemory_ = std::make_unique<EmulatorMemory>(emulator);
     core_ = std::make_shared<Core>(cpuState_.get(), bcoreMemory_.get());
-    core_->init(2);
+    // IR pipeline at O1, backend at CodeGenOpt::Default. Until bcore wired
+    // optimize_module into compilation, the IR level only ever affected the
+    // IR-dump output, so init(2) compiled with the backend alone. Measured on
+    // a boot to the main display with the backend at CodeGenOpt::Less (this
+    // exact pairing with Default was not timed): O1 -6% execution for +43%
+    // compile; O2 no faster than O1 and +69% compile.
+    core_->init(/*opt_level=*/1, /*codegen_level=*/2);
 
     // Initialize bcore CEC and EVT
     cec_init();
