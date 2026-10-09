@@ -130,7 +130,8 @@ defaults to 4, which allows none.
 
 ## Measuring with op1prof
 
-`tools/op1prof` drives profiling builds. It needs only Python 3. Run it from `tools/`:
+`tools/op1prof` drives profiling builds. It needs only Python 3 and, for
+`perf`, Linux perf. Run it from `tools/`:
 
 ```sh
 cd tools
@@ -139,6 +140,10 @@ python3 -m op1prof run    --binary $B $IN                    # one boot: marks, 
 python3 -m op1prof verify --binary $B $IN --runs 2           # the workload must repeat exactly
 python3 -m op1prof ab     --base-bin old/op1emu --new-bin $B $IN --pairs 4
 python3 -m op1prof ab     --base-bin $B $IN --aa --pairs 4   # noise floor
+python3 -m op1prof run    --binary $B $IN --census
+python3 -m op1prof census op1prof-run-*/run --phase main-boot:lap-end
+python3 -m op1prof perf   --binary $B $IN --window main-boot:main-display
+python3 -m op1prof report op1prof-perf-*/capture
 ```
 
 Every run uses `--deterministic`, fixed sensors, `--nand-snapshot`, its own
@@ -176,3 +181,20 @@ The status is `faster`, `slower` or `inconclusive`, or one of:
 `workload changed` (the sides did different guest work: no speed verdict
 unless `--allow-workload-change`), `unusable` (a configuration did not
 repeat itself), or `failed` (a run failed; the batch stopped).
+
+### `census`, `perf` and `report`
+
+`census` differences the census dumps of a `run --census` between two marks:
+blocks by packets executed (with runs and packets per run), and MMRs by
+accesses. `--symbols` names PCs from `ADDRESS NAME` lines, e.g. exported from
+Ghidra. Counts are work, not cost.
+
+`perf` runs one boot under `perf record -k mono -g`, sampling only between
+the two `--window` marks (an inverted window is rejected rather than
+recorded empty), then `perf inject --jit`. It checks first that perf may
+record the event; it never changes `kernel.perf_event_paranoid` but says what
+to set (2 is enough). `report` (also printed after `perf`) keeps the CPU thread's samples
+inside the window, drops those inside `translate` spans, and attributes the
+rest by guest block (`bb_0x<pc>`) and by host symbol, beside the trace's
+execution and compile CPU. For a non-precise event it says that the totals
+are only valid per block and symbol.

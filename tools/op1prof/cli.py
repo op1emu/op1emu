@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import ab, machine, trace, verify
+from . import ab, census, machine, perf, trace, verify
 from .runner import REPO, RunSpec, reserved_args, run, sha256_file, snapshot_binary
 
 DEFAULT_MARKS = REPO / "profiling" / "marks" / "op1-stock-nand.json"
@@ -150,6 +150,39 @@ def cmd_ab(args) -> int:
     return 0 if report["status"] in ("faster", "slower", "inconclusive") else 1
 
 
+def cmd_perf(args) -> int:
+    _check_args(args.arg)  # perf's own options are appended last, so they win
+    begin, _, end = args.window.partition(":")
+    problem = perf.check_window(args.marks, (begin, end)) if end else "--window must be BEGIN:END"
+    problem = problem or perf.preflight(args.event, ["-c", str(args.period)] if args.period else ["-F", str(args.freq)])
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
+    if not _preflight(args):
+        return 2
+    out = _out(args, "perf")
+    result = perf.record(_spec(args, snapshot_binary(args.binary, out)), out / "capture", (begin, end),
+                         args.event, args.period, args.freq)
+    if not result.reached:
+        print(f"capture failed: {result.error} (log: {result.directory / 'log.txt'})", file=sys.stderr)
+        return 1
+    print(perf.report(out / "capture", args.top))
+    return 0
+
+
+def cmd_report(args) -> int:
+    print(perf.report(args.capture, args.top))
+    return 0
+
+
+def cmd_census(args) -> int:
+    begin, _, end = args.phase.partition(":")
+    if not end:
+        raise SystemExit("--phase must be BEGIN:END")
+    print(census.report(args.run / "census", begin, end, args.top, census.Symbols(args.symbols)))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="op1prof", description="Measure op1emu profiling builds.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -180,6 +213,28 @@ def main(argv=None) -> int:
                    help="report a verdict even though the sides did different guest work")
     _common(p)
     p.set_defaults(func=cmd_ab)
+
+    p = sub.add_parser("perf", help="perf capture between two marks, reported by guest block")
+    p.add_argument("--binary", required=True, type=Path)
+    p.add_argument("--window", required=True, help="BEGIN:END marks enabling perf")
+    p.add_argument("--event", default="cpu-clock:u", help="perf event (cycles:upp for instruction-level work; needs a hardware PMU)")
+    p.add_argument("--period", type=int, help="fixed event count per sample (prefer for precise events)")
+    p.add_argument("--freq", type=int, default=999, help="samples per second when no --period")
+    p.add_argument("--top", type=int, default=25)
+    _common(p)
+    p.set_defaults(func=cmd_perf)
+
+    p = sub.add_parser("report", help="re-report an earlier perf capture directory")
+    p.add_argument("capture", type=Path, help="the capture/ directory of an op1prof perf run")
+    p.add_argument("--top", type=int, default=25)
+    p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("census", help="per-PC and MMIO counts between two marks of a --census run")
+    p.add_argument("run", type=Path, help="run directory holding census.* files")
+    p.add_argument("--phase", required=True, help="BEGIN:END")
+    p.add_argument("--top", type=int, default=25)
+    p.add_argument("--symbols", type=Path, help="ADDRESS NAME lines to name PCs")
+    p.set_defaults(func=cmd_census)
 
     args = parser.parse_args(argv)
     return args.func(args)
