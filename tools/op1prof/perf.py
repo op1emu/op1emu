@@ -61,9 +61,11 @@ def preflight(event: str, rate: List[str]) -> Optional[str]:
         message += (f"\nkernel.perf_event_paranoid is {paranoid}: no unprivileged profiling at all. This tool "
                     "never changes it; for user-space events: sudo sysctl kernel.perf_event_paranoid=2 "
                     f"(restore {paranoid} afterwards)")
-    elif paranoid == 2 and ":" in event and "u" not in event.split(":", 1)[1]:
-        message += ("\nkernel.perf_event_paranoid is 2, which allows user-space events only: "
-                    f"add the u modifier (e.g. {event.split(':')[0]}:u{event.split(':', 1)[1]})")
+    elif paranoid == 2 and "/" not in event:
+        name, _, modifiers = event.partition(":")
+        if "u" not in modifiers:  # no modifier at all also counts the kernel
+            message += ("\nkernel.perf_event_paranoid is 2, which allows user-space events only: "
+                        f"add the u modifier (e.g. {name}:u{modifiers})")
     return message
 
 

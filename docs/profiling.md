@@ -114,12 +114,16 @@ timing measurement. The counts themselves do not depend on it.
 
 ```sh
 mkfifo /tmp/perf.ctl
-perf record -k mono -g --delay=-1 --control=fifo:/tmp/perf.ctl -o boot.perf -- \
+JITDUMPDIR=. perf record -k mono -g --delay=-1 --control=fifo:/tmp/perf.ctl -o boot.perf -- \
   ./build-prof/op1emu nand.bin --nand-snapshot --headless --deterministic \
   --profile-marks profiling/marks/op1-stock-nand.json --profile-until main-frame \
   --perf-ctl-fifo /tmp/perf.ctl --perf-window main-boot:main-display --perf-jitdump
-JITDUMPDIR=. perf inject --jit -i boot.perf -o boot.jit.perf
+perf inject --jit -i boot.perf -o boot.jit.perf
 ```
+
+`JITDUMPDIR` tells the emulator where to write the dump (default `$HOME`);
+`perf inject` needs no setting, as it opens the dump through the path perf
+recorded when the emulator mapped it.
 
 Generated code then appears as `bb_0x<pc>` symbols, one per guest block.
 `cpu-clock` samples are fine for symbol and address-range totals but cannot
