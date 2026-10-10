@@ -35,6 +35,11 @@ class Phase:
         """Wall time the CPU thread was not running."""
         return self.wall_ms - self.cpu_ms
 
+    def to_json(self) -> dict:
+        return {"wall_ms": self.wall_ms, "cpu_ms": self.cpu_ms, "offcpu_ms": self.offcpu_ms,
+                "compile_wall_ms": self.compile_wall_ms, "compile_cpu_ms": self.compile_cpu_ms,
+                "noncompile_cpu_ms": self.noncompile_cpu_ms, "noncompile_wall_ms": self.noncompile_wall_ms}
+
 
 def load(path: str) -> dict:
     with open(path) as file:

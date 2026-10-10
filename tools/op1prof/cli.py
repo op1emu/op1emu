@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -31,7 +32,14 @@ def _common(parser: argparse.ArgumentParser) -> None:
 def _out(args, kind: str) -> Path:
     out = args.out or Path(f"op1prof-{kind}-{time.strftime('%Y%m%d-%H%M%S')}")
     out.mkdir(parents=True, exist_ok=False)
-    return out
+    return out.resolve()
+
+
+def _positive(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
+    return value
 
 
 def _preflight(args) -> bool:
@@ -69,6 +77,12 @@ def cmd_run(args) -> int:
     spec = _spec(args, snapshot_binary(args.binary, out))
     spec.census = args.census
     result = run(spec, out / "run")
+    report = {"schema": "op1prof.run.v1", "run": result.to_json(),
+              "status": "reached" if result.reached else f"failed: {result.error}"}
+    if result.reached:
+        report["phase"] = {"begin": _phase(args)[0], "end": _phase(args)[1],
+                           **trace.phase(trace.load(str(result.trace_path)), *_phase(args)).to_json()}
+    (out / "results.json").write_text(json.dumps(report, indent=1))
     for mark in result.marks:
         c = mark.counters
         print(f"{mark.name:14s} wall={mark.wall_ms / 1e3:9.3f}s cpu={mark.cpu_ms / 1e3:9.3f}s "
@@ -76,10 +90,10 @@ def cmd_run(args) -> int:
     if not result.reached:
         print(f"run failed: {result.error} (log: {result.directory / 'log.txt'})", file=sys.stderr)
         return 1
-    p = trace.phase(trace.load(str(result.trace_path)), *_phase(args))
-    print(f"{_phase(args)[0]} -> {_phase(args)[1]}: cpu {p.cpu_ms / 1e3:.3f} s = compile {p.compile_cpu_ms / 1e3:.3f} s"
-          f" + execution {p.noncompile_cpu_ms / 1e3:.3f} s; wall {p.wall_ms / 1e3:.3f} s"
-          f" (off-CPU {p.offcpu_ms / 1e3:.3f} s)")
+    p = report["phase"]
+    print(f"{p['begin']} -> {p['end']}: cpu {p['cpu_ms'] / 1e3:.3f} s = compile {p['compile_cpu_ms'] / 1e3:.3f} s"
+          f" + execution {p['noncompile_cpu_ms'] / 1e3:.3f} s; wall {p['wall_ms'] / 1e3:.3f} s"
+          f" (off-CPU {p['offcpu_ms'] / 1e3:.3f} s) ({out / 'results.json'})")
     return 0
 
 
@@ -138,7 +152,7 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("verify", help="repeat one configuration; its workload must be identical")
     p.add_argument("--binary", required=True, type=Path)
-    p.add_argument("--runs", type=int, default=2)
+    p.add_argument("--runs", type=_positive, default=2)
     p.add_argument("--expect", type=Path, help="compare with a saved workload (from --write-expect)")
     p.add_argument("--write-expect", type=Path, help="save the workload when all runs agree")
     _common(p)

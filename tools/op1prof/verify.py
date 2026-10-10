@@ -31,6 +31,8 @@ def _diff(expected: List[dict], actual: List[dict]) -> List[str]:
 
 
 def verify(spec: RunSpec, runs: int, out: Path, expect: Optional[Path], write_expect: Optional[Path]) -> dict:
+    if runs < 1:
+        raise ValueError("verify needs at least one run")
     report = {"schema": "op1prof.verify.v1", "runs": [], "differences": [], "status": "running"}
     path = out / "results.json"
     tuples = []
