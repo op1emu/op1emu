@@ -37,17 +37,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm-15 llvm-15-dev cmake ninja-build \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
-            libgl1-mesa-dev
+            libgl1-mesa-dev ccache
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ matrix.profiling }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.profiling }}-
 
       - name: Configure
+        env:
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_MAXSIZE: 500M
         run: |
+          ccache --zero-stats
           cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DLLVM_DIR=/usr/lib/llvm-15/lib/cmake/llvm \
             -DOP1_BUILD_HEADLESS_TESTS=ON \
             -DENABLE_PROFILING=${{ matrix.profiling }}
 
       - name: Build
-        run: cmake --build build --target op1emu ldrdump op1-headless-test op1-time-source-test
+        env:
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_MAXSIZE: 500M
+        run: |
+          cmake --build build --target op1emu ldrdump op1-headless-test op1-time-source-test
+          ccache --show-stats
 
       - name: Test (synthetic inputs only, no NAND or firmware)
         # The -R filter keeps out bcore's comparison_test, which is registered
