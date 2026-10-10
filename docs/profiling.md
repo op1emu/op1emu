@@ -143,11 +143,14 @@ python3 -m op1prof ab     --base-bin $B $IN --aa --pairs 4   # noise floor
 
 Every run uses `--deterministic`, fixed sensors, `--nand-snapshot`, its own
 directory with a copy of the OTP image, and an environment without any `OP1_*`
-variable. The binary is copied aside first (by content hash), so a rebuild in
+variable. Extra emulator arguments (`--arg`, `--base-arg`, `--new-arg`) can
+vary anything else but are refused if they repeat one of these options or the
+marks, trace and `--profile-until` settings, since the emulator keeps the last
+value. The binary is copied aside first (by content hash), so a rebuild in
 the middle of a batch cannot change what is measured. Runs end at
 `--until` (default `main-frame`). A run that exits nonzero, never reaches
-that mark, or goes `--progress-timeout` seconds without a new mark is a failed
-run; its process group is killed and kept in the results. Each command writes
+that mark, goes `--progress-timeout` seconds without a new mark, or closes its
+output without exiting is a failed run; its process group is killed and kept in the results. Each command writes
 `results.json` with every run, its command line and the machine state before
 and after it.
 

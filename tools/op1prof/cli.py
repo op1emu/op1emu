@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from . import ab, machine, trace, verify
-from .runner import REPO, RunSpec, run, sha256_file, snapshot_binary
+from .runner import REPO, RunSpec, reserved_args, run, sha256_file, snapshot_binary
 
 DEFAULT_MARKS = REPO / "profiling" / "marks" / "op1-stock-nand.json"
 
@@ -52,10 +52,17 @@ def _preflight(args) -> bool:
     return True
 
 
+def _check_args(extra) -> None:
+    reserved = reserved_args(list(extra))
+    if reserved:
+        raise SystemExit(f"extra emulator arguments may not set what every run fixes: {reserved}")
+
+
 def _spec(args, binary: Path) -> RunSpec:
     for path in (args.nand, args.otp, args.marks):
         if not path.is_file():
             raise SystemExit(f"not a file: {path}")
+    _check_args(args.arg)
     return RunSpec(binary=binary, nand=args.nand.resolve(), otp=args.otp.resolve(),
                    marks=args.marks.resolve(), until=args.until, args=list(args.arg),
                    timeout_s=args.timeout, progress_timeout_s=args.progress_timeout, cpu=args.cpu)
@@ -71,6 +78,7 @@ def _phase(args) -> tuple:
 
 
 def cmd_run(args) -> int:
+    _check_args(args.arg)
     if not _preflight(args):
         return 2
     out = _out(args, "run")
@@ -98,6 +106,7 @@ def cmd_run(args) -> int:
 
 
 def cmd_verify(args) -> int:
+    _check_args(args.arg)
     if not _preflight(args):
         return 2
     out = _out(args, "verify")
@@ -110,6 +119,7 @@ def cmd_verify(args) -> int:
 
 
 def cmd_ab(args) -> int:
+    _check_args(args.arg + args.base_arg + args.new_arg)
     if not _preflight(args):
         return 2
     out = _out(args, "ab")
