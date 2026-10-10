@@ -25,6 +25,9 @@ def is_precise(event: str) -> bool:
 
 
 def mark_order(marks_file: Path) -> List[str]:
+    """Marks in the order a marks file lists them, the frame mark last. The
+    profiler does not impose it (any armed range can fire first), so it is a
+    contract on the file that check_fired() verifies after each capture."""
     config = json.loads(marks_file.read_text())
     order = ["start"] + [m["name"] for m in config["marks"]]
     if "frame" in config:
@@ -44,6 +47,19 @@ def check_window(marks_file: Path, window: Tuple[str, str], until: str) -> Optio
     # Stopping first would leave the window open and the end mark missing.
     if order.index(until) < order.index(end):
         return f"--until {until} comes before the window end {end}"
+    return None
+
+
+def check_fired(marks_file: Path, window: Tuple[str, str], fired: List[str]) -> Optional[str]:
+    """After a capture: the marks fired in file order, which check_window()
+    assumed, and both window marks fired, so the window opened and closed."""
+    order = mark_order(marks_file)
+    seen = [name for name in fired if name in order]
+    if seen != sorted(seen, key=order.index):
+        return f"marks fired out of file order ({seen}); list them in the order they fire"
+    missing = [name for name in window if name not in fired]
+    if missing:
+        return f"window marks did not fire: {missing} (fired: {fired})"
     return None
 
 

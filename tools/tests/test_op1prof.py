@@ -280,6 +280,17 @@ def test_window_must_be_in_mark_order(tmp_path):
     assert "before the window end" in perf.check_window(marks, ("a", "f"), "b")
 
 
+def test_fired_marks_must_follow_file_order(tmp_path):
+    # check_window() trusts file order; a capture shows whether the guest kept it.
+    marks = tmp_path / "marks.json"
+    marks.write_text(json.dumps({"marks": [{"name": "a"}, {"name": "b"}, {"name": "c"}], "frame": {"name": "f"}}))
+    assert perf.check_fired(marks, ("a", "c"), ["start", "a", "b", "c", "f"]) is None
+    assert perf.check_fired(marks, ("a", "c"), ["start", "a", "c"]) is None  # b need not fire
+    assert "out of file order" in perf.check_fired(marks, ("a", "c"), ["start", "c", "a"])
+    assert "out of file order" in perf.check_fired(marks, ("a", "b"), ["start", "a", "f", "b"])
+    assert "did not fire: ['c']" in perf.check_fired(marks, ("a", "c"), ["start", "a", "b"])
+
+
 def test_perf_fails_when_the_window_never_closed(files, monkeypatch, capsys):
     # The fake never fires lap-end: the run reaches --until, but the window
     # it was meant to sample did not close, so there is nothing to report.
@@ -292,7 +303,7 @@ def test_perf_fails_when_the_window_never_closed(files, monkeypatch, capsys):
     assert cli.main(["perf", "--binary", str(FAKE), "--nand", str(files / "nand.bin"), "--otp", str(files / "otp.bin"),
                      "--marks", str(marks), "--window", "bootrom:lap-end", "--force",
                      "--out", str(files / "p"), "--timeout", "30", "--progress-timeout", "5"]) == 1
-    assert "did not both fire" in capsys.readouterr().err
+    assert "window marks did not fire: ['lap-end']" in capsys.readouterr().err
 
 
 def test_samples_are_attributed_outside_compilation():
@@ -335,7 +346,8 @@ def test_census_phase_differences_and_report(tmp_path):
     symbols = tmp_path / "syms.txt"
     symbols.write_text("0x00000100 fir_loop\n0x00000300 main\n")
     text = census.report(prefix, "a", "b", 10, census.Symbols(symbols))
-    assert "0x00000300" in text.splitlines()[5] and "main" in text  # most packets first
+    rows = [line for line in text.splitlines() if line.startswith("0x")]
+    assert rows[0].startswith("0x00000300") and rows[0].endswith("main")  # most packets first
     assert "fir_loop" in text and "0xffe02108" in text
     with pytest.raises(ValueError):
         census.phase(prefix, "pc", "b", "a")
