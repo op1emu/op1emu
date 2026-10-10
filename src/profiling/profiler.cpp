@@ -150,14 +150,18 @@ struct Profiler::Impl : BcoreEventSink {
             throw std::runtime_error("Invalid marks file " + options.marksPath + ": " + e.what());
         }
         // Marks are firmware addresses: on another image they silently mean
-        // nothing, so the file names the NAND image it was written for.
-        if (json.contains("nand_sha256")) {
-            const auto expected = json.at("nand_sha256").get<std::string>();
-            const auto actual = Sha256::OfFile(options.nandPath);
-            if (actual != expected)
-                throw std::runtime_error("Marks file " + options.marksPath + " is for NAND sha256 " + expected +
-                                         ", but " + options.nandPath + " is " + (actual.empty() ? "unreadable" : actual));
-        }
+        // nothing, so every file must name the NAND image it was written for.
+        if (!json.contains("nand_sha256"))
+            throw std::runtime_error("Marks file " + options.marksPath +
+                                     " has no nand_sha256: name the NAND image its addresses are for");
+        const auto expected = json.at("nand_sha256").get<std::string>();
+        if (expected.size() != 64 || expected.find_first_not_of("0123456789abcdef") != std::string::npos)
+            throw std::runtime_error("Marks file " + options.marksPath +
+                                     ": nand_sha256 must be 64 lowercase hex digits, got " + expected);
+        const auto actual = Sha256::OfFile(options.nandPath);
+        if (actual != expected)
+            throw std::runtime_error("Marks file " + options.marksPath + " is for NAND sha256 " + expected +
+                                     ", but " + options.nandPath + " is " + (actual.empty() ? "unreadable" : actual));
         for (const auto& entry : json.at("marks")) {
             Mark mark;
             mark.name = entry.at("name").get<std::string>();

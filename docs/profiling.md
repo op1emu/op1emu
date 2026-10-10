@@ -52,9 +52,10 @@ afresh). At most one mark fires per block, in file order.
 
 `main-display` is a firmware address, not proof that anything was drawn; an
 earlier, complete but different frame (a stale boot logo transfer) is rejected
-by `main-frame`. The file carries the NAND image's SHA-256 and the emulator
-refuses to use it with any other image: on other firmware the same addresses
-mean nothing, and the marks would simply never fire.
+by `main-frame`. Every marks file must carry the SHA-256 of its NAND image
+(`nand_sha256`, lowercase hex), and the emulator refuses a file without one or
+with any other image: on other firmware the same addresses mean nothing, and
+the marks would simply never fire.
 
 Each mark prints cumulative counters since the `start` mark (the CPU thread's
 first block), so any two marks can be differenced:
