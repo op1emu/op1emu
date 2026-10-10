@@ -343,3 +343,11 @@ def test_perf_preflight_explains_paranoid(monkeypatch):
     with_paranoid(2)
     assert "cycles:upp" in perf.preflight("cycles:pp", ["-c", "400000"])
     assert "u modifier" not in perf.preflight("cpu-clock:u", ["-F", "999"])
+    assert "cycles:u" in perf.preflight("cycles", ["-c", "400000"])  # no modifier: kernel too
+
+
+@pytest.mark.parametrize("rate", [["--period", "0"], ["--freq", "0"], ["--period", "-5"]])
+def test_perf_rate_must_be_positive(files, rate):
+    with pytest.raises(SystemExit):
+        cli.main(["perf", "--binary", str(FAKE), "--nand", str(files / "nand.bin"), "--otp", str(files / "otp.bin"),
+                  "--window", "main-boot:main-display", *rate])
