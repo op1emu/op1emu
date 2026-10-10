@@ -163,9 +163,8 @@ def cmd_perf(args) -> int:
     out = _out(args, "perf")
     result = perf.record(_spec(args, snapshot_binary(args.binary, out)), out / "capture", (begin, end),
                          args.event, args.period, args.freq)
-    fired = [m.name for m in result.marks]
-    error = result.error if not result.reached else (
-        None if begin in fired and end in fired else f"window marks did not both fire (fired: {fired})")
+    error = result.error if not result.reached else \
+        perf.check_fired(args.marks, (begin, end), [m.name for m in result.marks])
     if error:
         print(f"capture failed: {error} (log: {result.directory / 'log.txt'})", file=sys.stderr)
         return 1

@@ -40,7 +40,9 @@ or a marks file for another NAND image is an error, not an empty profile.
 A marks file names guest PC ranges in the firmware. A mark fires the first
 time a block starts inside its range after starting outside it; `after` arms a
 mark only once another mark has fired (and the PC must still enter the range
-afresh). At most one mark fires per block, in file order.
+afresh). At most one mark fires per block, in file order. List marks in the
+order they fire (the frame mark counts as last): `op1prof perf` checks its
+window against that order before a capture and verifies it after.
 `profiling/marks/op1-stock-nand.json` covers the stock image:
 
 | Mark | Meaning |
@@ -195,8 +197,9 @@ Ghidra. Counts are work, not cost.
 
 `perf` runs one boot under `perf record -k mono -g`, sampling only between
 the two `--window` marks (an inverted window, or an `--until` before the
-window end, is rejected rather than recorded empty, and a capture whose
-window marks did not both fire fails), then `perf inject --jit`. It checks first that perf may
+window end, is rejected rather than recorded empty, and a capture fails if
+its window marks did not both fire or the marks fired out of file order),
+then `perf inject --jit`. It checks first that perf may
 record the event; it never changes `kernel.perf_event_paranoid` but says what
 to set (2 is enough). `report` (also printed after `perf`) keeps the CPU thread's samples
 inside the window, drops those inside `translate` spans, and attributes the
