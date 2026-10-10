@@ -272,9 +272,27 @@ def test_precise_events():
 def test_window_must_be_in_mark_order(tmp_path):
     marks = tmp_path / "marks.json"
     marks.write_text(json.dumps({"marks": [{"name": "a"}, {"name": "b"}], "frame": {"name": "f"}}))
-    assert perf.check_window(marks, ("a", "f")) is None
-    assert "empty" in perf.check_window(marks, ("b", "a"))
-    assert "unknown" in perf.check_window(marks, ("a", "zz"))
+    assert perf.check_window(marks, ("a", "f"), "f") is None
+    assert perf.check_window(marks, ("start", "a"), "b") is None
+    assert "empty" in perf.check_window(marks, ("b", "a"), "f")
+    assert "unknown" in perf.check_window(marks, ("a", "zz"), "f")
+    assert "unknown" in perf.check_window(marks, ("a", "b"), "zz")
+    assert "before the window end" in perf.check_window(marks, ("a", "f"), "b")
+
+
+def test_perf_fails_when_the_window_never_closed(files, monkeypatch, capsys):
+    # The fake never fires lap-end: the run reaches --until, but the window
+    # it was meant to sample did not close, so there is nothing to report.
+    marks = files / "window.json"
+    marks.write_text(json.dumps({"marks": [{"name": "bootrom"}, {"name": "lap-end"}, {"name": "main-display"}],
+                                 "frame": {"name": "main-frame"}}))
+    monkeypatch.setattr(perf, "preflight", lambda *a: None)
+    monkeypatch.setattr(perf, "record", lambda spec, directory, *a: run(spec, directory))
+    monkeypatch.setattr(perf, "report", lambda *a: pytest.fail("reported an unclosed window"))
+    assert cli.main(["perf", "--binary", str(FAKE), "--nand", str(files / "nand.bin"), "--otp", str(files / "otp.bin"),
+                     "--marks", str(marks), "--window", "bootrom:lap-end", "--force",
+                     "--out", str(files / "p"), "--timeout", "30", "--progress-timeout", "5"]) == 1
+    assert "did not both fire" in capsys.readouterr().err
 
 
 def test_samples_are_attributed_outside_compilation():

@@ -32,15 +32,18 @@ def mark_order(marks_file: Path) -> List[str]:
     return order
 
 
-def check_window(marks_file: Path, window: Tuple[str, str]) -> Optional[str]:
+def check_window(marks_file: Path, window: Tuple[str, str], until: str) -> Optional[str]:
     order = mark_order(marks_file)
     begin, end = window
-    for name in window:
+    for name in (begin, end, until):
         if name not in order:
             return f"unknown mark {name!r}"
     # An inverted window records nothing and looks merely empty, not wrong.
     if order.index(begin) >= order.index(end):
         return f"window {begin}:{end} is empty: {begin} does not come before {end}"
+    # Stopping first would leave the window open and the end mark missing.
+    if order.index(until) < order.index(end):
+        return f"--until {until} comes before the window end {end}"
     return None
 
 

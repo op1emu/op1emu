@@ -153,7 +153,7 @@ def cmd_ab(args) -> int:
 def cmd_perf(args) -> int:
     _check_args(args.arg)  # perf's own options are appended last, so they win
     begin, _, end = args.window.partition(":")
-    problem = perf.check_window(args.marks, (begin, end)) if end else "--window must be BEGIN:END"
+    problem = perf.check_window(args.marks, (begin, end), args.until) if end else "--window must be BEGIN:END"
     problem = problem or perf.preflight(args.event, ["-c", str(args.period)] if args.period else ["-F", str(args.freq)])
     if problem:
         print(problem, file=sys.stderr)
@@ -163,8 +163,11 @@ def cmd_perf(args) -> int:
     out = _out(args, "perf")
     result = perf.record(_spec(args, snapshot_binary(args.binary, out)), out / "capture", (begin, end),
                          args.event, args.period, args.freq)
-    if not result.reached:
-        print(f"capture failed: {result.error} (log: {result.directory / 'log.txt'})", file=sys.stderr)
+    fired = [m.name for m in result.marks]
+    error = result.error if not result.reached else (
+        None if begin in fired and end in fired else f"window marks did not both fire (fired: {fired})")
+    if error:
+        print(f"capture failed: {error} (log: {result.directory / 'log.txt'})", file=sys.stderr)
         return 1
     print(perf.report(out / "capture", args.top))
     return 0

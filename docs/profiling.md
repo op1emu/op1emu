@@ -194,8 +194,9 @@ accesses. `--symbols` names PCs from `ADDRESS NAME` lines, e.g. exported from
 Ghidra. Counts are work, not cost.
 
 `perf` runs one boot under `perf record -k mono -g`, sampling only between
-the two `--window` marks (an inverted window is rejected rather than
-recorded empty), then `perf inject --jit`. It checks first that perf may
+the two `--window` marks (an inverted window, or an `--until` before the
+window end, is rejected rather than recorded empty, and a capture whose
+window marks did not both fire fails), then `perf inject --jit`. It checks first that perf may
 record the event; it never changes `kernel.perf_event_paranoid` but says what
 to set (2 is enough). `report` (also printed after `perf`) keeps the CPU thread's samples
 inside the window, drops those inside `translate` spans, and attributes the
