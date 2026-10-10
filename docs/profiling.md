@@ -216,7 +216,10 @@ rule was applied; the tool enforces what it can.
   do more work, so two runs compare different things.
 - **Gate on the workload, not just the frame.** Two bugs that dropped work
   looked like 6% and 5% speedups and drew the correct frame; only the packet
-  count caught them. `ab` refuses a verdict when the workload moved.
+  count caught them. `ab` refuses a verdict when the workload moved, unless
+  `--allow-workload-change` says the change is intended (an optimization
+  that removes guest work); the workload difference is then reported beside
+  the verdict, which no longer compares equal work.
 - **Use thread CPU for time.** Swap reclaim stalled the CPU thread for 3-15 s
   inside runs whose overall wall/CPU ratio still looked clean, producing
   +163% and -37% "effects". `ab` decides on CPU and reports wall time only on
