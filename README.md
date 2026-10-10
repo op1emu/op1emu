@@ -146,13 +146,14 @@ the host is.
   Key presses, `wait` and `tap` are still host-timed, so a run that presses keys
   is not repeatable.
 
-Frontend regressions (including the CPU input event queue) and the time model
-tests can be built with:
+Frontend regressions (including the CPU input event queue), the time model
+tests and an end-to-end smoke run of `op1emu` on a synthetic LDR (no NAND or
+firmware needed) can be built with:
 
 ```bash
 cmake -S . -B build -DOP1_BUILD_HEADLESS_TESTS=ON
-cmake --build build --target op1-headless-test op1-time-source-test
-ctest --test-dir build -R "headless-test|time-source-test" --output-on-failure
+cmake --build build --target op1emu ldrdump op1-headless-test op1-time-source-test
+ctest --test-dir build -R "headless-test|time-source-test|ldr-smoke" --output-on-failure
 ```
 
 ## Acknowledgements

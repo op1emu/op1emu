@@ -141,4 +141,11 @@ if(OP1_BUILD_HEADLESS_TESTS)
     add_executable(op1-time-source-test tests/time_source_test.cpp)
     target_include_directories(op1-time-source-test PRIVATE src)
     add_test(NAME op1-time-source-test COMMAND op1-time-source-test)
+
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME op1-ldr-smoke
+            COMMAND ${Python3_EXECUTABLE} tests/ldr_smoke.py $<TARGET_FILE:op1emu> $<TARGET_FILE:ldrdump>
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    endif()
 endif()

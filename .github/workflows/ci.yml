@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install pytest
+      - run: python3 -m pytest tools/tests -q
+
+  build-test:
+    name: build-test (profiling=${{ matrix.profiling }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profiling: ["OFF", "ON"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-15 llvm-15-dev cmake ninja-build \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libgl1-mesa-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_DIR=/usr/lib/llvm-15/lib/cmake/llvm \
+            -DOP1_BUILD_HEADLESS_TESTS=ON \
+            -DENABLE_PROFILING=${{ matrix.profiling }}
+
+      - name: Build
+        run: cmake --build build --target op1emu ldrdump op1-headless-test op1-time-source-test
+
+      - name: Test (synthetic inputs only, no NAND or firmware)
+        # The -R filter keeps out bcore's comparison_test, which is registered
+        # whenever a bfin toolchain is on PATH.
+        run: ctest --test-dir build -R "headless-test|time-source-test|ldr-smoke" --output-on-failure
+
+      - name: CLI sanity
+        run: ./build/op1emu --help
