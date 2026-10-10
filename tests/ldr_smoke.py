@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """End-to-end smoke test: run op1emu on a synthetic LDR and a missing NAND.
 
-No real NAND, firmware or otp.bin is involved. The LDR is a single block that
-holds one RTS, so the emulator must load it, JIT it, return to the sentinel
-address and shut down cleanly.
+No pre-existing NAND, firmware or OTP input is needed; op1emu creates a
+synthetic otp.bin in the temporary working directory. The LDR is a single block
+that holds one RTS, so the emulator must load it, JIT it, return to the
+sentinel address and shut down cleanly.
 
 usage: ldr_smoke.py OP1EMU LDRDUMP
 """
