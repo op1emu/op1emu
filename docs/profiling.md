@@ -206,3 +206,45 @@ inside the window, drops those inside `translate` spans, and attributes the
 rest by guest block (`bb_0x<pc>`) and by host symbol, beside the trace's
 execution and compile CPU. For a non-precise event it says that the totals
 are only valid per block and symbol.
+
+## Measurement rules
+
+Each rule comes from a result in the research line that was wrong until the
+rule was applied; the tool enforces what it can.
+
+- **Measure deterministic runs.** With host time, a slower host makes the guest
+  do more work, so two runs compare different things.
+- **Gate on the workload, not just the frame.** Two bugs that dropped work
+  looked like 6% and 5% speedups and drew the correct frame; only the packet
+  count caught them. `ab` refuses a verdict when the workload moved, unless
+  `--allow-workload-change` says the change is intended (an optimization
+  that removes guest work); the workload difference is then reported beside
+  the verdict, which no longer compares equal work.
+- **Use thread CPU for time.** Swap reclaim stalled the CPU thread for 3-15 s
+  inside runs whose overall wall/CPU ratio still looked clean, producing
+  +163% and -37% "effects". `ab` decides on CPU and reports wall time only on
+  clean pairs.
+- **Watch the machine.** Memory pressure stretched LLVM compilation 4.4x. On a
+  desktop, systemd-oomd may also kill the whole terminal session under
+  pressure; run long batches in their own unit (`systemd-run --user`).
+- **Error bars come from paired repeats.** Poisson noise on sample counts
+  understated the real spread about tenfold: one configuration varied 2.5%
+  between capture sets and the baseline 11%. Compare only alternating pairs
+  from one session; run `ab --aa` to see the noise floor.
+- **Separate compile from execution by timestamp.** Only the union of
+  `translate` spans is compile time; never add the nested stages.
+- **Shares are not savings.** Removing ~20% of sampled FIR work did not move
+  display latency; removing a quarter of a block's machine code saved 3.7%;
+  deleting a third of the flag stores saved nothing. Census counts are work,
+  not cost, and a profile share is where samples landed.
+- **`cpu-clock` cannot rank instructions.** It is right for symbol and range
+  totals; for instruction-level questions use a precise event such as
+  `cycles:upp` with a fixed `--period` (it needs a hardware PMU).
+- **Diagnostics are not free.** A counter set incremented 75M times per boot
+  cost 1.4%, enough to swamp a 2% result. Keep census, extra counters and
+  perf out of timing runs; compare timing only between equally instrumented
+  builds.
+- **Check that a knob reached the code.** An optimization level that "made
+  no difference" had never reached executed code. If an A/B shows nothing,
+  confirm the two sides compiled differently (translation counts, compile
+  CPU, the IR) before concluding anything.
