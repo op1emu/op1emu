@@ -5,7 +5,8 @@ Prints [mark] lines and writes an op1.trace.v2 trace like the real emulator.
 Behavior comes from FAKE_* variables (the runner keeps those):
   FAKE_SCALE   multiply execution CPU by this (default 1.0)
   FAKE_WORK    packets per mark step (default 1000)
-  FAKE_MODE    comma list: hang, fail, noise (random workload), dropped
+  FAKE_MODE    comma list: hang, fail, noise (random workload), dropped,
+               closeout (close stdout after the first marks, keep running)
   FAKE_ENVLOG  write the received environment here
 """
 import json
@@ -50,6 +51,11 @@ for step, name in enumerate(names):
     if name == until:
         break
     if "hang" in mode and step == 1:
+        time.sleep(3600)
+    if "closeout" in mode and step == 1:
+        sys.stdout.flush()
+        os.close(1)
+        os.close(2)
         time.sleep(3600)
 if opt("--profile-trace"):
     with open(opt("--profile-trace"), "w") as f:

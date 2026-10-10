@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from op1prof import ab, cli, stats, trace, verify  # noqa: E402
 from op1prof.marks import parse_mark, workload_diff, parse_marks  # noqa: E402
-from op1prof.runner import RunSpec, run, snapshot_binary, sha256_file  # noqa: E402
+from op1prof.runner import RESERVED_ARGS, RunSpec, run, snapshot_binary, sha256_file  # noqa: E402
 
 FAKE = Path(__file__).with_name("fake_op1emu.py")
 
@@ -131,6 +131,36 @@ def test_failed_exit_is_an_error(files, monkeypatch):
     monkeypatch.setenv("FAKE_MODE", "fail")
     result = run(spec(files), files / "run")
     assert not result.reached and result.error == "exit status 3"
+
+
+def test_closed_output_cannot_outlast_the_deadline(files, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "closeout")
+    result = run(spec(files, timeout_s=3), files / "run")
+    assert not result.reached and result.error == "closed its output but did not exit"
+    assert result.elapsed_s < 30 and result.returncode is not None  # killed and reaped
+
+
+def test_extra_args_cannot_end_the_options(files):
+    with pytest.raises(ValueError):
+        spec(files, args=["--", "x.ldr"])
+
+
+@pytest.mark.parametrize("extra", [["--nand-rw"], ["--profile-until", "bootrom"]])
+def test_extra_args_cannot_override_the_runner(files, tmp_path, extra):
+    with pytest.raises(ValueError):
+        spec(files, args=extra)
+    with pytest.raises(SystemExit):
+        _cli(files, "run", "--out", str(tmp_path / "r"), *(f"--arg={a}" for a in extra))
+    with pytest.raises(SystemExit):
+        cli.main(["ab", "--base-bin", str(FAKE), "--nand", str(files / "nand.bin"), "--otp", str(files / "otp.bin"),
+                  "--marks", str(files / "marks.json"), "--force", "--out", str(tmp_path / "a"),
+                  *(f"--new-arg={a}" for a in extra)])
+    assert not (tmp_path / "r").exists() and not (tmp_path / "a").exists()  # refused before starting
+
+
+def test_extra_args_still_vary_the_rest(files):
+    assert spec(files, args=["--rtc-epoch", "0", "--profile-census", "census"]).args
+    assert "--perf-window" not in RESERVED_ARGS  # added by the perf command itself
 
 
 def test_snapshot_binary_is_content_named(files, tmp_path):

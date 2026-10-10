@@ -19,6 +19,18 @@ REPO = Path(__file__).resolve().parents[2]
 # Fixed sensors, applied before the CPU starts (--deterministic). The long wait
 # keeps the frontend idle; --profile-until ends the run.
 DEFAULT_SCRIPT = "accel 100 -100 500\nvolume 128\nwait 86400000\n"
+# What run() sets on every run. The emulator keeps the last value of a
+# repeated option, so an extra argument naming one would override it (say
+# --nand-rw, or a second --profile-until); "--" would turn the rest into
+# positional paths. Extra arguments may not use these.
+RESERVED_ARGS = ("--", "--nand-rw", "--nand-snapshot", "--headless", "--deterministic", "--input-script",
+                 "--profile-marks", "--profile-until", "--profile-trace")
+# How long an emulator that closed its output may take to exit.
+EXIT_GRACE_S = 60.0
+
+
+def reserved_args(args: List[str]) -> List[str]:
+    return [arg for arg in args if arg in RESERVED_ARGS]
 
 
 def sha256_file(path: str | Path) -> str:
@@ -55,6 +67,11 @@ class RunSpec:
     cpu: Optional[int] = None
     trace: bool = True
     census: bool = False
+
+    def __post_init__(self) -> None:
+        reserved = reserved_args(self.args)
+        if reserved:
+            raise ValueError(f"extra emulator arguments may not set what every run fixes: {reserved}")
 
 
 @dataclass
@@ -158,7 +175,13 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
                 continue
             chunk = proc.stdout.read(65536)
             if not chunk:  # EOF: the process closed stdout
-                proc.wait()
+                # Normally it is exiting; one that keeps running must not
+                # outlast the deadlines (cleanup below kills it).
+                remaining = max(0.0, spec.timeout_s - (time.monotonic() - start))
+                try:
+                    proc.wait(timeout=min(EXIT_GRACE_S, remaining))
+                except subprocess.TimeoutExpired:
+                    error = "closed its output but did not exit"
                 break
             log.write(chunk)
             log.flush()  # keep log.txt current for anyone watching a long run
@@ -169,8 +192,6 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
                 if mark:
                     marks.append(mark)
                     last_progress = time.monotonic()
-        if error is None and proc.poll() is None:
-            proc.wait(timeout=60)
     except BaseException:
         error = error or "interrupted"
         raise
