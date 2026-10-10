@@ -25,10 +25,7 @@ class Side:
 
 
 def _metrics(result: RunResult, begin: str, end: str) -> dict:
-    p = trace.phase(trace.load(str(result.trace_path)), begin, end)
-    return {"wall_ms": p.wall_ms, "cpu_ms": p.cpu_ms, "offcpu_ms": p.offcpu_ms,
-            "compile_wall_ms": p.compile_wall_ms, "compile_cpu_ms": p.compile_cpu_ms,
-            "noncompile_cpu_ms": p.noncompile_cpu_ms, "noncompile_wall_ms": p.noncompile_wall_ms}
+    return trace.phase(trace.load(str(result.trace_path)), begin, end).to_json()
 
 
 def _clean(m: dict) -> bool:

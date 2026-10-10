@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from op1prof import ab, stats, trace  # noqa: E402
+from op1prof import ab, cli, stats, trace, verify  # noqa: E402
 from op1prof.marks import parse_mark, workload_diff, parse_marks  # noqa: E402
 from op1prof.runner import RunSpec, run, snapshot_binary, sha256_file  # noqa: E402
 
@@ -136,6 +136,37 @@ def test_failed_exit_is_an_error(files, monkeypatch):
 def test_snapshot_binary_is_content_named(files, tmp_path):
     copy = snapshot_binary(FAKE, tmp_path / "out")
     assert copy.name == f"op1emu-{sha256_file(FAKE)[:12]}" and os.access(copy, os.X_OK)
+
+
+def _cli(files, command, *extra):
+    return cli.main([command, "--binary", str(FAKE), "--nand", str(files / "nand.bin"),
+                     "--otp", str(files / "otp.bin"), "--marks", str(files / "marks.json"),
+                     "--force", "--timeout", "30", "--progress-timeout", "5", *extra])
+
+
+def test_cli_run_with_relative_out_records_results(files, monkeypatch):
+    # The default --out is relative; the run starts the copied binary from
+    # inside its own directory, so that copy must be addressed absolutely.
+    monkeypatch.chdir(files)
+    assert _cli(files, "run", "--out", "rel") == 0
+    report = json.loads((files / "rel" / "results.json").read_text())
+    assert report["status"] == "reached" and Path(report["run"]["command"][0]).is_absolute()
+    assert report["phase"]["begin"] == "start" and report["phase"]["noncompile_cpu_ms"] > 0
+
+
+def test_cli_failed_run_keeps_its_results(files, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "fail")
+    assert _cli(files, "run", "--out", str(files / "out")) == 1
+    report = json.loads((files / "out" / "results.json").read_text())
+    assert report["status"] == "failed: exit status 3" and "phase" not in report
+    assert report["run"]["machine_before"] and report["run"]["machine_after"]
+
+
+def test_verify_needs_a_run(files, tmp_path):
+    with pytest.raises(SystemExit):
+        _cli(files, "verify", "--runs", "0", "--out", str(tmp_path / "v"))
+    with pytest.raises(ValueError):
+        verify.verify(spec(files), 0, tmp_path, None, None)
 
 
 # ---- ab ----

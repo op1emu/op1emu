@@ -31,13 +31,14 @@ def sha256_file(path: str | Path) -> str:
 
 def snapshot_binary(binary: str | Path, out_dir: Path) -> Path:
     """Copy the binary aside so a rebuild during a batch cannot change what
-    is measured. Named by content, so identical binaries share one copy."""
+    is measured. Named by content, so identical binaries share one copy.
+    Absolute, because the run starts it from its own directory."""
     digest = sha256_file(binary)
     target = out_dir / "bin" / f"op1emu-{digest[:12]}"
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(binary, target)
-    return target
+    return target.resolve()
 
 
 @dataclass
