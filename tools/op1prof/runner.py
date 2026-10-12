@@ -41,22 +41,14 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-_HASHES: dict = {}
-
-
 def input_hashes(spec: "RunSpec") -> dict:
     """SHA-256 of the files a run reads. The marks file binds the NAND image
     but nothing binds the OTP image, and a different one changes the boot
     (one stopped making progress after te-boot), so every run records
-    them all. Cached by path, size and mtime: the NAND is 512 MiB."""
-    out = {}
-    for name, path in (("nand", spec.nand), ("otp", spec.otp), ("marks", spec.marks)):
-        info = os.stat(path)
-        key = (str(path), info.st_size, info.st_mtime_ns)
-        if key not in _HASHES:
-            _HASHES[key] = sha256_file(path)
-        out[f"{name}_sha256"] = _HASHES[key]
-    return out
+    them all. Hashed again for every run, from content: reading the 512 MiB
+    NAND took 1.5 s, against minutes per run."""
+    return {f"{name}_sha256": sha256_file(path)
+            for name, path in (("nand", spec.nand), ("otp", spec.otp), ("marks", spec.marks))}
 
 
 def snapshot_binary(binary: str | Path, out_dir: Path) -> Path:

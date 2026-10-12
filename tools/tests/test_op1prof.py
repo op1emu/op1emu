@@ -212,6 +212,17 @@ def test_verify_records_inputs_and_checks_them_against_an_expect_file(files, tmp
     assert any("input otp_sha256" in line for line in report["differences"])
 
 
+
+def test_input_hashes_follow_content_not_file_metadata(files):
+    from op1prof.runner import input_hashes
+    first = input_hashes(spec(files))["otp_sha256"]
+    otp = files / "otp.bin"
+    info = os.stat(otp)
+    otp.write_text("y")                                   # same size
+    os.utime(otp, ns=(info.st_atime_ns, info.st_mtime_ns))  # same mtime
+    assert input_hashes(spec(files))["otp_sha256"] != first
+
+
 # ---- ab ----
 
 def _side(name, files, out, args=()):
@@ -544,6 +555,8 @@ def test_perf_rate_must_be_positive(files, rate):
 
 def test_lbr_call_graph_needs_a_hardware_event():
     assert "hardware event" in perf.check_call_graph("cpu-clock:u", "lbr")
-    assert "hardware event" in perf.check_call_graph("software/cpu-clock/u", "lbr")
+    assert "hardware event" in perf.check_call_graph("task-clock", "lbr")
+    assert perf.is_software_event("cpu-clock") and perf.is_software_event("task-clock:u")
+    assert not perf.is_software_event("cycles:u") and not perf.is_software_event("cpu_core/cycles/u")
     assert perf.check_call_graph("cycles:u", "lbr") is None
     assert perf.check_call_graph("cpu-clock:u", "fp") is None

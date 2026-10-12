@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from . import census, trace
+from .perf import is_software_event
 from .categories import Categories
 from .marks import Mark, parse_marks, workload_diff
 
@@ -19,8 +20,6 @@ SCHEMA = "op1prof.report.v1"
 # Below this share of execution weight with a call chain that reaches the
 # CPU loop, inclusive (caller) numbers would silently undercount.
 MIN_COMPLETE_PCT = 95.0
-# Events whose sample period is in nanoseconds of CPU time.
-TIME_EVENTS = ("cpu-clock", "task-clock")
 BLOCK_PREFIX = "bb_0x"
 
 HEADER = re.compile(r"^\s*(?P<tid>\d+)\s+(?P<time>\d+\.\d+):\s+(?P<period>\d+)\s*$")
@@ -258,7 +257,7 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
         # For a time event the sampled period is CPU time: it should match
         # the trace's execution CPU, and a large gap means lost samples.
         "sampled_over_trace": (execution / 1e6 / phase.noncompile_cpu_ms
-                               if event.split(":")[0] in TIME_EVENTS and phase.noncompile_cpu_ms else None),
+                               if is_software_event(event) and phase.noncompile_cpu_ms else None),
         "chain_complete_pct": complete_pct, "inclusive_valid": inclusive,
         "generated_code_pct": sum(result.self_blocks.values()) / execution * 100 if execution else 0.0,
         "buckets": _rows(result.buckets, execution, per_weight, "bucket") if execution else [],

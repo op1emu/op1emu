@@ -63,13 +63,19 @@ def check_fired(marks_file: Path, window: Tuple[str, str], fired: List[str]) -> 
 SOFTWARE_EVENTS = ("cpu-clock", "task-clock")
 
 
+def is_software_event(event: str) -> bool:
+    """A software timer event (`cpu-clock`, `task-clock:u`): its sample
+    period is CPU nanoseconds, and it has no branch records."""
+    return event.split(":")[0] in SOFTWARE_EVENTS
+
+
 def check_call_graph(event: str, call_graph: str) -> Optional[str]:
     """`fp` walks frame pointers, which generated code and system libraries
     without them break (on one capture 11.5% of execution weight never
     reached the CPU loop). `lbr` takes the call stack from Intel's last
     branch records, independent of frame pointers, but only for a hardware
     event."""
-    if call_graph == "lbr" and any(part in SOFTWARE_EVENTS for part in re.split(r"[/:,]", event)):
+    if call_graph == "lbr" and is_software_event(event):
         return f"--call-graph lbr needs a hardware event, not {event} (try --event cycles:u --period 4000000)"
     return None
 
