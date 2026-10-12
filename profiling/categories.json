@@ -1,6 +1,6 @@
 {
   "comment": "Host-path buckets for `op1prof report`. Each execution sample goes to the bucket of the frame nearest its leaf that matches any rule; within one frame the first rule in this list wins. A pattern matches when it is a substring of the demangled symbol. Samples whose stack reaches no root have a broken call chain and are counted apart.",
-  "roots": ["BlackFinCpu::Run(", "ExecutionThread("],
+  "roots": ["BlackFinCpu::Run(", "BootExcutionThread(", "LdrExecutionThread("],
   "categories": [
     {"name": "profiler",         "match": ["Profiler::", "FrameTap::"]},
     {"name": "nand",             "match": ["NFC::", "NandFlash::", "MT29F4G08::"]},

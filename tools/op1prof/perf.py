@@ -60,12 +60,27 @@ def check_fired(marks_file: Path, window: Tuple[str, str], fired: List[str]) -> 
     return None
 
 
-def preflight(event: str, rate: List[str]) -> Optional[str]:
+SOFTWARE_EVENTS = ("cpu-clock", "task-clock")
+
+
+def check_call_graph(event: str, call_graph: str) -> Optional[str]:
+    """`fp` walks frame pointers, which generated code and system libraries
+    without them break (on one capture 11.5% of execution weight never
+    reached the CPU loop). `lbr` takes the call stack from Intel's last
+    branch records, independent of frame pointers, but only for a hardware
+    event."""
+    if call_graph == "lbr" and any(part in SOFTWARE_EVENTS for part in re.split(r"[/:,]", event)):
+        return f"--call-graph lbr needs a hardware event, not {event} (try --event cycles:u --period 4000000)"
+    return None
+
+
+def preflight(event: str, rate: List[str], call_graph: str = "fp") -> Optional[str]:
     try:
         paranoid = int(Path("/proc/sys/kernel/perf_event_paranoid").read_text())
     except (OSError, ValueError):
         paranoid = None
-    probe = subprocess.run(["perf", "record", "-q", "-e", event, *rate, "-o", "/dev/null", "--", "true"],
+    probe = subprocess.run(["perf", "record", "-q", "-e", event, *rate, "--call-graph", call_graph,
+                            "-o", "/dev/null", "--", "true"],
                            capture_output=True, text=True)
     if probe.returncode == 0:
         return None
@@ -86,14 +101,14 @@ def preflight(event: str, rate: List[str]) -> Optional[str]:
 
 
 def record(spec: RunSpec, directory: Path, window: Tuple[str, str], event: str,
-           period: Optional[int], freq: Optional[int]) -> RunResult:
+           period: Optional[int], freq: Optional[int], call_graph: str = "fp") -> RunResult:
     """Run under perf with sampling enabled only between two marks."""
     rate = ["-c", str(period)] if period else ["-F", str(freq or 999)]
     directory.mkdir(parents=True, exist_ok=False)
     fifo = directory / "perf.ctl"
     os.mkfifo(fifo)
     # No ack FIFO: an ack pipe nobody reads deadlocks perf.
-    prefix = ["perf", "record", "-q", "-k", "mono", "-g", "--delay=-1", f"--control=fifo:{fifo}",
+    prefix = ["perf", "record", "-q", "-k", "mono", "--call-graph", call_graph, "--delay=-1", f"--control=fifo:{fifo}",
               "-e", event, *rate, "-o", str(directory / "perf.data"), "--"]
     perf_spec = replace(spec, prefix=prefix, env={**spec.env, "JITDUMPDIR": str(directory / "run")},
                         args=spec.args + ["--perf-ctl-fifo", str(fifo), "--perf-window",
@@ -105,6 +120,7 @@ def record(spec: RunSpec, directory: Path, window: Tuple[str, str], event: str,
         if inject.returncode != 0:
             result.error = f"perf inject failed: {inject.stderr.strip()[-300:]}"
     (directory / "capture.json").write_text(json.dumps(
-        {"event": event, "precise": is_precise(event), "rate": rate, "window": list(window),
+        {"event": event, "precise": is_precise(event), "rate": rate, "call_graph": call_graph,
+         "window": list(window),
          "run": result.to_json()}, indent=1))
     return result

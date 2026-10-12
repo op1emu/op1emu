@@ -233,6 +233,7 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
     event = info["event"]
     data = {
         "schema": SCHEMA, "event": event, "precise": info["precise"], "rate": info["rate"],
+        "call_graph": info.get("call_graph", "fp"),
         "window": list(window),
         "samples": {fate: {"count": result.counts[fate], "weight": result.weights[fate]} for fate in result.counts},
         "execution_cpu_s": phase.noncompile_cpu_ms / 1e3, "compile_cpu_s": phase.compile_cpu_ms / 1e3,
@@ -275,7 +276,8 @@ def _table(title: str, rows: List[dict], key: str, limit: int, width: int = 60) 
 
 def format_report(data: dict, limit: int, sort: str = "seconds") -> str:
     window = data["window"]
-    lines = [f"perf {data['event']} {' '.join(data['rate'])}, window {window[0]} -> {window[1]}",
+    lines = [f"perf {data['event']} {' '.join(data['rate'])} --call-graph {data['call_graph']}, "
+             f"window {window[0]} -> {window[1]}",
              "samples: " + ", ".join(f"{fate} {v['count']}" for fate, v in data["samples"].items()),
              f"trace: execution CPU {data['execution_cpu_s']:.3f} s, compile CPU {data['compile_cpu_s']:.3f} s; "
              "seconds below are execution CPU split by sampled weight",
@@ -289,7 +291,8 @@ def format_report(data: dict, limit: int, sort: str = "seconds") -> str:
     lines.append(f"call chains reaching the CPU loop: {data['chain_complete_pct']:.1f}% of execution weight")
     if not data["inclusive_valid"]:
         lines.append(f"  below {MIN_COMPLETE_PCT:g}%: inclusive and caller tables are withheld (code without "
-                     "frame pointers breaks the chain); buckets use the frames nearest the leaf")
+                     "frame pointers breaks the chain); buckets use the frames nearest the leaf"
+                     + ("; capture with --call-graph lbr" if data["call_graph"] == "fp" else ""))
     lines += _table("host-path bucket", data["buckets"], "bucket", limit)
     lines += ["", f"{'guest block':40s} {'self s':>9} {'self':>6} {'incl s':>9} {'incl':>6}"]
     for row in data["blocks"][:limit]:

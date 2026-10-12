@@ -162,7 +162,9 @@ def cmd_perf(args) -> int:
     _check_args(args.arg)  # perf's own options are appended last, so they win
     begin, _, end = args.window.partition(":")
     problem = perf.check_window(args.marks, (begin, end), args.until) if end else "--window must be BEGIN:END"
-    problem = problem or perf.preflight(args.event, ["-c", str(args.period)] if args.period else ["-F", str(args.freq)])
+    problem = problem or perf.check_call_graph(args.event, args.call_graph)
+    problem = problem or perf.preflight(args.event, ["-c", str(args.period)] if args.period else ["-F", str(args.freq)],
+                                        args.call_graph)
     if problem:
         print(problem, file=sys.stderr)
         return 2
@@ -170,7 +172,7 @@ def cmd_perf(args) -> int:
         return 2
     out = _out(args, "perf")
     result = perf.record(_spec(args, snapshot_binary(args.binary, out)), out / "capture", (begin, end),
-                         args.event, args.period, args.freq)
+                         args.event, args.period, args.freq, args.call_graph)
     error = result.error if not result.reached else \
         perf.check_fired(args.marks, (begin, end), [m.name for m in result.marks])
     if error:
@@ -238,6 +240,9 @@ def main(argv=None) -> int:
     p.add_argument("--event", default="cpu-clock:u", help="perf event (cycles:upp for instruction-level work; needs a hardware PMU)")
     p.add_argument("--period", type=_positive, help="fixed event count per sample (prefer for precise events)")
     p.add_argument("--freq", type=_positive, default=999, help="samples per second when no --period")
+    p.add_argument("--call-graph", choices=("fp", "lbr"), default="fp",
+                   help="frame pointers, or Intel LBR call stacks (whole chains through code without frame "
+                        "pointers; needs a hardware event)")
     p.add_argument("--top", type=int, default=25)
     _common(p)
     p.set_defaults(func=cmd_perf)

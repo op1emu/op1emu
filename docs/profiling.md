@@ -226,7 +226,15 @@ Inclusive numbers need whole call chains. The report states how much of the
 execution weight has a chain reaching the CPU loop (the `roots` in the
 categories file); below 95% it withholds the inclusive and caller tables,
 since code without frame pointers breaks the chain and the missing callers
-would silently undercount. For `cpu-clock` it also compares the sampled CPU
+would silently undercount. Frame-pointer chains (`perf --call-graph fp`, the
+default) reached the loop for 88.5% of a stock boot's execution: generated
+code and system libraries keep no frame pointers. Intel LBR call stacks do
+not need them and reached 99.8%; they need a hardware event:
+
+```sh
+python3 -m op1prof perf --binary $B $IN --window main-boot:main-display \
+  --event cycles:u --period 4000000 --call-graph lbr
+``` For `cpu-clock` it also compares the sampled CPU
 time with the trace's execution CPU. For a non-precise event it says that the
 totals are only valid per block and symbol.
 

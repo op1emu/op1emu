@@ -525,3 +525,10 @@ def test_perf_rate_must_be_positive(files, rate):
     with pytest.raises(SystemExit):
         cli.main(["perf", "--binary", str(FAKE), "--nand", str(files / "nand.bin"), "--otp", str(files / "otp.bin"),
                   "--window", "main-boot:main-display", *rate])
+
+
+def test_lbr_call_graph_needs_a_hardware_event():
+    assert "hardware event" in perf.check_call_graph("cpu-clock:u", "lbr")
+    assert "hardware event" in perf.check_call_graph("software/cpu-clock/u", "lbr")
+    assert perf.check_call_graph("cycles:u", "lbr") is None
+    assert perf.check_call_graph("cpu-clock:u", "fp") is None
