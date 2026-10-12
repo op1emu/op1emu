@@ -176,23 +176,34 @@ class Snapshot:
         return asdict(self)
 
 
+def measured_cpu(cpu: Optional[int]) -> Optional[int]:
+    """The one CPU a run can execute on: --cpu, or the only CPU this process
+    may use. None when the run may move between CPUs; per-CPU readings
+    (frequency, throttling, the sibling's load) then mean nothing."""
+    if cpu is not None:
+        return cpu
+    allowed = os.sched_getaffinity(0)
+    return next(iter(allowed)) if len(allowed) == 1 else None
+
+
 def snapshot(cpu: Optional[int]) -> Snapshot:
     info = _meminfo()
-    probe = cpu if cpu is not None else 0
-    freq = _read(f"{SYS}/devices/system/cpu/cpu{probe}/cpufreq/scaling_cur_freq")
+    cpu = measured_cpu(cpu)
+    probe = cpu
+    freq = _read(f"{SYS}/devices/system/cpu/cpu{probe}/cpufreq/scaling_cur_freq") if probe is not None else None
     return Snapshot(
         mem_available=info.get("MemAvailable", 0),
         swap_used=info.get("SwapTotal", 0) - info.get("SwapFree", 0),
         memory_pressure_avg10=_pressure(),
         loadavg=_read("/proc/loadavg"),
-        governor=_read(f"{SYS}/devices/system/cpu/cpu{probe}/cpufreq/scaling_governor"),
+        governor=_read(f"{SYS}/devices/system/cpu/cpu{probe}/cpufreq/scaling_governor") if probe is not None else None,
         cpu_mhz=int(freq) / 1000 if freq and freq.isdigit() else None,
         busy_on_cpu=busy_processes_on(cpu, [os.getpid()]) if cpu is not None else [],
-        core_type=core_type(probe),
+        core_type=core_type(probe) if probe is not None else None,
         energy_performance_preference=_read(f"{SYS}/devices/system/cpu/cpu{probe}/cpufreq/"
-                                            "energy_performance_preference"),
+                                            "energy_performance_preference") if probe is not None else None,
         no_turbo=_read(f"{SYS}/devices/system/cpu/intel_pstate/no_turbo"),
-        throttle_count=throttle_count(probe),
+        throttle_count=throttle_count(probe) if probe is not None else None,
         busy_on_siblings=[f"cpu{s}: {p}" for s in siblings(cpu) for p in busy_processes_on(s, [os.getpid()])]
         if cpu is not None else [],
         cpu_times={str(c): list(t) for c, t in _cpu_times().items() if c in [cpu, *siblings(cpu)]}

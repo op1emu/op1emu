@@ -126,6 +126,11 @@ def compare(base: Side, new: Side, spec: RunSpec, pairs: int, out: Path, phase: 
                 report["status"] = f"failed: pair {index} {side.name}: {result.error}"
                 save()
                 return report
+            changed = _changed_inputs({"config": report.get("config"), "runs": [entry]})
+            if changed:
+                report["status"] = f"failed: an input changed during the batch: {changed[0]}"
+                save()
+                return report
             entry["metrics"] = _metrics(result, *phase)
             save()
         runs = {e["side"]: e for e in report["runs"] if e["pair"] == index}
@@ -160,6 +165,27 @@ def _drift(report: dict) -> List[str]:
     return found
 
 
+def balanced(pairs: List[tuple]) -> List[tuple]:
+    """(pair, info) entries cut to equal numbers of AB and BA orders, keeping
+    the earliest of each: a rule fixed before the results are seen."""
+    by_order: dict = {}
+    for entry in pairs:
+        by_order.setdefault(tuple(entry[1]["order"]), []).append(entry)
+    if len(by_order) < 2:
+        return []
+    keep = min(len(entries) for entries in by_order.values())
+    return sorted((e for entries in by_order.values() for e in entries[:keep]), key=lambda e: e[1]["pair"])
+
+
+def _changed_inputs(report: dict) -> List[str]:
+    """Runs that read other NAND, OTP or marks files than the batch began with."""
+    expected = (report.get("config") or {}).get("inputs")
+    if not expected:
+        return []
+    return [f"pair {e['pair']} {e['side']}: {key} {expected[key]} -> {e.get('inputs', {}).get(key)}"
+            for e in report["runs"] for key in expected if e.get("inputs", {}).get(key) != expected[key]]
+
+
 def summarize(report: dict, min_effect_pct: float, allow_workload_change: bool, seed: int = 1) -> None:
     by_pair = {}
     for entry in report["runs"]:
@@ -174,6 +200,7 @@ def summarize(report: dict, min_effect_pct: float, allow_workload_change: bool, 
         for pair in pairs[1:]:
             unstable += [f"{name}: {line}" for line in workload_diff(first, _marks(pair[name]))]
     report["unstable"] = unstable
+    report["changed_inputs"] = _changed_inputs(report)
 
     workload_changed = [p for p in report["pairs"] if p["workload_diff"]]
     report["workload_changed"] = bool(workload_changed)
@@ -199,20 +226,26 @@ def summarize(report: dict, min_effect_pct: float, allow_workload_change: bool, 
     # Contention is measured during each run, independent of its result: on
     # one A/A a sibling 19-37% busy cut instructions per cycle from about 2.43
     # to 1.98-2.20 and added 17-29 s to an 83 s execution.
-    calm = [p for p, info in zip(pairs, report["pairs"]) if not info.get("contended")]
+    # Leaving pairs out must not unbalance the AB and BA orders, or a
+    # first-run/second-run effect reads as a difference between the sides
+    # (an A/A whose contention fell on one order came out "faster"). Keep
+    # the earliest pairs of each order, as many as the scarcer order has.
+    calm = balanced([(p, info) for p, info in zip(pairs, report["pairs"]) if not info.get("contended")])
     decided_on = "noncompile_cpu_ms"
     if len(calm) >= 4 and len(calm) < len(pairs):
-        comparison = stats.paired([p["base"]["metrics"]["noncompile_cpu_ms"] for p in calm],
-                                  [p["new"]["metrics"]["noncompile_cpu_ms"] for p in calm], seed=seed)
+        comparison = stats.paired([p["base"]["metrics"]["noncompile_cpu_ms"] for p, _ in calm],
+                                  [p["new"]["metrics"]["noncompile_cpu_ms"] for p, _ in calm], seed=seed)
         summary["noncompile_cpu_ms_uncontended"] = {**comparison.to_json(), "verdict": comparison.verdict(min_effect_pct),
-                                                    "uncontended_pairs": len(calm)}
+                                                    "uncontended_pairs": [info["pair"] for _, info in calm]}
         decided_on = "noncompile_cpu_ms_uncontended"
     report["summary"] = summary
     report["decided_on"] = decided_on
     report["drift"] = _drift(report)
     report["contended_pairs"] = sum(1 for p in report["pairs"] if p.get("contended"))
 
-    if unstable:
+    if report["changed_inputs"]:
+        report["status"] = "unusable: runs read different input images"
+    elif unstable:
         report["status"] = "unusable: a configuration did not repeat its own workload"
     elif workload_changed and not allow_workload_change:
         report["status"] = "workload changed: the two sides did different guest work"

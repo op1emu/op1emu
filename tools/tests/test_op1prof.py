@@ -748,4 +748,45 @@ def test_status_is_decided_on_uncontended_pairs_when_there_are_enough(files, tmp
     report = ab.compare(_side("base", files, out), _side("new", files, out), spec(files), 6, out,
                         ("start", "main-frame"), 2.0, False)
     assert report["contended_pairs"] == 1 and report["decided_on"] == "noncompile_cpu_ms_uncontended"
-    assert report["summary"]["noncompile_cpu_ms_uncontended"]["uncontended_pairs"] == 5
+    # Pairs 1-5 were calm: 1, 3, 5 ran AB and 2, 4 BA; two of each are kept.
+    assert report["summary"]["noncompile_cpu_ms_uncontended"]["uncontended_pairs"] == [1, 2, 3, 4]
+
+
+def test_leaving_out_contended_pairs_never_unbalances_the_orders(files, tmp_path, monkeypatch):
+    # Contention on every AB pair would leave only BA pairs, where an order
+    # effect would read as a difference between identical sides.
+    calls = []
+
+    def busy(before, after, cpu):
+        calls.append(1)
+        pair = (len(calls) - 1) // 2      # one reading per run, two runs per pair
+        return 0.5 if pair % 2 == 1 else 0.0
+    monkeypatch.setattr(machine, "sibling_busy", busy)
+    out = tmp_path / "ab"
+    out.mkdir()
+    report = ab.compare(_side("base", files, out), _side("new", files, out), spec(files), 8, out,
+                        ("start", "main-frame"), 2.0, False)
+    assert report["contended_pairs"] == 4 and report["decided_on"] == "noncompile_cpu_ms"
+    assert ab.balanced([({}, {"pair": 0, "order": ["new", "base"]}), ({}, {"pair": 2, "order": ["new", "base"]})]) == []
+
+
+def test_an_input_changed_during_a_batch_stops_it(files, tmp_path):
+    out = tmp_path / "ab"
+    out.mkdir()
+    otp = files / "otp.bin"
+    swap = tmp_path / "swap.sh"   # the first run replaces the OTP image under the batch
+    swap.write_text(f"#!/bin/sh\necho changed > {otp}\nexec {FAKE} \"$@\"\n")
+    swap.chmod(0o755)
+    report = ab.compare(ab.Side("base", snapshot_binary(swap, out), [], sha256_file(swap)),
+                        _side("new", files, out), spec(files), 4, out, ("start", "main-frame"), 2.0, False)
+    assert report["status"].startswith("failed: an input changed during the batch")
+    assert "otp_sha256" in report["status"]
+
+
+def test_an_unpinned_run_has_no_per_cpu_readings(monkeypatch):
+    monkeypatch.setattr(machine.os, "sched_getaffinity", lambda pid: {0, 1, 2})
+    assert machine.measured_cpu(None) is None
+    snap = machine.snapshot(None)
+    assert snap.throttle_count is None and snap.core_type is None and snap.cpu_times == {}
+    monkeypatch.setattr(machine.os, "sched_getaffinity", lambda pid: {2})
+    assert machine.measured_cpu(None) == 2

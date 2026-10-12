@@ -235,4 +235,4 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
         error = f"mark {spec.until!r} never fired"
     return RunResult(directory=directory, command=command, returncode=returncode, marks=marks,
                      error=error, elapsed_s=time.monotonic() - start, before=before,
-                     after=machine.snapshot(spec.cpu).to_json(), until=spec.until, inputs=inputs, cpu=spec.cpu)
+                     after=machine.snapshot(spec.cpu).to_json(), until=spec.until, inputs=inputs, cpu=machine.measured_cpu(spec.cpu))

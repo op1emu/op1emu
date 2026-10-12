@@ -230,7 +230,9 @@ repeat itself), or `failed` (a run failed; the batch stopped).
 
 `op1prof extend BATCH --pairs N` adds N (even) pairs to an earlier batch with
 its own binary snapshots and settings, continuing the AB/BA order, and
-recomputes the summary over all pairs. The report counts the extensions:
+recomputes the summary over all pairs. Every run's NAND, OTP and marks hashes
+are checked against the ones the batch started with: a run that read another
+image stops the batch. The report counts the extensions:
 adding pairs after seeing a verdict is a choice the reader should know about.
 
 Every report also lists what the verdict cannot see:
@@ -244,10 +246,13 @@ Every report also lists what the verdict cannot see:
   events. Pairs with a sibling above 10% busy or with throttling are listed:
   their CPU time includes sharing the core. The load is an average over the
   run, so a short burst on the sibling barely shows. When at least four pairs
-  were not contended, the status is decided on those
+  were not contended, in equal numbers of AB and BA orders (the earliest of
+  each order are kept, so leaving pairs out never turns an order effect into
+  a difference), the status is decided on those
   (`noncompile_cpu_ms_uncontended`, `decided_on` in the results) and the
   all-pairs result is reported beside it: contention is measured during each
-  run, independently of its result. In one A/A of six pairs, three runs with
+  run, independently of its result. A run that cannot be pinned to one CPU
+  (no `--cpu` and more than one allowed) has no per-CPU readings at all. In one A/A of six pairs, three runs with
   a sibling 19-37% busy ran at 1.98-2.20 instructions per cycle instead of
   about 2.43 and took 100-112 s instead of about 83 s; the interval over all
   pairs was -9.1..+21.8%, over the uncontended ones -4.4..+8.9%.
