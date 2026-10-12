@@ -109,11 +109,11 @@ microseconds, the clock `perf record -k mono` uses.
   `BcoreCompileMetrics`): `ir_insns` and `ir_blocks` of the module as compiled
   (after the IR pipeline), `object_bytes` of machine code, and
   `object_hash`, a hex string hashing that code before relocation together
-  with its relocations and the constant pools and jump tables they point
-  into. The same code has the same hash in every process, wherever the JIT
+  with its relocations and, transitively, the constant pools, jump tables
+  and function-pointer tables they point into with their own relocations. The same code has the same hash in every process, wherever the JIT
   placed it (bcore's fastmem and rawmem paths would embed a host address and
   break that; op1emu uses neither). `collect_ns` is the time spent collecting
-  these metrics, included in the span's `cpu_ns`: about 0.08% of compile
+  these metrics, included in the span's `cpu_ns`: about 0.09% of compile
   CPU.
 
 Execution CPU between two marks is their `thread_cpu_ns` difference minus the
