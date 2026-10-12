@@ -800,3 +800,62 @@ def test_an_unpinned_run_has_no_per_cpu_readings(monkeypatch):
     assert snap.throttle_count is None and snap.core_type is None and snap.cpu_times == {}
     monkeypatch.setattr(machine.os, "sched_getaffinity", lambda pid: {2})
     assert machine.measured_cpu(None) == 2
+
+
+
+# ---- compile shape ----
+
+def _shaped_trace():
+    t = lambda pc, ts, cpu, h, ok=True: {"name": "translate", "ph": "X", "ts": ts, "dur": 1.0,
+                                         "args": {"pc": pc, "ok": ok, "cpu_ns": cpu, "ir_insns": 10, "ir_blocks": 1,
+                                                  "object_bytes": 40, "object_hash": h}}
+    return {"schema": "op1.trace.v3", "dropped": 0, "traceEvents": [
+        {"name": "start", "cat": "mark", "ts": 0.0, "args": {"wall_ns": 0, "thread_cpu_ns": 0}},
+        t(0x100, 1.0, 2_000_000, "aa"), {"name": "lift", "ph": "X", "ts": 1.0, "dur": 0.25, "args": {"pc": 0x100}},
+        {"name": "materialize", "ph": "X", "ts": 1.3, "dur": 0.75, "args": {"pc": 0x100}},
+        t(0x200, 3.0, 1_000_000, "bb"),
+        {"name": "a", "cat": "mark", "ts": 4.0, "args": {"wall_ns": 4000, "thread_cpu_ns": 4000}},
+        t(0x100, 5.0, 3_000_000, "aa"),            # translated again after a flush
+        {"name": "b", "cat": "mark", "ts": 9.0, "args": {"wall_ns": 9000, "thread_cpu_ns": 9000}},
+    ]}
+
+
+def test_compile_report_ranks_blocks_and_counts_retranslations():
+    from op1prof import compilation
+    data = _shaped_trace()
+    spans = compilation.translations(data)
+    assert len(spans) == 3 and len(compilation.translations(data, ("a", "b"))) == 1
+    shape = compilation.codegen(spans)
+    assert shape["distinct_code"] == 2 and shape["translations"] == 3 and shape["ir_insns"] == 30
+    text = compilation.report(data, None, 10, census.Symbols(None))
+    assert "3 translations of 2 blocks" in text and "translated again: 1 blocks, 1 extra translations, 0.003 s" in text
+    assert "lift 25%, materialize 75%" in text
+    assert text.index("0x00000100") < text.index("0x00000200")     # ranked by compile CPU
+    # The digest ignores host timing and order, only what was compiled.
+    other = _shaped_trace()
+    other["traceEvents"][1]["args"]["cpu_ns"] = 9
+    assert compilation.codegen(compilation.translations(other))["digest"] == shape["digest"]
+    other["traceEvents"][4]["args"]["object_hash"] = "cc"
+    assert compilation.codegen(compilation.translations(other))["digest"] != shape["digest"]
+
+
+def test_ab_says_when_both_sides_compiled_identical_code(files, tmp_path, capsys):
+    def wrapper(name, env):
+        script = tmp_path / f"{name}.sh"
+        script.write_text(f"#!/bin/sh\n{env} exec {FAKE} \"$@\"\n")
+        script.chmod(0o755)
+        return script
+    same, other, old = wrapper("same", "FAKE_SCALE=0.99"), wrapper("other", "FAKE_CODE=5"), wrapper("old", "FAKE_NOSHAPE=1")
+    for name, new, identical in (("same", same, True), ("other", other, False)):
+        out = tmp_path / name
+        out.mkdir()
+        report = ab.compare(_side("base", files, out), ab.Side("new", snapshot_binary(new, out), [], sha256_file(new)),
+                            spec(files), 4, out, ("start", "main-frame"), 2.0, False)
+        assert report["codegen"]["identical"] is identical and report["codegen"]["repeatable"]
+        cli._print_ab(report, out)
+        assert ("identical machine code" in capsys.readouterr().out) is identical
+    out = tmp_path / "old"
+    out.mkdir()
+    report = ab.compare(_side("base", files, out), ab.Side("new", snapshot_binary(old, out), [], sha256_file(old)),
+                        spec(files), 4, out, ("start", "main-frame"), 2.0, False)
+    assert report["codegen"] is None   # a binary without compile shapes: nothing to compare

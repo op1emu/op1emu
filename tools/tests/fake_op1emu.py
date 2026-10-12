@@ -9,6 +9,7 @@ Behavior comes from FAKE_* variables (the runner keeps those):
   FAKE_MODE    comma list: hang, fail, noise (random workload), dropped,
                closeout (close stdout after the first marks, keep running)
   FAKE_IRQ     interrupts taken per mark step (default 3)
+  FAKE_CODE    seed of the compiled code's hashes (default 0); FAKE_NOSHAPE drops them
   FAKE_ENVLOG  write the received environment here
 """
 import json
@@ -40,6 +41,10 @@ for step, name in enumerate(names):
     if step:
         # one translation, then execution
         span = {"pc": step, "ok": True, "cpu_ns": 2_000_000, **({"insns": 5_000_000} if counted else {})}
+        if not os.environ.get("FAKE_NOSHAPE"):
+            code = int(os.environ.get("FAKE_CODE", "0"))
+            span.update(ir_insns=100 * step, ir_blocks=step, object_bytes=400 * step,
+                        object_hash=f"{(step * 7919 + code) & 0xffffffffffffffff:016x}")
         events.append({"name": "translate", "cat": "jit", "ph": "X", "pid": 1, "tid": 1,
                        "ts": (t0 + wall) / 1e3, "dur": 2e6 / 1e3, "args": span})
         wall += 2_000_000

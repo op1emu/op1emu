@@ -89,6 +89,7 @@ struct Profiler::Impl : BcoreEventSink {
     struct Event {
         const char* name = nullptr;  // points into marks/frameMark or a literal
         uint64_t begin = 0, end = 0, cpu_ns = 0, insns = 0;
+        BcoreCompileMetrics shape{};  // translate spans: the code compiled (zero on failure)
         uint32_t pc = 0;
         bool ok = true;
         bool mark = false;
@@ -132,6 +133,7 @@ struct Profiler::Impl : BcoreEventSink {
     size_t used = 0;
     uint64_t lost = 0;
     uint64_t translateBegin = 0, translateCpuBegin = 0;
+    BcoreCompileMetrics pendingShape{};
     uint64_t endWall = 0;
 
     bool census = false;
@@ -283,10 +285,16 @@ struct Profiler::Impl : BcoreEventSink {
         event.cpu_ns = ThreadCpuNs() - translateCpuBegin;
         event.pc = pc;
         event.ok = ok;
+        event.shape = ok ? pendingShape : BcoreCompileMetrics{};
+        pendingShape = {};
         HwCounters::Values values;
         if (ReadCounters(values)) event.insns = values.instructions - translateInsnsBegin;
         Add(event);
     }
+    // Every translation is described: the cost is a pass over its IR and its
+    // machine code, microseconds against milliseconds of compilation.
+    bool wantsCompileMetrics() const override { return !events.empty(); }
+    void onCompileMetrics(uint32_t, const BcoreCompileMetrics& metrics) override { pendingShape = metrics; }
     void onTranslateEnd(uint32_t pc, uint64_t) override { Translated(pc, true); }
     void onTranslateFailure(uint32_t pc, uint64_t) override { Translated(pc, false); }
     void onCompileStage(uint32_t pc, const char* stage, uint64_t begin, uint64_t end, bool ok) override {
@@ -508,7 +516,13 @@ struct Profiler::Impl : BcoreEventSink {
                 const bool translate = std::strcmp(e.name, "translate") == 0;
                 std::fprintf(file, "\"cat\":\"jit\",\"ph\":\"X\",\"dur\":%.3f,\"args\":{\"pc\":%u,\"ok\":%s",
                              (e.end - e.begin) / 1000.0, e.pc, e.ok ? "true" : "false");
-                if (translate) std::fprintf(file, ",\"cpu_ns\":%" PRIu64, e.cpu_ns);
+                if (translate) {
+                    // The hash as a string: JSON numbers lose 64-bit integers.
+                    std::fprintf(file, ",\"cpu_ns\":%" PRIu64 ",\"ir_insns\":%" PRIu64 ",\"ir_blocks\":%" PRIu64
+                                       ",\"object_bytes\":%" PRIu64 ",\"object_hash\":\"%016" PRIx64 "\"",
+                                 e.cpu_ns, e.shape.ir_instructions, e.shape.ir_blocks, e.shape.object_bytes,
+                                 e.shape.object_hash);
+                }
                 if (translate && counted) std::fprintf(file, ",\"insns\":%" PRIu64, e.insns);
                 std::fputs("}}", file);
             }

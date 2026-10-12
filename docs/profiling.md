@@ -105,6 +105,12 @@ microseconds, the clock `perf record -k mono` uses.
   `args.irq_levels` (entries per IVG level, 0 = EMU ... 15 = IVG15).
 - With `--profile-counters` the header says `"counters": true` and every
   `translate` span also has `args.insns`, the instructions retired inside it.
+- Every successful `translate` span describes the code it produced (bcore's
+  `BcoreCompileMetrics`): `ir_insns` and `ir_blocks` of the module as compiled
+  (after the IR pipeline), `object_bytes` of machine code, and
+  `object_hash`, a hex string hashing that code before relocation together
+  with its relocations. The same code has the same hash in every process,
+  wherever the JIT placed it.
 
 Execution CPU between two marks is their `thread_cpu_ns` difference minus the
 `cpu_ns` of the `translate` spans between them. Unlike wall time, it does not
@@ -165,6 +171,7 @@ python3 -m op1prof ab     --base-bin $B $IN --aa --pairs 4   # noise floor
 python3 -m op1prof extend op1prof-ab-* --pairs 2           # more pairs for the same batch
 python3 -m op1prof run    --binary $B $IN --census
 python3 -m op1prof census op1prof-run-*/run --phase main-boot:lap-end
+python3 -m op1prof compile op1prof-run-*/run --phase main-boot:main-display
 python3 -m op1prof perf   --binary $B $IN --window main-boot:main-display
 python3 -m op1prof report op1prof-perf-*/capture --census op1prof-run-*/run --sort ns-per-run
 ```
@@ -227,6 +234,14 @@ plain `inconclusive` used to hide), `inconclusive`, or one of:
 `workload changed` (the sides did different guest work: no speed verdict
 unless `--allow-workload-change`), `unusable` (a configuration did not
 repeat itself), or `failed` (a run failed; the batch stopped).
+
+`ab` also compares what the two sides compiled. Each run's distinct (block,
+code hash) pairs are digested; when both sides produced the same digest,
+`ab` says that they compiled identical machine code, so any difference comes
+from the host side, and if the change was meant to alter generated code, it
+did not reach it. A nonzero JIT optimization level once changed nothing for
+months while measurements compared identical code. The translation count, IR
+instructions and machine-code bytes of each side are printed beside it.
 
 `op1prof extend BATCH --pairs N` adds N (even) pairs to an earlier batch with
 its own binary snapshots and settings, continuing the AB/BA order, and
@@ -319,6 +334,13 @@ guest work, or the join is refused. `--sort ns-per-run` ranks blocks by how
 expensive one execution is rather than by total share. These are sampled
 estimates: their error comes from repeating captures, not from sample counts.
 `--json FILE` writes the whole report for further analysis.
+
+`compile RUNDIR [--phase A:B]` reports what a run compiled: translations
+and blocks, compile CPU with its median, 95th percentile and maximum per
+translation, the blocks translated again (the cache is flushed whenever the
+boot ROM is re-entered) and what that cost, the stage proportions, the IR and
+machine code produced, and the blocks that cost most to compile with their IR
+size and compile time per IR instruction.
 
 `run` prints a table of every phase between consecutive marks (CPU,
 compile, execution, off-CPU, translations) and stores it in `results.json`.

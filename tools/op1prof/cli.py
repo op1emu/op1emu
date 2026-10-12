@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import ab, census, machine, perf, stats, trace, verify
+from . import ab, census, compilation, machine, perf, stats, trace, verify
 from . import report as perf_report
 from .categories import Categories
 from .runner import REPO, RunSpec, reserved_args, run, sha256_file, snapshot_binary
@@ -206,6 +206,17 @@ def _print_ab(report: dict, out: Path) -> int:
         low, high = s["ci95_pct"]
         print(f"{metric}: {s['mean_pct']:+.2f}% (95% CI {low:+.2f}..{high:+.2f}), "
               f"{s['wins']}/{s['pairs']} new faster (sign test p={s['sign_test_p']:.3f}) -> {s['verdict']}")
+    codegen = report.get("codegen")
+    if codegen:
+        b, n = codegen["base"], codegen["new"]
+        print(f"generated code: base {b['translations']} translations, {b['ir_insns']:,} IR instructions, "
+              f"{b['object_bytes']:,} bytes; new {n['translations']}, {n['ir_insns']:,}, {n['object_bytes']:,}")
+        same_config = report["sides"]["base"] == report["sides"]["new"]   # an A/A
+        if codegen["identical"] and not same_config:
+            print("both sides compiled identical machine code: any difference comes from the host side. If the "
+                  "change was meant to alter generated code, it did not reach it.")
+        if not codegen["repeatable"]:
+            print("a side compiled different code in different runs")
     if report.get("decided_on", "noncompile_cpu_ms") != "noncompile_cpu_ms":
         print(f"status decided on {report['decided_on']}: pairs whose core was shared are left out")
     if report.get("summary", {}).get("noncompile_insns"):
@@ -252,6 +263,23 @@ def cmd_report(args) -> int:
     if args.json:
         args.json.write_text(json.dumps(data, indent=1) + "\n")
     print(perf_report.format_report(data, args.top, args.sort))
+    return 0
+
+
+def cmd_compile(args) -> int:
+    path = args.run / "trace.json"
+    try:
+        trace_data = trace.load(str(path))
+        window = None
+        if args.phase:
+            begin, _, end = args.phase.partition(":")
+            if not end:
+                raise SystemExit("--phase must be BEGIN:END")
+            window = (begin, end)
+        print(compilation.report(trace_data, window, args.top, census.Symbols(args.symbols)))
+    except (OSError, ValueError, KeyError) as error:
+        print(f"compile: {error}", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -331,6 +359,13 @@ def main(argv=None) -> int:
                    help="order of the census join")
     p.add_argument("--json", type=Path, help="also write the full report as JSON")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("compile", help="what a run compiled and what each block cost to compile")
+    p.add_argument("run", type=Path, help="run directory holding trace.json")
+    p.add_argument("--phase", help="BEGIN:END (default the whole run)")
+    p.add_argument("--top", type=int, default=25)
+    p.add_argument("--symbols", type=Path, help="ADDRESS NAME lines to name PCs")
+    p.set_defaults(func=cmd_compile)
 
     p = sub.add_parser("census", help="per-PC and MMIO counts between two marks of a --census run")
     p.add_argument("run", type=Path, help="run directory holding census.* files")

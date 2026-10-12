@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, fields as dataclass_fields, replace
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import machine, stats, trace
+from . import compilation, machine, stats, trace
 from .marks import Mark, workload_diff
 from .runner import RunResult, RunSpec, input_hashes, run, sha256_file
 
@@ -31,8 +31,13 @@ class Side:
     sha256: str
 
 
-def _metrics(result: RunResult, begin: str, end: str) -> dict:
-    return trace.phase(trace.load(str(result.trace_path)), begin, end).to_json()
+def _metrics(result: RunResult, begin: str, end: str) -> Tuple[dict, Optional[dict]]:
+    """Phase times, and what the whole run compiled (None for a binary that
+    does not report compile shapes)."""
+    trace_data = trace.load(str(result.trace_path))
+    spans = compilation.translations(trace_data)
+    shape = compilation.codegen(spans) if compilation.has_shape(spans) else None
+    return trace.phase(trace_data, begin, end).to_json(), shape
 
 
 def _clean(m: dict) -> bool:
@@ -131,7 +136,7 @@ def compare(base: Side, new: Side, spec: RunSpec, pairs: int, out: Path, phase: 
                 report["status"] = f"failed: an input changed during the batch: {changed[0]}"
                 save()
                 return report
-            entry["metrics"] = _metrics(result, *phase)
+            entry["metrics"], entry["codegen"] = _metrics(result, *phase)
             save()
         runs = {e["side"]: e for e in report["runs"] if e["pair"] == index}
         report["pairs"].append({
@@ -184,6 +189,22 @@ def _changed_inputs(report: dict) -> List[str]:
         return []
     return [f"pair {e['pair']} {e['side']}: {key} {expected[key]} -> {e.get('inputs', {}).get(key)}"
             for e in report["runs"] for key in expected if e.get("inputs", {}).get(key) != expected[key]]
+
+
+def _codegen(pairs: List[dict]) -> Optional[dict]:
+    """Did the two sides generate different machine code? A knob that never
+    reached code generation (a nonzero opt level once changed nothing for
+    months) shows up here as identical code, whatever the timings say."""
+    digests = {name: [p[name].get("codegen") for p in pairs] for name in ("base", "new")}
+    if any(d is None for side in digests.values() for d in side):
+        return None
+    sets = {name: sorted({d["digest"] for d in side}) for name, side in digests.items()}
+    first = {name: side[0] for name, side in digests.items()}
+    return {"identical": sets["base"] == sets["new"] and len(sets["base"]) == 1,
+            "repeatable": all(len(s) == 1 for s in sets.values()),
+            **{name: {"digests": sets[name], "translations": first[name]["translations"],
+                      "ir_insns": first[name]["ir_insns"], "object_bytes": first[name]["object_bytes"]}
+               for name in ("base", "new")}}
 
 
 def summarize(report: dict, min_effect_pct: float, allow_workload_change: bool, seed: int = 1) -> None:
@@ -240,6 +261,7 @@ def summarize(report: dict, min_effect_pct: float, allow_workload_change: bool, 
         decided_on = "noncompile_cpu_ms_uncontended"
     report["summary"] = summary
     report["decided_on"] = decided_on
+    report["codegen"] = _codegen(pairs)
     report["drift"] = _drift(report)
     report["contended_pairs"] = sum(1 for p in report["pairs"] if p.get("contended"))
 
