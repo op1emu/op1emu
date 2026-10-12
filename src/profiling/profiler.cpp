@@ -116,6 +116,10 @@ struct Profiler::Impl : BcoreEventSink {
     bool hasFrame = false;
     std::string frameSha;
     uint64_t framesRejected = 0;
+    // The verified frame completes inside a run, during device processing:
+    // its mark fires at the next block entry, like every other mark, so the
+    // counters and censuses it closes end on a block boundary.
+    bool framePending = false;
 
     bool started = false;
     uint64_t startWall = 0, startCpu = 0, startProcessCpu = 0;
@@ -537,8 +541,8 @@ struct Profiler::Impl : BcoreEventSink {
             return;
         }
         frameMark.fired = true;
+        framePending = true;
         LogInfo("Verified frame %s after %" PRIu64 " rejected frame(s)", frameMark.name.c_str(), framesRejected);
-        Fire(frameMark.name.c_str(), cpu.PC());
     }
 
     // ---- output ----
@@ -615,6 +619,10 @@ void Profiler::BeforeRun(uint32_t pc) {
         impl.lastPc = pc;
         impl.haveLastPc = true;
     }
+    if (impl.framePending) {
+        impl.framePending = false;
+        impl.Fire(impl.frameMark.name.c_str(), pc);
+    }
     if (impl.marksLeft) impl.CheckMarks(pc);
     if (impl.checksums && impl.runs >= impl.options.checksumFrom &&
         (impl.runs - impl.options.checksumFrom) % impl.options.checksumEvery == 0)
@@ -662,6 +670,9 @@ bool Profiler::Finish() {
     bool ok = impl.WriteTrace() && !impl.censusFailed && !impl.countersFailed && !impl.checksumFailed;
     for (const auto& mark : impl.marks)
         if (!mark.fired) std::fprintf(stderr, "[profile] mark %s did not fire\n", mark.name.c_str());
+    if (impl.framePending)
+        std::fprintf(stderr, "[profile] frame %s was verified but no block ran after it to fire its mark\n",
+                     impl.frameMark.name.c_str());
     if (impl.hasFrame && !impl.frameMark.fired)
         std::fprintf(stderr, "[profile] frame mark %s did not fire (%" PRIu64 " complete frame(s) rejected)\n",
                      impl.frameMark.name.c_str(), impl.framesRejected);

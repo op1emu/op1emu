@@ -39,7 +39,10 @@ or a marks file for another NAND image is an error, not an empty profile.
 
 ## Phase marks
 
-A marks file names guest PC ranges in the firmware. A mark fires the first
+A marks file names guest PC ranges in the firmware. Every mark fires at a
+block entry, so the counters and censuses it closes end on a block boundary
+(the verified frame completes during device processing, and its mark fires
+at the entry of the next block). A mark fires the first
 time a block starts inside its range after starting outside it; `after` arms a
 mark only once another mark has fired (and the PC must still enter the range
 afresh). At most one mark fires per block, in file order. List marks in the
@@ -52,7 +55,7 @@ window against that order before a capture and verifies it after.
 | `bootrom`, `te-boot` | first and second entry to the L1 bootrom range |
 | `lap-begin`, `main-boot`, `lap-end` | firmware boot stages |
 | `register_cb`, `main-display` | callback registration, then the main display routine |
-| `main-frame` | the first complete panel frame after `main-display` whose RGB565 bytes have the reference SHA-256 |
+| `main-frame` | the first complete panel frame after `main-display` whose RGB565 bytes have the reference SHA-256; it fires at the next block entry, as every mark does |
 
 `main-display` is a firmware address, not proof that anything was drawn; an
 earlier, complete but different frame (a stale boot logo transfer) is rejected
