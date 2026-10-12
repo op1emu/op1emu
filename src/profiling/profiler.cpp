@@ -608,12 +608,14 @@ Profiler::~Profiler() = default;
 void Profiler::BeforeRun(uint32_t pc) {
     auto& impl = *impl_;
     if (!impl.started) impl.Start(pc);
-    if (impl.marksLeft) impl.CheckMarks(pc);
+    // The transition into this block belongs with the block it leaves, like
+    // that block's run in the PC census: count it before a mark here dumps.
     if (impl.census) {
         if (impl.haveLastPc) ++impl.edgeCensus[uint64_t(impl.lastPc) << 32 | pc];
         impl.lastPc = pc;
         impl.haveLastPc = true;
     }
+    if (impl.marksLeft) impl.CheckMarks(pc);
     if (impl.checksums && impl.runs >= impl.options.checksumFrom &&
         (impl.runs - impl.options.checksumFrom) % impl.options.checksumEvery == 0)
         impl.WriteChecksum(pc);

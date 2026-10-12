@@ -311,10 +311,14 @@ def cmd_census(args) -> int:
     if not end:
         raise SystemExit("--phase must be BEGIN:END")
     symbols = census.Symbols(args.symbols)
-    if args.edges:
-        print(census.edge_report(args.run / "census", begin, end, args.top, symbols))
-    else:
-        print(census.report(args.run / "census", begin, end, args.top, symbols))
+    try:
+        if args.edges:
+            print(census.edge_report(args.run / "census", begin, end, args.top, symbols))
+        else:
+            print(census.report(args.run / "census", begin, end, args.top, symbols))
+    except (OSError, ValueError) as error:
+        print(f"census: {error}", file=sys.stderr)
+        return 2
     return 0
 
 

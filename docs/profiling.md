@@ -136,7 +136,10 @@ cumulative counts:
 - `mmio` (`u32 key, u64, u64`): MMR address, guest reads, guest writes.
 - `edge` (`u32 from, u32 to, u64 count`): block entry, the entry of the block
   that ran next, how often. The next block is whatever the guest ran next,
-  so interrupt entries are edges too.
+  so interrupt entries are edges too. A transition is counted in the phase
+  of the block it leaves, like that block's run, so in every phase the
+  transitions out of a block equal its runs; `census --edges` checks this
+  against the PC census and refuses dumps that disagree.
 
 Difference two marks' files for one phase. The census costs hash-map updates
 per block and per MMR access: it changes timing, so never combine it with a
@@ -317,9 +320,12 @@ is not.
 `run` and `verify` take `--checksum N` (records every N blocks) and
 `--checksum-from RUNS`. `diverge A B` reports the first record where two runs
 differ, which fields differ, and the window of blocks the divergence lies
-in, with the options to repeat both runs at a finer interval inside it.
-`verify --checksum` reports this for every run that differed from the
-first. The research line needed a separate event-record tool for this, and
+in, with the options to repeat both runs at a finer interval inside it. It
+reads the files a record at a time and stops at the first difference, so a
+fine-grained rerun with millions of records is fine. `verify --checksum`
+compares guest state as a check of its own: runs whose counted work matches
+but whose registers differ are reported as differences, with where they
+begin. The research line needed a separate event-record tool for this, and
 two bugs that dropped guest work looked like 5-6% speedups until found. `--symbols` names PCs from `ADDRESS NAME` lines, e.g. exported from
 Ghidra. Counts are work, not cost.
 

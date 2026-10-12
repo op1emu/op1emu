@@ -4,7 +4,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, Iterator, List, Optional
 
 from .census import Symbols
 
@@ -30,42 +30,57 @@ class Record:
     system_regs_astat: int
 
 
+def records(path: Path) -> Iterator[Record]:
+    """One record at a time: a fine-grained rerun writes millions."""
+    if path.stat().st_size % RECORD.size:
+        raise ValueError(f"{path}: truncated checksum file ({path.stat().st_size} bytes)")
+    with open(path, "rb") as file:
+        while chunk := file.read(RECORD.size * 4096):
+            for values in RECORD.iter_unpack(chunk):
+                yield Record(*values)
+
+
 def load(path: Path) -> List[Record]:
-    data = path.read_bytes()
-    if len(data) % RECORD.size:
-        raise ValueError(f"{path}: truncated checksum file ({len(data)} bytes)")
-    return [Record(*values) for values in RECORD.iter_unpack(data)]
+    return list(records(path))
 
 
 def _locate(path: Path) -> Path:
     return path / FILE if path.is_dir() else path
 
 
-def first_difference(a: List[Record], b: List[Record]) -> Optional[dict]:
+def first_difference(a: Iterable[Record], b: Iterable[Record]) -> Optional[dict]:
     """The first record that differs, and the window of blocks it lies in:
-    after the last equal record, at or before this one."""
-    for index, (x, y) in enumerate(zip(a, b)):
+    after the last equal record, at or before this one. Reads only as far as
+    that record; `count` is the records compared when there is none."""
+    a, b = iter(a), iter(b)
+    previous, index = None, 0
+    while True:
+        x, y = next(a, None), next(b, None)
+        if x is None and y is None:
+            return None
+        if x is None or y is None:
+            return {"index": index, "fields": ["length"], "a": x, "b": y, "after": previous,
+                    "ended": "a" if x is None else "b"}
         if x != y:
             fields = [name for name in FIELDS if getattr(x, name) != getattr(y, name)]
-            previous = a[index - 1] if index else None
             return {"index": index, "fields": fields, "a": x, "b": y, "after": previous}
-    if len(a) != len(b):
-        shorter = min(len(a), len(b))
-        return {"index": shorter, "fields": ["length"], "a": a[shorter] if shorter < len(a) else None,
-                "b": b[shorter] if shorter < len(b) else None, "after": a[shorter - 1] if shorter else None}
-    return None
+        previous, index = x, index + 1
+
+
+def count(path: Path) -> int:
+    return path.stat().st_size // RECORD.size
 
 
 def report(run_a: Path, run_b: Path, symbols: Symbols) -> str:
-    a, b = load(_locate(run_a)), load(_locate(run_b))
-    found = first_difference(a, b)
+    path_a, path_b = _locate(run_a), _locate(run_b)
+    found = first_difference(records(path_a), records(path_b))
     if found is None:
-        return f"no difference in {len(a)} checksums (guest registers and interrupt state at every record)"
+        return f"no difference in {count(path_a)} checksums (guest registers and interrupt state at every record)"
     after = found["after"]
     lines = []
     if found["fields"] == ["length"]:
         lines.append(f"identical for {found['index']} checksums, then one run has no more "
-                     f"({len(a)} vs {len(b)} records): it ended earlier")
+                     f"({count(path_a)} vs {count(path_b)} records): it ended earlier")
         return "\n".join(lines)
     x, y = found["a"], found["b"]
     lines.append(f"first difference at checksum {found['index']} (run {x.runs:,}): {', '.join(found['fields'])}")

@@ -51,6 +51,18 @@ def edge_phase(prefix: Path, begin: str, end: str) -> Dict[Tuple[int, int], int]
     return out
 
 
+def edges_against_runs(edges: Dict[Tuple[int, int], int], runs: Dict[int, Tuple[int, int]]) -> List[str]:
+    """Each run of a block is followed by exactly one block, and both
+    censuses count a run in the phase it started in: per block, transitions
+    out of it must equal its runs."""
+    out: Dict[int, int] = {}
+    for (a, _), count in edges.items():
+        out[a] = out.get(a, 0) + count
+    return [f"0x{pc:08x}: {out.get(pc, 0)} transitions out, {r} runs"
+            for pc, (r, _) in sorted(runs.items()) if out.get(pc, 0) != r] + \
+           [f"0x{pc:08x}: {n} transitions out, no runs" for pc, n in sorted(out.items()) if pc not in runs]
+
+
 def edge_report(prefix: Path, begin: str, end: str, limit: int, symbols: Symbols) -> str:
     """Hot transitions, and for the busiest blocks how predictable the next
     block is: a block whose runs nearly all continue to one successor is a
@@ -58,7 +70,12 @@ def edge_report(prefix: Path, begin: str, end: str, limit: int, symbols: Symbols
     successors is not. Transitions include interrupt entries."""
     edges = edge_phase(prefix, begin, end)
     total = sum(edges.values())
-    lines = [f"edges {begin} -> {end}: {total:,} transitions between {len({a for a, _ in edges}):,} blocks", "",
+    lines = [f"edges {begin} -> {end}: {total:,} transitions between {len({a for a, _ in edges}):,} blocks"]
+    mismatch = edges_against_runs(edges, phase(prefix, "pc", begin, end))
+    if mismatch:
+        raise ValueError("edge census disagrees with the block runs it should match: " + "; ".join(mismatch[:5]))
+    lines += ["(every block run in the phase is the start of exactly one transition, checked against the "
+              "PC census)", "",
              f"{'from':>10} {'to':>10} {'count':>12} {'share':>6}  from symbol -> to symbol"]
     for (a, b), count in sorted(edges.items(), key=lambda kv: -kv[1])[:limit]:
         lines.append(f"0x{a:08x} 0x{b:08x} {count:>12} {count / total * 100:5.1f}%  "

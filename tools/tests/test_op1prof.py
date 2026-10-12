@@ -892,6 +892,8 @@ def test_edge_census_phase_and_report(tmp_path):
         b"".join(census.EDGE.pack(*r) for r in records))
     write("a", [(0x100, 0x200, 10)])
     write("b", [(0x100, 0x200, 109), (0x100, 0x300, 1), (0x200, 0x100, 100)])
+    _census(Path(f"{prefix}.pc.a"), [(0x100, 10, 10)])
+    _census(Path(f"{prefix}.pc.b"), [(0x100, 110, 110), (0x200, 100, 100)])
     assert census.edge_phase(prefix, "a", "b") == {(0x100, 0x200): 99, (0x100, 0x300): 1, (0x200, 0x100): 100}
     text = census.edge_report(prefix, "a", "b", 10, census.Symbols(None))
     assert "200 transitions between 2 blocks" in text
@@ -926,3 +928,44 @@ def test_verify_with_checksums_says_where_runs_diverge(files, tmp_path):
     assert "first difference at checksum 2" in report["divergence"]["1"]
     from op1prof import diverge
     assert diverge.RECORD.size == 64 and (tmp_path / "v" / "run00" / "checksum.bin").stat().st_size % 64 == 0
+
+
+def test_verify_with_checksums_catches_a_state_difference_with_the_same_workload(files, tmp_path):
+    flaky = tmp_path / "state.sh"   # same counted work; only the second run's registers differ
+    flaky.write_text(f"#!/bin/sh\nn=$(cat {tmp_path}/n 2>/dev/null || echo 0); echo $((n + 1)) > {tmp_path}/n\n"
+                     f"if [ $n = 1 ]; then export FAKE_DIVERGE=2; fi\nexec {FAKE} \"$@\"\n")
+    flaky.chmod(0o755)
+    report = verify.verify(spec(files, binary=flaky, checksum_every=100), 2, tmp_path / "v", None, None)
+    assert report["status"] == "differences found"
+    assert report["differences"] == ["run 1: guest state differs from checksum 2 (data_regs)"]
+    plain = verify.verify(spec(files, checksum_every=100), 2, tmp_path / "w", None, None)
+    assert plain["status"] == "deterministic" and "divergence" not in plain
+
+
+def test_diverge_streams_and_stops_at_the_first_difference():
+    from op1prof import diverge
+    rec = lambda runs, regs: diverge.Record(runs, runs, runs, 0, 0, 0, 0, regs, 1, 2)
+    consumed = []
+
+    def endless(first):
+        n = 0
+        while True:
+            consumed.append(n)
+            yield rec(n, first if n == 0 else 0)
+            n += 1
+    found = diverge.first_difference(endless(1), endless(2))
+    assert found["index"] == 0 and len(consumed) == 2   # read one record of each, no more
+    found = diverge.first_difference([rec(0, 0)], [rec(0, 0), rec(1, 0)])
+    assert found["fields"] == ["length"] and found["ended"] == "a"
+
+
+def test_edges_must_match_block_runs(tmp_path):
+    prefix = tmp_path / "census"
+    for mark, edges, pcs in (("a", [], []), ("b", [(0x100, 0x200, 3), (0x200, 0x100, 2)], [(0x100, 3, 9), (0x200, 2, 4)])):
+        Path(f"{prefix}.edge.{mark}").write_bytes(b"".join(census.EDGE.pack(*r) for r in edges))
+        _census(Path(f"{prefix}.pc.{mark}"), pcs)
+    assert "checked against the PC census" in census.edge_report(prefix, "a", "b", 5, census.Symbols(None))
+    # Edges counted one block late: the transition into the end mark's block missing.
+    Path(f"{prefix}.edge.b").write_bytes(b"".join(census.EDGE.pack(*r) for r in [(0x100, 0x200, 3), (0x200, 0x100, 1)]))
+    with pytest.raises(ValueError, match="0x00000200: 1 transitions out, 2 runs"):
+        census.edge_report(prefix, "a", "b", 5, census.Symbols(None))
