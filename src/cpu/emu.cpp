@@ -76,14 +76,14 @@ void Emulator::MemoryWrite(u32 addr, const void* buffer, int length)
 
 u8 Emulator::MemoryRead8(u32 vaddr)
 {
-    u8 value;
+    u8 value = 0;  // an unmapped address reads 0, as in MemoryRead32
     MemoryRead(vaddr, &value, sizeof(value));
     return value;
 }
 
 u16 Emulator::MemoryRead16(u32 vaddr)
 {
-    u16 value;
+    u16 value = 0;  // an unmapped address reads 0, as in MemoryRead32
     MemoryRead(vaddr, &value, sizeof(value));
     return value;
 }
@@ -105,7 +105,7 @@ u32 Emulator::MemoryRead32(u32 vaddr)
 
 u64 Emulator::MemoryRead64(u32 vaddr)
 {
-    u64 value;
+    u64 value = 0;  // an unmapped address reads 0, as in MemoryRead32
     MemoryRead(vaddr, &value, sizeof(value));
     return value;
 }
