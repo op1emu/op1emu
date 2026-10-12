@@ -10,6 +10,7 @@ Behavior comes from FAKE_* variables (the runner keeps those):
                closeout (close stdout after the first marks, keep running)
   FAKE_IRQ     interrupts taken per mark step (default 3)
   FAKE_CODE    seed of the compiled code's hashes (default 0); FAKE_NOSHAPE drops them
+  FAKE_DIVERGE checksum record from which the data registers differ
   FAKE_ENVLOG  write the received environment here
 """
 import json
@@ -72,6 +73,16 @@ for step, name in enumerate(names):
         os.close(1)
         os.close(2)
         time.sleep(3600)
+if opt("--profile-checksum"):
+    import struct
+    every, start = int(opt("--profile-checksum-every") or 65536), int(opt("--profile-checksum-from") or 0)
+    diverge = int(os.environ.get("FAKE_DIVERGE", "-1"))
+    with open(opt("--profile-checksum"), "wb") as f:
+        total = (len(names) - 1) * work // 3
+        for index, runs in enumerate(range(start, total + 1, every)):
+            regs = 1000 + index + (1 if 0 <= diverge <= index else 0)
+            f.write(struct.pack("<QQQIIIIQQQ", runs, runs * 3, runs * 3, 0x1000 + index, 0x10, 0, 0x1f,
+                                regs, 7, 9))
 if opt("--profile-trace"):
     with open(opt("--profile-trace"), "w") as f:
         json.dump({"schema": "op1.trace.v3", "dropped": 1 if "dropped" in mode else 0, "counters": counted,

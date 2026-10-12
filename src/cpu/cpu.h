@@ -86,6 +86,7 @@ public:
     void SetCoreEventSink(BcoreEventSink* sink);
     void SetPerfJitdump(bool enable);
     uint64_t EventsDelivered() const { return eventsDelivered_; }
+    const CpuState& State() const { return *cpuState_; }
 #endif
     // Deterministic mode only: RTC calendar time at guest time zero.
     void SetRtcEpoch(std::chrono::system_clock::time_point epoch) { time_.SetEpoch(epoch); }

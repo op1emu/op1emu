@@ -882,3 +882,47 @@ def test_ab_says_when_both_sides_compiled_identical_code(files, tmp_path, capsys
         report = ab.compare(both, ab.Side("new", snapshot_binary(side, out), ["--x"], sha256_file(side)),
                             spec(files), 4, out, ("start", "main-frame"), 2.0, False)
         assert report["codegen"] is None   # unknown hashes on both sides: no fingerprint, not "identical"
+
+
+# ---- edges and divergence ----
+
+def test_edge_census_phase_and_report(tmp_path):
+    prefix = tmp_path / "census"
+    write = lambda mark, records: Path(f"{prefix}.edge.{mark}").write_bytes(
+        b"".join(census.EDGE.pack(*r) for r in records))
+    write("a", [(0x100, 0x200, 10)])
+    write("b", [(0x100, 0x200, 109), (0x100, 0x300, 1), (0x200, 0x100, 100)])
+    assert census.edge_phase(prefix, "a", "b") == {(0x100, 0x200): 99, (0x100, 0x300): 1, (0x200, 0x100): 100}
+    text = census.edge_report(prefix, "a", "b", 10, census.Symbols(None))
+    assert "200 transitions between 2 blocks" in text
+    assert "0x00000100          100     2 0x00000200  99.0%" in text
+    with pytest.raises(ValueError):
+        census.edge_phase(prefix, "b", "a")
+
+
+def test_diverge_finds_the_first_differing_record(tmp_path):
+    from op1prof import diverge
+    rec = lambda runs, regs, pc=0x10: diverge.Record(runs, runs, runs, pc, 0, 0, 0, regs, 1, 2)
+    same = [rec(0, 5), rec(100, 6), rec(200, 7)]
+    assert diverge.first_difference(same, list(same)) is None
+    found = diverge.first_difference(same, [rec(0, 5), rec(100, 6), rec(200, 8, pc=0x20)])
+    assert found["index"] == 2 and found["fields"] == ["pc", "data_regs"] and found["after"].runs == 100
+    assert diverge.first_difference(same, same[:2])["fields"] == ["length"]
+    a, b = tmp_path / "a.bin", tmp_path / "b.bin"
+    a.write_bytes(b"".join(diverge.RECORD.pack(*vars(r).values()) for r in same))
+    b.write_bytes(b"".join(diverge.RECORD.pack(*vars(r).values()) for r in [rec(0, 5), rec(100, 9), rec(200, 9)]))
+    text = diverge.report(a, b, census.Symbols(None))
+    assert "first difference at checksum 1 (run 100): data_regs" in text and "equal at run 0" in text
+    assert "--checksum-from 0" in text
+
+
+def test_verify_with_checksums_says_where_runs_diverge(files, tmp_path):
+    flaky = tmp_path / "flaky.sh"   # the second run's guest state differs from record 2 on
+    flaky.write_text(f"#!/bin/sh\nn=$(cat {tmp_path}/n 2>/dev/null || echo 0); echo $((n + 1)) > {tmp_path}/n\n"
+                     f"if [ $n = 1 ]; then export FAKE_DIVERGE=2 FAKE_WORK=1003; fi\nexec {FAKE} \"$@\"\n")
+    flaky.chmod(0o755)
+    report = verify.verify(spec(files, binary=flaky, checksum_every=100), 2, tmp_path / "v", None, None)
+    assert report["status"] == "differences found"
+    assert "first difference at checksum 2" in report["divergence"]["1"]
+    from op1prof import diverge
+    assert diverge.RECORD.size == 64 and (tmp_path / "v" / "run00" / "checksum.bin").stat().st_size % 64 == 0

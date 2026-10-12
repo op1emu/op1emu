@@ -103,12 +103,15 @@ static int RunEmulator(int argc, char* argv[]) {
     std::string inputScript;
     // Profiling options (profiling builds only; see docs/profiling.md).
     std::string profileMarks, profileTrace, profileCensus, perfFifo, perfWindow, profileUntil;
+    std::string profileChecksum, profileChecksumEvery, profileChecksumFrom;
     bool perfJitdump = false;
     bool profileCounters = false;
     const std::pair<const char*, std::string*> valueOptions[] = {
         {"--profile-marks", &profileMarks}, {"--profile-trace", &profileTrace},
         {"--profile-census", &profileCensus}, {"--perf-ctl-fifo", &perfFifo},
         {"--perf-window", &perfWindow}, {"--profile-until", &profileUntil},
+        {"--profile-checksum", &profileChecksum}, {"--profile-checksum-every", &profileChecksumEvery},
+        {"--profile-checksum-from", &profileChecksumFrom},
     };
     bool anyProfiling = false;
     for (int i = 1; i < argc; i++) {
@@ -166,6 +169,9 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --perf-window A:B     Enable perf at mark A, disable at mark B\n"
                      "  --perf-jitdump        Write LLVM jitdump for perf inject --jit\n"
                      "  --profile-counters    CPU thread's user-space instructions and cycles at every mark\n"
+                     "  --profile-checksum F  Guest-state checksum every N blocks (diagnostic)\n"
+                     "  --profile-checksum-every N  Blocks between checksums (default 65536)\n"
+                     "  --profile-checksum-from N   First block to checksum (default 0)\n"
                      "Headless commands (one per line):\n"
                      "  keys | press KEY | release KEY | tap KEY [MS] | wait MS | quit\n"
                      "  accel X Y Z | accel random | volume 0..255\n"
@@ -226,6 +232,20 @@ static int RunEmulator(int argc, char* argv[]) {
         profile.until = profileUntil;
         profile.jitdump = perfJitdump;
         profile.counters = profileCounters;
+        profile.checksumPath = profileChecksum;
+        auto count = [](const std::string& text, const char* option, bool zero) {
+            size_t used = 0;
+            unsigned long long value = 0;
+            bool parsed = text.find('-') == std::string::npos;
+            try { if (parsed) value = std::stoull(text, &used); } catch (const std::exception&) { parsed = false; }
+            if (!parsed || used != text.size() || (!zero && value == 0))
+                throw std::runtime_error(std::string("Invalid ") + option + ": " + text);
+            return static_cast<uint64_t>(value);
+        };
+        if (!profileChecksumEvery.empty())
+            profile.checksumEvery = count(profileChecksumEvery, "--profile-checksum-every", false);
+        if (!profileChecksumFrom.empty())
+            profile.checksumFrom = count(profileChecksumFrom, "--profile-checksum-from", true);
         profiler = std::make_unique<Profiler>(profile, cpu, [] { cpuShouldStop.store(true); });
         cpu.SetProfiler(profiler.get());
         // The verified-frame mark sees exactly the pixels the frontend gets.

@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import ab, census, compilation, machine, perf, stats, trace, verify
+from . import ab, census, compilation, diverge, machine, perf, stats, trace, verify
 from . import report as perf_report
 from .categories import Categories
 from .runner import REPO, RunSpec, reserved_args, run, sha256_file, snapshot_binary
@@ -33,6 +33,13 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min-mem-gb", type=float, default=10.0, help="refuse to start below this MemAvailable")
     parser.add_argument("--force", action="store_true", help="start despite preflight problems (recorded)")
     parser.add_argument("--out", type=Path, default=None, help="results directory (default op1prof-<time>)")
+
+
+def _checksum(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--checksum", type=_positive, metavar="N",
+                        help="record guest-state checksums every N blocks, for op1prof diverge (diagnostic)")
+    parser.add_argument("--checksum-from", type=int, default=0, metavar="RUNS",
+                        help="first block to record (narrow down a divergence)")
 
 
 def _counters(parser: argparse.ArgumentParser) -> None:
@@ -78,7 +85,8 @@ def _spec(args, binary: Path) -> RunSpec:
     return RunSpec(binary=binary, nand=args.nand.resolve(), otp=args.otp.resolve(),
                    marks=args.marks.resolve(), until=args.until, args=list(args.arg),
                    timeout_s=args.timeout, progress_timeout_s=args.progress_timeout, cpu=args.cpu,
-                   counters=getattr(args, "counters", False))
+                   counters=getattr(args, "counters", False),
+                   checksum_every=getattr(args, "checksum", None), checksum_from=getattr(args, "checksum_from", 0))
 
 
 def _phase(args) -> tuple:
@@ -140,6 +148,10 @@ def cmd_verify(args) -> int:
                            args.expect, args.write_expect)
     for line in report["differences"]:
         print(line)
+    for index, text in report.get("divergence", {}).items():
+        print(f"run {index} against run 0:\n{text}")
+    if report["differences"] and not args.checksum:
+        print("to find where the runs first differ, repeat with --checksum 65536 and run op1prof diverge")
     print(f"{report['status']} ({len(report['runs'])} runs; {out / 'results.json'})")
     return 0 if report["status"] == "deterministic" else 1
 
@@ -268,6 +280,15 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_diverge(args) -> int:
+    try:
+        print(diverge.report(args.a, args.b, census.Symbols(args.symbols)))
+    except (OSError, ValueError) as error:
+        print(f"diverge: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_compile(args) -> int:
     path = args.run / "trace.json"
     try:
@@ -289,7 +310,11 @@ def cmd_census(args) -> int:
     begin, _, end = args.phase.partition(":")
     if not end:
         raise SystemExit("--phase must be BEGIN:END")
-    print(census.report(args.run / "census", begin, end, args.top, census.Symbols(args.symbols)))
+    symbols = census.Symbols(args.symbols)
+    if args.edges:
+        print(census.edge_report(args.run / "census", begin, end, args.top, symbols))
+    else:
+        print(census.report(args.run / "census", begin, end, args.top, symbols))
     return 0
 
 
@@ -301,6 +326,7 @@ def main(argv=None) -> int:
     p.add_argument("--binary", required=True, type=Path)
     p.add_argument("--census", action="store_true", help="also write per-PC/MMIO census (changes timing)")
     _counters(p)
+    _checksum(p)
     _common(p)
     p.set_defaults(func=cmd_run)
 
@@ -310,6 +336,7 @@ def main(argv=None) -> int:
     p.add_argument("--expect", type=Path, help="compare with a saved workload (from --write-expect)")
     p.add_argument("--write-expect", type=Path, help="save the workload when all runs agree")
     _counters(p)
+    _checksum(p)
     _common(p)
     p.set_defaults(func=cmd_verify)
 
@@ -374,7 +401,14 @@ def main(argv=None) -> int:
     p.add_argument("--phase", required=True, help="BEGIN:END")
     p.add_argument("--top", type=int, default=25)
     p.add_argument("--symbols", type=Path, help="ADDRESS NAME lines to name PCs")
+    p.add_argument("--edges", action="store_true", help="block-to-block transitions instead of per-block counts")
     p.set_defaults(func=cmd_census)
+
+    p = sub.add_parser("diverge", help="where two runs' guest state first differs (runs made with --checksum)")
+    p.add_argument("a", type=Path, help="run directory (or checksum.bin)")
+    p.add_argument("b", type=Path)
+    p.add_argument("--symbols", type=Path, help="ADDRESS NAME lines to name PCs")
+    p.set_defaults(func=cmd_diverge)
 
     args = parser.parse_args(argv)
     return args.func(args)

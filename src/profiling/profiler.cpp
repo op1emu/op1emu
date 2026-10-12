@@ -5,6 +5,8 @@
 #include "sha256.h"
 #include "utils/log.h"
 #include "core.h"
+#include "cpu_state.h"
+#include "mmr.h"
 
 #include <nlohmann/json.hpp>
 
@@ -13,6 +15,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cinttypes>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -141,6 +144,15 @@ struct Profiler::Impl : BcoreEventSink {
     struct MmioCount { uint64_t reads = 0, writes = 0; };
     std::unordered_map<uint32_t, PcCount> pcCensus;
     std::unordered_map<uint32_t, MmioCount> mmioCensus;
+    // Block-to-block transitions: (previous block entry << 32 | this entry).
+    // The previous block may have been interrupted, so an edge is the guest's
+    // actual next block, interrupt entries included.
+    std::unordered_map<uint64_t, uint64_t> edgeCensus;
+    uint32_t lastPc = 0;
+    bool haveLastPc = false;
+
+    FILE* checksums = nullptr;
+    bool checksumFailed = false;
     bool censusFailed = false;
 
     int perfFd = -1;
@@ -151,6 +163,7 @@ struct Profiler::Impl : BcoreEventSink {
 
     ~Impl() override {
         if (perfFd >= 0) close(perfFd);
+        if (checksums) std::fclose(checksums);
     }
 
     // ---- configuration ----
@@ -232,6 +245,11 @@ struct Profiler::Impl : BcoreEventSink {
                 throw std::runtime_error("Cannot open perf control fifo " + options.perfFifo + ": " + std::strerror(errno));
         }
         census = !options.censusPrefix.empty();
+        if (!options.checksumPath.empty()) {
+            if (options.checksumEvery == 0) throw std::runtime_error("--profile-checksum-every must be at least 1");
+            checksums = std::fopen(options.checksumPath.c_str(), "wb");
+            if (!checksums) throw std::runtime_error("Cannot write --profile-checksum " + options.checksumPath);
+        }
         if (!options.tracePath.empty()) events.resize(262144);
         markCounters.reserve(marks.size() + 2);  // start, the marks, the frame: no allocation later
         if (options.counters) {
@@ -406,11 +424,56 @@ struct Profiler::Impl : BcoreEventSink {
         }
         return std::fclose(file) == 0 && ok;
     }
+    // Cumulative edge counts as little-endian records (u32 from, u32 to, u64 count), sorted.
+    bool WriteEdges(const std::string& path) {
+        std::vector<std::pair<uint64_t, uint64_t>> edges(edgeCensus.begin(), edgeCensus.end());
+        std::sort(edges.begin(), edges.end());
+        FILE* file = std::fopen(path.c_str(), "wb");
+        if (!file) return false;
+        bool ok = true;
+        for (const auto& [key, count] : edges) {
+            const uint32_t from = static_cast<uint32_t>(key >> 32), to = static_cast<uint32_t>(key);
+            ok = ok && std::fwrite(&from, 4, 1, file) == 1 && std::fwrite(&to, 4, 1, file) == 1 &&
+                 std::fwrite(&count, 8, 1, file) == 1;
+        }
+        return std::fclose(file) == 0 && ok;
+    }
+
+    // One record of guest state at a block entry, little-endian:
+    //   u64 runs, u64 packets, u64 cycles, u32 pc, u32 ipend, u32 ilat, u32 imask,
+    //   u64 hash of R0-R7/P0-P5/SP/FP, u64 of the accumulators, DAG and loop
+    //   registers, u64 of the system registers and ASTAT flags.
+    // Hashed by group so a difference names its registers. Guest memory is
+    // not covered: a difference there shows up in registers soon after.
+    void WriteChecksum(uint32_t pc) {
+        const CpuState& state = cpu.State();
+        auto hash = [](const void* begin, const void* end) {
+            uint64_t h = 0xcbf29ce484222325ull;
+            for (auto* p = static_cast<const uint8_t*>(begin); p != end; ++p) h = (h ^ *p) * 0x100000001b3ull;
+            return h;
+        };
+        const uint64_t head[3] = {runs, cpu.Time().Packets(), cpu.Time().Cycles()};
+        const uint32_t cec[4] = {pc, cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_IPEND),
+                                 cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_ILAT),
+                                 cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_IMASK)};
+        const uint64_t groups[3] = {hash(state.dpregs, state.dpregs + 16),
+                                    hash(state.ax, &state.rets),
+                                    hash(&state.rets, &state.astat_reserved + 1)};
+        const bool ok = std::fwrite(head, sizeof(head), 1, checksums) == 1 &&
+                        std::fwrite(cec, sizeof(cec), 1, checksums) == 1 &&
+                        std::fwrite(groups, sizeof(groups), 1, checksums) == 1;
+        if (!ok && !checksumFailed) {
+            LogError("Failed to write --profile-checksum");
+            checksumFailed = true;
+        }
+    }
+
     void DumpCensus(const char* mark) {
         const std::string base = options.censusPrefix + ".";
         const bool ok =
             WriteCensus(base + "pc." + mark, pcCensus, [](const PcCount& c) { return std::pair{c.runs, c.packets}; }) &&
-            WriteCensus(base + "mmio." + mark, mmioCensus, [](const MmioCount& c) { return std::pair{c.reads, c.writes}; });
+            WriteCensus(base + "mmio." + mark, mmioCensus, [](const MmioCount& c) { return std::pair{c.reads, c.writes}; }) &&
+            WriteEdges(base + "edge." + mark);
         if (!ok) {
             LogError("Failed to write census %s*.%s", base.c_str(), mark);
             censusFailed = true;
@@ -546,6 +609,14 @@ void Profiler::BeforeRun(uint32_t pc) {
     auto& impl = *impl_;
     if (!impl.started) impl.Start(pc);
     if (impl.marksLeft) impl.CheckMarks(pc);
+    if (impl.census) {
+        if (impl.haveLastPc) ++impl.edgeCensus[uint64_t(impl.lastPc) << 32 | pc];
+        impl.lastPc = pc;
+        impl.haveLastPc = true;
+    }
+    if (impl.checksums && impl.runs >= impl.options.checksumFrom &&
+        (impl.runs - impl.options.checksumFrom) % impl.options.checksumEvery == 0)
+        impl.WriteChecksum(pc);
 }
 
 void Profiler::AfterRun(uint32_t pc, uint32_t packets) {
@@ -585,7 +656,8 @@ bool Profiler::Finish() {
         std::fprintf(stderr, "[profile] counters missed %" PRIu64 " ns of %" PRIu64 " ns\n",
                      end.enabled_ns - end.running_ns, end.enabled_ns);
     if (impl.countersFailed) std::fprintf(stderr, "[profile] hardware counts are incomplete; do not use this run\n");
-    bool ok = impl.WriteTrace() && !impl.censusFailed && !impl.countersFailed;
+    if (impl.checksums && std::fflush(impl.checksums) != 0) impl.checksumFailed = true;
+    bool ok = impl.WriteTrace() && !impl.censusFailed && !impl.countersFailed && !impl.checksumFailed;
     for (const auto& mark : impl.marks)
         if (!mark.fired) std::fprintf(stderr, "[profile] mark %s did not fire\n", mark.name.c_str());
     if (impl.hasFrame && !impl.frameMark.fired)

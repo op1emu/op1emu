@@ -78,6 +78,8 @@ class RunSpec:
     trace: bool = True
     census: bool = False
     counters: bool = False    # --profile-counters (needs perf_event_paranoid <= 2)
+    checksum_every: Optional[int] = None   # --profile-checksum checksum.bin every N blocks
+    checksum_from: int = 0
     prefix: List[str] = field(default_factory=list)   # e.g. perf record ... --
     env: dict = field(default_factory=dict)           # added after cleaning
 
@@ -168,6 +170,9 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
         command += ["--profile-census", "census"]
     if spec.counters:
         command += ["--profile-counters"]
+    if spec.checksum_every:
+        command += ["--profile-checksum", "checksum.bin", "--profile-checksum-every", str(spec.checksum_every),
+                    "--profile-checksum-from", str(spec.checksum_from)]
     command += spec.args
     command = spec.prefix + command
 

@@ -10,8 +10,10 @@
 //    of cumulative counters on stdout, so any two marks can be differenced.
 //  - a Chrome/Perfetto trace of translations (with the CPU thread's CPU time
 //    per translation) and of the marks.
-//  - optional per-PC and MMIO census dumps at every mark (diagnostic: they
-//    cost time, never enable them for timing).
+//  - optional per-PC, block-to-block and MMIO census dumps at every mark
+//    (diagnostic: they cost time, never enable them for timing).
+//  - optional guest-state checksums every N blocks, to find where two runs
+//    that should do the same work first differ.
 //  - perf control: enable/disable a `perf record --control=fifo` window at two
 //    marks, and LLVM jitdump output for `perf inject --jit`.
 //  - optional hardware counters: the CPU thread's user-space instructions and
@@ -34,6 +36,9 @@ struct ProfilerOptions {
     std::string marksPath;     // --profile-marks
     std::string tracePath;     // --profile-trace
     std::string censusPrefix;  // --profile-census
+    std::string checksumPath;  // --profile-checksum
+    uint64_t checksumEvery = 65536;  // --profile-checksum-every (runs)
+    uint64_t checksumFrom = 0;       // --profile-checksum-from (first run recorded)
     std::string perfFifo;      // --perf-ctl-fifo
     std::string perfWindow;    // --perf-window BEGIN:END
     std::string until;         // --profile-until MARK
@@ -42,7 +47,7 @@ struct ProfilerOptions {
 
     bool Enabled() const {
         return !marksPath.empty() || !tracePath.empty() || !censusPrefix.empty() ||
-               !perfFifo.empty() || jitdump || counters;
+               !perfFifo.empty() || jitdump || counters || !checksumPath.empty();
     }
 };
 
