@@ -241,9 +241,12 @@ repeat itself), or `failed` (a run failed; the batch stopped).
 
 `ab` also compares what the two sides compiled. Each run's distinct (block,
 code hash) pairs are digested; when both sides produced the same digest,
-`ab` says that they compiled identical machine code, so any difference comes
-from the host side, and if the change was meant to alter generated code, it
-did not reach it. A nonzero JIT optimization level once changed nothing for
+`ab` says that the observed compile fingerprints are identical: if the change
+was meant to alter generated code, it did not reach it. That is all it says.
+The same code can still run a different number of times or take other
+paths, so identical fingerprints attribute no timing difference to anything.
+A run with any successful translation whose hash is unknown (or with none at
+all) has no fingerprint, and the comparison is left out. A nonzero JIT optimization level once changed nothing for
 months while measurements compared identical code. The translation count, IR
 instructions and machine-code bytes of each side are printed beside it.
 

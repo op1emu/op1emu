@@ -213,8 +213,10 @@ def _print_ab(report: dict, out: Path) -> int:
               f"{b['object_bytes']:,} bytes; new {n['translations']}, {n['ir_insns']:,}, {n['object_bytes']:,}")
         same_config = report["sides"]["base"] == report["sides"]["new"]   # an A/A
         if codegen["identical"] and not same_config:
-            print("both sides compiled identical machine code: any difference comes from the host side. If the "
-                  "change was meant to alter generated code, it did not reach it.")
+            # Same code says nothing about how often it ran or which paths it
+            # took, so no attribution of the timings follows from it.
+            print("observed compile fingerprints are identical: the same blocks compiled to the same machine "
+                  "code on both sides. If the change was meant to alter generated code, it did not reach it.")
         if not codegen["repeatable"]:
             print("a side compiled different code in different runs")
     if report.get("decided_on", "noncompile_cpu_ms") != "noncompile_cpu_ms":

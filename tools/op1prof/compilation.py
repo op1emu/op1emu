@@ -57,8 +57,14 @@ def stage_ms(trace_data: dict, window: Optional[Tuple[str, str]] = None) -> Dict
     return dict(totals)
 
 
+UNKNOWN_HASH = "0" * 16  # bcore's 0: no code map, the hash could not be computed
+
+
 def has_shape(spans: List[Translation]) -> bool:
-    return bool(spans) and all(t.object_hash is not None for t in spans if t.ok)
+    """Every successful translation carries a known code hash, and there is
+    at least one: anything less cannot vouch for what was compiled."""
+    compiled = [t for t in spans if t.ok]
+    return bool(compiled) and all(t.object_hash not in (None, UNKNOWN_HASH) for t in compiled)
 
 
 def codegen(spans: List[Translation]) -> dict:

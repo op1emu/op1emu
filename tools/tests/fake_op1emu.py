@@ -44,7 +44,8 @@ for step, name in enumerate(names):
         if not os.environ.get("FAKE_NOSHAPE"):
             code = int(os.environ.get("FAKE_CODE", "0"))
             span.update(ir_insns=100 * step, ir_blocks=step, object_bytes=400 * step,
-                        object_hash=f"{(step * 7919 + code) & 0xffffffffffffffff:016x}")
+                        object_hash="0" * 16 if os.environ.get("FAKE_UNKNOWN_HASH")
+                        else f"{(step * 7919 + code) & 0xffffffffffffffff:016x}")
         events.append({"name": "translate", "cat": "jit", "ph": "X", "pid": 1, "tid": 1,
                        "ts": (t0 + wall) / 1e3, "dur": 2e6 / 1e3, "args": span})
         wall += 2_000_000

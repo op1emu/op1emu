@@ -839,6 +839,19 @@ def test_compile_report_ranks_blocks_and_counts_retranslations():
     assert compilation.codegen(compilation.translations(other))["digest"] != shape["digest"]
 
 
+def test_unknown_hashes_and_failed_translations_give_no_fingerprint():
+    from op1prof import compilation
+    spans = lambda *hashes: [compilation.Translation(pc=i, begin_us=i, cpu_ns=1, ok=h != "failed", ir_insns=1,
+                                                     object_bytes=1, object_hash=None if h == "failed" else h)
+                             for i, h in enumerate(hashes)]
+    assert compilation.has_shape(spans("aa", "bb"))
+    assert not compilation.has_shape(spans("0000000000000000", "0000000000000000"))   # all unknown
+    assert not compilation.has_shape(spans("aa", "0000000000000000"))                 # partly unknown
+    assert not compilation.has_shape(spans("failed", "failed"))                       # nothing compiled
+    assert compilation.has_shape(spans("aa", "failed"))                               # failures carry no code
+    assert not compilation.has_shape([])
+
+
 def test_ab_says_when_both_sides_compiled_identical_code(files, tmp_path, capsys):
     def wrapper(name, env):
         script = tmp_path / f"{name}.sh"
@@ -846,6 +859,7 @@ def test_ab_says_when_both_sides_compiled_identical_code(files, tmp_path, capsys
         script.chmod(0o755)
         return script
     same, other, old = wrapper("same", "FAKE_SCALE=0.99"), wrapper("other", "FAKE_CODE=5"), wrapper("old", "FAKE_NOSHAPE=1")
+    unknown = wrapper("unknown", "FAKE_UNKNOWN_HASH=1")
     for name, new, identical in (("same", same, True), ("other", other, False)):
         out = tmp_path / name
         out.mkdir()
@@ -853,9 +867,18 @@ def test_ab_says_when_both_sides_compiled_identical_code(files, tmp_path, capsys
                             spec(files), 4, out, ("start", "main-frame"), 2.0, False)
         assert report["codegen"]["identical"] is identical and report["codegen"]["repeatable"]
         cli._print_ab(report, out)
-        assert ("identical machine code" in capsys.readouterr().out) is identical
+        printed = capsys.readouterr().out
+        assert ("compile fingerprints are identical" in printed) is identical
+        assert "host side" not in printed
     out = tmp_path / "old"
     out.mkdir()
     report = ab.compare(_side("base", files, out), ab.Side("new", snapshot_binary(old, out), [], sha256_file(old)),
                         spec(files), 4, out, ("start", "main-frame"), 2.0, False)
     assert report["codegen"] is None   # a binary without compile shapes: nothing to compare
+    for name, side in (("unknown-new", unknown),):
+        out = tmp_path / name
+        out.mkdir()
+        both = ab.Side("base", snapshot_binary(unknown, out), [], sha256_file(unknown))
+        report = ab.compare(both, ab.Side("new", snapshot_binary(side, out), ["--x"], sha256_file(side)),
+                            spec(files), 4, out, ("start", "main-frame"), 2.0, False)
+        assert report["codegen"] is None   # unknown hashes on both sides: no fingerprint, not "identical"
