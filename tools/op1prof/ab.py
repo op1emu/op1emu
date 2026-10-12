@@ -83,7 +83,13 @@ def compare(base: Side, new: Side, spec: RunSpec, pairs: int, out: Path, phase: 
     workload_changed = [p for p in report["pairs"] if p["workload_diff"]]
     report["workload_changed"] = bool(workload_changed)
     summary = {}
-    for metric in ("noncompile_cpu_ms", "compile_cpu_ms", "cpu_ms"):
+    metrics = ["noncompile_cpu_ms", "compile_cpu_ms", "cpu_ms"]
+    # Host instructions (--counters) barely vary between runs, so they can
+    # show a change too small for CPU time; they are work, not time, and
+    # never decide the status.
+    if all(p[side][1].get("noncompile_insns") is not None for p in results for side in ("base", "new")):
+        metrics.append("noncompile_insns")
+    for metric in metrics:
         comparison = stats.paired([p["base"][1][metric] for p in results],
                                   [p["new"][1][metric] for p in results], seed=seed)
         summary[metric] = {**comparison.to_json(), "verdict": comparison.verdict(min_effect_pct)}

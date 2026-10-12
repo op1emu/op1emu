@@ -24,7 +24,7 @@ DEFAULT_SCRIPT = "accel 100 -100 500\nvolume 128\nwait 86400000\n"
 # --nand-rw, or a second --profile-until); "--" would turn the rest into
 # positional paths. Extra arguments may not use these.
 RESERVED_ARGS = ("--", "--nand-rw", "--nand-snapshot", "--headless", "--deterministic", "--input-script",
-                 "--profile-marks", "--profile-until", "--profile-trace")
+                 "--profile-marks", "--profile-until", "--profile-trace", "--profile-counters")
 # How long an emulator that closed its output may take to exit.
 EXIT_GRACE_S = 60.0
 
@@ -77,6 +77,7 @@ class RunSpec:
     cpu: Optional[int] = None
     trace: bool = True
     census: bool = False
+    counters: bool = False    # --profile-counters (needs perf_event_paranoid <= 2)
     prefix: List[str] = field(default_factory=list)   # e.g. perf record ... --
     env: dict = field(default_factory=dict)           # added after cleaning
 
@@ -156,6 +157,8 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
         command += ["--profile-trace", "trace.json"]
     if spec.census:
         command += ["--profile-census", "census"]
+    if spec.counters:
+        command += ["--profile-counters"]
     command += spec.args
     command = spec.prefix + command
 

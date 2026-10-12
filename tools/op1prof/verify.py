@@ -10,7 +10,7 @@ from .runner import RunSpec, run
 
 
 def _tuple(marks: List[Mark]) -> List[dict]:
-    return [{"name": m.name, **{k: m.counters[k] for k in WORKLOAD + SHAPE}} for m in marks]
+    return [{"name": m.name, **{k: m.counters[k] for k in WORKLOAD + SHAPE if k in m.counters}} for m in marks]
 
 
 def _diff(expected: List[dict], actual: List[dict]) -> List[str]:
@@ -20,11 +20,18 @@ def _diff(expected: List[dict], actual: List[dict]) -> List[str]:
     if [m["name"] for m in expected] != [m["name"] for m in actual]:
         lines.append(f"marks differ: {[m['name'] for m in expected]} vs {[m['name'] for m in actual]}")
     actual_by = {m["name"]: m for m in actual}
+    skipped = {key for key in WORKLOAD + SHAPE
+               if not any(key in m for m in expected) or not any(key in m for m in actual)}
     for mark in expected:
         other = actual_by.get(mark["name"])
         if not other:
             continue
         for key in WORKLOAD + SHAPE:
+            if key in skipped:
+                continue  # a counter the older binary or expect file lacks entirely
+            if key not in mark or key not in other:
+                lines.append(f"{mark['name']}.{key}: missing on one side")
+                continue
             if mark[key] != other[key]:
                 lines.append(f"{mark['name']}.{key}: {mark[key]} vs {other[key]}")
     return lines

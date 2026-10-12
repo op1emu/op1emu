@@ -104,6 +104,7 @@ static int RunEmulator(int argc, char* argv[]) {
     // Profiling options (profiling builds only; see docs/profiling.md).
     std::string profileMarks, profileTrace, profileCensus, perfFifo, perfWindow, profileUntil;
     bool perfJitdump = false;
+    bool profileCounters = false;
     const std::pair<const char*, std::string*> valueOptions[] = {
         {"--profile-marks", &profileMarks}, {"--profile-trace", &profileTrace},
         {"--profile-census", &profileCensus}, {"--perf-ctl-fifo", &perfFifo},
@@ -130,6 +131,7 @@ static int RunEmulator(int argc, char* argv[]) {
             rtcEpoch = seconds;
         }
         else if (options && arg == "--perf-jitdump") perfJitdump = anyProfiling = true;
+        else if (options && arg == "--profile-counters") profileCounters = anyProfiling = true;
         else if (options && std::any_of(std::begin(valueOptions), std::end(valueOptions),
                                         [&](const auto& option) { return arg == option.first; })) {
             if (++i == argc || !*argv[i]) throw std::runtime_error(arg + " requires a nonempty value");
@@ -163,6 +165,7 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --perf-ctl-fifo FIFO  perf record --control=fifo:FIFO\n"
                      "  --perf-window A:B     Enable perf at mark A, disable at mark B\n"
                      "  --perf-jitdump        Write LLVM jitdump for perf inject --jit\n"
+                     "  --profile-counters    CPU thread's user-space instructions and cycles at every mark\n"
                      "Headless commands (one per line):\n"
                      "  keys | press KEY | release KEY | tap KEY [MS] | wait MS | quit\n"
                      "  accel X Y Z | accel random | volume 0..255\n"
@@ -222,6 +225,7 @@ static int RunEmulator(int argc, char* argv[]) {
         profile.perfWindow = perfWindow;
         profile.until = profileUntil;
         profile.jitdump = perfJitdump;
+        profile.counters = profileCounters;
         profiler = std::make_unique<Profiler>(profile, cpu, [] { cpuShouldStop.store(true); });
         cpu.SetProfiler(profiler.get());
         // The verified-frame mark sees exactly the pixels the frontend gets.

@@ -12,6 +12,8 @@ from . import report as perf_report
 from .categories import Categories
 from .runner import REPO, RunSpec, reserved_args, run, sha256_file, snapshot_binary
 
+# Other threads' CPU (frontend, USB/IP loop) worth a warning, relative to execution CPU.
+OTHER_THREADS_WARN = 0.05
 # A missing mark, file or field in a capture, or perf script failing.
 REPORT_ERRORS = (ValueError, KeyError, OSError, RuntimeError)
 DEFAULT_MARKS = REPO / "profiling" / "marks" / "op1-stock-nand.json"
@@ -31,6 +33,12 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min-mem-gb", type=float, default=10.0, help="refuse to start below this MemAvailable")
     parser.add_argument("--force", action="store_true", help="start despite preflight problems (recorded)")
     parser.add_argument("--out", type=Path, default=None, help="results directory (default op1prof-<time>)")
+
+
+def _counters(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--counters", action="store_true",
+                        help="count the CPU thread's user-space instructions and cycles (perf_event_paranoid <= 2; "
+                             "pin --cpu to a performance core)")
 
 
 def _out(args, kind: str) -> Path:
@@ -69,7 +77,8 @@ def _spec(args, binary: Path) -> RunSpec:
     _check_args(args.arg)
     return RunSpec(binary=binary, nand=args.nand.resolve(), otp=args.otp.resolve(),
                    marks=args.marks.resolve(), until=args.until, args=list(args.arg),
-                   timeout_s=args.timeout, progress_timeout_s=args.progress_timeout, cpu=args.cpu)
+                   timeout_s=args.timeout, progress_timeout_s=args.progress_timeout, cpu=args.cpu,
+                   counters=getattr(args, "counters", False))
 
 
 def _phase(args) -> tuple:
@@ -109,6 +118,13 @@ def cmd_run(args) -> int:
         print(f"{p['begin'] + ' -> ' + p['end']:28s} {p['cpu_ms'] / 1e3:9.3f} {p['compile_cpu_ms'] / 1e3:9.3f} "
               f"{p['noncompile_cpu_ms'] / 1e3:9.3f} {p['offcpu_ms'] / 1e3:8.3f} {p['translations']:>7}")
     p = report["phase"]
+    if p.get("noncompile_insns") is not None:
+        print(f"{p['begin']} -> {p['end']}: execution {p['noncompile_insns']:,} host instructions, "
+              f"compile {p['compile_insns']:,}")
+    other = p.get("other_threads_cpu_ms")
+    if other is not None and other > OTHER_THREADS_WARN * p["noncompile_cpu_ms"]:
+        print(f"warning: other threads of the emulator used {other / 1e3:.3f} s of CPU, more than "
+              f"{OTHER_THREADS_WARN:.0%} of execution CPU; they may compete with the CPU thread", file=sys.stderr)
     print(f"{p['begin']} -> {p['end']}: cpu {p['cpu_ms'] / 1e3:.3f} s = compile {p['compile_cpu_ms'] / 1e3:.3f} s"
           f" + execution {p['noncompile_cpu_ms'] / 1e3:.3f} s; wall {p['wall_ms'] / 1e3:.3f} s"
           f" (off-CPU {p['offcpu_ms'] / 1e3:.3f} s) ({out / 'results.json'})")
@@ -217,6 +233,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("run", help="one run: marks and the compile/execution split")
     p.add_argument("--binary", required=True, type=Path)
     p.add_argument("--census", action="store_true", help="also write per-PC/MMIO census (changes timing)")
+    _counters(p)
     _common(p)
     p.set_defaults(func=cmd_run)
 
@@ -225,6 +242,7 @@ def main(argv=None) -> int:
     p.add_argument("--runs", type=_positive, default=2)
     p.add_argument("--expect", type=Path, help="compare with a saved workload (from --write-expect)")
     p.add_argument("--write-expect", type=Path, help="save the workload when all runs agree")
+    _counters(p)
     _common(p)
     p.set_defaults(func=cmd_verify)
 
@@ -238,6 +256,7 @@ def main(argv=None) -> int:
     p.add_argument("--min-effect", type=float, default=2.0, help="practical threshold in percent")
     p.add_argument("--allow-workload-change", action="store_true",
                    help="report a verdict even though the sides did different guest work")
+    _counters(p)
     _common(p)
     p.set_defaults(func=cmd_ab)
 

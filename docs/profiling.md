@@ -31,6 +31,7 @@ host makes the guest do more work, so two runs never execute the same thing.
 | `--perf-ctl-fifo FIFO` | Control FIFO of `perf record --control=fifo:FIFO` |
 | `--perf-window A:B` | Write `enable` to the FIFO at mark A and `disable` at mark B |
 | `--perf-jitdump` | LLVM jitdump for `perf inject --jit` (under `$JITDUMPDIR/.debug/jit/`) |
+| `--profile-counters` | The CPU thread's user-space instructions and cycles at every mark and translation |
 
 Every option is checked before the CPU starts: an unknown mark, a missing FIFO
 or a marks file for another NAND image is an error, not an empty profile.
@@ -63,24 +64,35 @@ Each mark prints cumulative counters since the `start` mark (the CPU thread's
 first block), so any two marks can be differenced:
 
 ```
-[mark] main-display pc=0x019ab8b6 wall_ms=... cpu_ms=... runs=... packets=... cycles=... translated=... mmio_r=... mmio_w=... events=... deterministic=1
+[mark] main-display pc=0x019ab8b6 wall_ms=... cpu_ms=... process_cpu_ms=... runs=... packets=... cycles=... translated=... mmio_r=... mmio_w=... events=... irq=... [host_insns=... host_cycles=...] deterministic=1
 ```
 
 - `wall_ms` is monotonic time, `cpu_ms` the CPU thread's own CPU time. The
   difference is time the thread was not running (preemption, swap stalls).
+  `process_cpu_ms` covers every thread of the emulator: the excess over
+  `cpu_ms` is the frontend, the USB/IP loop and the rest, which can compete
+  with the CPU thread for its core.
 - `runs` is blocks executed, `packets` instruction packets (bcore's
   `CpuState::packets`), `cycles` guest cycles (equal to packets in
   deterministic mode), `translated` blocks compiled.
 - `mmio_r`/`mmio_w` count guest accesses at or above 0xFFC00000; `events`
-  counts delivered CPU-queue events (device callbacks, interrupts).
+  counts delivered CPU-queue events (device callbacks, interrupts); `irq`
+  counts interrupts and exceptions the guest took (bcore's
+  `BcoreStats::interrupts_entered`; the trace has them per IVG level).
+- `host_insns`/`host_cycles` (only with `--profile-counters`) are the CPU
+  thread's user-space instructions and cycles, read from the CPU's
+  performance counters. They need `kernel.perf_event_paranoid` at most 2 and,
+  on a hybrid CPU, a CPU thread pinned to a performance core: the emulator
+  refuses to start without the counters and fails the run if they counted
+  only part of the time (as on an efficiency core).
 
-With `--deterministic` and the same inputs, every counter except `wall_ms` and
-`cpu_ms` is identical from run to run. A change that alters them changed what
+With `--deterministic` and the same inputs, every counter except the times
+and host counters is identical from run to run. A change that alters them changed what
 the guest did, not just how fast the host did it.
 
 ## Trace
 
-`--profile-trace` writes `op1.trace.v2` JSON that Perfetto and
+`--profile-trace` writes `op1.trace.v3` JSON that Perfetto and
 `chrome://tracing` open directly. Timestamps are absolute `CLOCK_MONOTONIC`
 microseconds, the clock `perf record -k mono` uses.
 
@@ -89,11 +101,15 @@ microseconds, the clock `perf record -k mono` uses.
   `ir-optimize` and `materialize` spans come from bcore. Only the union of
   `translate` spans is compile time: never add the nested stages to it.
 - Marks (category `mark`) are instant events carrying the same counters as the
-  `[mark]` line, with `args.thread_cpu_ns`.
+  `[mark]` line, with `args.thread_cpu_ns`, `args.process_cpu_ns` and
+  `args.irq_levels` (entries per IVG level, 0 = EMU ... 15 = IVG15).
+- With `--profile-counters` the header says `"counters": true` and every
+  `translate` span also has `args.insns`, the instructions retired inside it.
 
 Execution CPU between two marks is their `thread_cpu_ns` difference minus the
 `cpu_ns` of the `translate` spans between them. Unlike wall time, it does not
-grow when the thread is descheduled.
+grow when the thread is descheduled. Execution instructions are split the same
+way: the marks' `host_insns` difference minus the spans' `insns`.
 
 The recorder holds 262144 events; a trace that overflows reports `dropped` and
 makes the emulator exit nonzero. Do not use it. The header also records
@@ -184,7 +200,20 @@ must also reproduce its own workload across pairs. The verdict is reached on
 with a 95% bootstrap interval over whole pairs and a practical threshold
 `--min-effect` (percent). Compile CPU is reported beside it. Wall-clock
 execution is reported only over clean pairs (both runs: wall at most 1.05x
-CPU and at most 1 s off-CPU).
+CPU and at most 1 s off-CPU). The workload gate includes `irq` when both
+sides report it.
+
+With `--counters` (also on `run` and `verify`) every run counts host
+instructions, and `ab` reports **execution instructions** with their own
+interval beside the CPU result. They barely vary between runs of one
+configuration, so they show whether a change altered what the host executes
+long before CPU time can resolve it; but they are work, not time (a change
+can execute more instructions and still run faster), so they never decide
+the status. In an A/A of four pairs on a stock boot (`main-boot` to
+`main-display`), execution CPU ranged 79-90 s (95% interval -3.1..+3.7%)
+while execution instructions stayed within 20,000 of 1,197,820,170,000
+(about 2e-8): the spread in time was the instructions per cycle (2.35 to
+2.52), not the work.
 
 The status is `faster`, `slower` or `inconclusive`, or one of:
 `workload changed` (the sides did different guest work: no speed verdict

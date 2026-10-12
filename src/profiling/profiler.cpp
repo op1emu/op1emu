@@ -1,6 +1,7 @@
 #include "profiler.h"
 
 #include "cpu/cpu.h"
+#include "hw_counters.h"
 #include "sha256.h"
 #include "utils/log.h"
 #include "core.h"
@@ -41,6 +42,14 @@ uint64_t ThreadCpuNs() {
     return uint64_t(ts.tv_sec) * 1000000000ull + ts.tv_nsec;
 }
 
+// All threads of the process: the CPU thread plus the frontend, the USB/IP
+// loop and anything else, which may compete with it for the core.
+uint64_t ProcessCpuNs() {
+    timespec ts{};
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+    return uint64_t(ts.tv_sec) * 1000000000ull + ts.tv_nsec;
+}
+
 uint32_t ParseAddress(const nlohmann::json& value, const std::string& what) {
     if (!value.is_string()) throw std::runtime_error(what + " must be a hex string such as \"0x019ab8b6\"");
     const auto text = value.get<std::string>();
@@ -72,16 +81,18 @@ struct Profiler::Impl : BcoreEventSink {
         bool fired = false;
     };
     struct Counters {
-        uint64_t wall_ns = 0, cpu_ns = 0, runs = 0, packets = 0, cycles = 0;
+        uint64_t wall_ns = 0, cpu_ns = 0, process_cpu_ns = 0, runs = 0, packets = 0, cycles = 0;
         uint64_t translated = 0, mmio_r = 0, mmio_w = 0, events = 0;
+        uint64_t irq = 0, irqLevels[16] = {};
+        uint64_t hostInsns = 0, hostCycles = 0;  // with --profile-counters
     };
     struct Event {
         const char* name = nullptr;  // points into marks/frameMark or a literal
-        uint64_t begin = 0, end = 0, cpu_ns = 0;
+        uint64_t begin = 0, end = 0, cpu_ns = 0, insns = 0;
         uint32_t pc = 0;
         bool ok = true;
         bool mark = false;
-        Counters counters{};
+        uint32_t counters = 0;  // index into markCounters for a mark
     };
 
     ProfilerOptions options;
@@ -103,12 +114,21 @@ struct Profiler::Impl : BcoreEventSink {
     uint64_t framesRejected = 0;
 
     bool started = false;
-    uint64_t startWall = 0, startCpu = 0;
+    uint64_t startWall = 0, startCpu = 0, startProcessCpu = 0;
+    HwCounters hw;
+    HwCounters::Values startHw{};
+    uint64_t translateInsnsBegin = 0;
+    bool countersFailed = false;
+    // Enabled time the counters did not count. Even a fraction of a
+    // millisecond is far more than the run-to-run spread of instruction
+    // counts (about 20,000 of 1.2e12), so any loss fails the run.
+    static constexpr uint64_t kMaxUncountedNs = 1000;
     long cpuTid = 0;  // perf samples carry thread ids; reports keep this one
     uint64_t runs = 0, mmioReads = 0, mmioWrites = 0;
 
     // Trace: preallocated so recording never allocates on the CPU thread.
     std::vector<Event> events;
+    std::vector<Counters> markCounters;  // a few per run, so kept apart from the events
     size_t used = 0;
     uint64_t lost = 0;
     uint64_t translateBegin = 0, translateCpuBegin = 0;
@@ -211,6 +231,14 @@ struct Profiler::Impl : BcoreEventSink {
         }
         census = !options.censusPrefix.empty();
         if (!options.tracePath.empty()) events.resize(262144);
+        markCounters.reserve(marks.size() + 2);  // start, the marks, the frame: no allocation later
+        if (options.counters) {
+            // Fail before the CPU starts, not with a run that counted nothing.
+            // The counters themselves are opened by the CPU thread (Start).
+            HwCounters probe;
+            std::string error;
+            if (!probe.Open(error)) throw std::runtime_error("--profile-counters: " + error);
+        }
     }
 
     // ---- recording ----
@@ -221,7 +249,29 @@ struct Profiler::Impl : BcoreEventSink {
         else ++lost;
     }
 
+    // Reads the counters, or fails the run: a failed read must never become
+    // a zero that a subtraction turns into 2^64 instructions.
+    bool ReadCounters(HwCounters::Values& values) {
+        if (!hw.IsOpen() || countersFailed) return false;
+        if (!hw.Read(values)) {
+            LogError("Hardware counter read failed: the counts are lost");
+            countersFailed = true;
+            return false;
+        }
+        if (values.enabled_ns - values.running_ns > kMaxUncountedNs) {
+            LogError("Hardware counters missed %.3f ms of %.3f ms: pin the CPU thread to a performance core",
+                     (values.enabled_ns - values.running_ns) / 1e6, values.enabled_ns / 1e6);
+            countersFailed = true;
+            return false;
+        }
+        return true;
+    }
+
     void onTranslateBegin(uint32_t) override {
+        // The counter read comes first here and last in Translated, so the
+        // profiler's own work around a span counts as compilation.
+        HwCounters::Values values;
+        if (ReadCounters(values)) translateInsnsBegin = values.instructions;
         translateBegin = MonotonicNs();
         translateCpuBegin = ThreadCpuNs();
     }
@@ -233,6 +283,8 @@ struct Profiler::Impl : BcoreEventSink {
         event.cpu_ns = ThreadCpuNs() - translateCpuBegin;
         event.pc = pc;
         event.ok = ok;
+        HwCounters::Values values;
+        if (ReadCounters(values)) event.insns = values.instructions - translateInsnsBegin;
         Add(event);
     }
     void onTranslateEnd(uint32_t pc, uint64_t) override { Translated(pc, true); }
@@ -247,10 +299,11 @@ struct Profiler::Impl : BcoreEventSink {
         Add(event);
     }
 
-    Counters Snapshot(uint64_t wall, uint64_t cpuNs) const {
+    Counters Snapshot(uint64_t wall, uint64_t cpuNs) {
         Counters c;
         c.wall_ns = wall - startWall;
         c.cpu_ns = cpuNs - startCpu;
+        c.process_cpu_ns = ProcessCpuNs() - startProcessCpu;
         c.runs = runs;
         c.packets = cpu.Time().Packets();
         c.cycles = cpu.Time().Cycles();
@@ -258,14 +311,34 @@ struct Profiler::Impl : BcoreEventSink {
         c.mmio_r = mmioReads;
         c.mmio_w = mmioWrites;
         c.events = cpu.EventsDelivered();
+        const BcoreStats stats = cpu.CoreStats();
+        for (int level = 0; level < 16; ++level) {
+            c.irqLevels[level] = stats.interrupts_entered[level];
+            c.irq += stats.interrupts_entered[level];
+        }
+        HwCounters::Values now;
+        if (ReadCounters(now)) {
+            c.hostInsns = now.instructions - startHw.instructions;
+            c.hostCycles = now.cycles - startHw.cycles;
+        }
         return c;
     }
 
     void Start(uint32_t pc) {
         started = true;
         cpuTid = static_cast<long>(gettid());
+        if (options.counters) {
+            std::string error;
+            if (!hw.Open(error) || !hw.Read(startHw)) {
+                if (error.empty()) error = "the first read failed";
+                LogError("--profile-counters on the CPU thread: %s", error.c_str());
+                countersFailed = true;
+                requestStop();
+            }
+        }
         startWall = MonotonicNs();
         startCpu = ThreadCpuNs();
+        startProcessCpu = ProcessCpuNs();
         if (!events.empty()) cpu.SetCoreEventSink(this);
         if (options.jitdump) cpu.SetPerfJitdump(true);
         Fire("start", pc);
@@ -278,15 +351,19 @@ struct Profiler::Impl : BcoreEventSink {
         event.begin = wall;
         event.pc = pc;
         event.mark = true;
-        event.counters = Snapshot(wall, cpuNs);
+        event.counters = static_cast<uint32_t>(markCounters.size());
+        markCounters.push_back(Snapshot(wall, cpuNs));
         Add(event);
-        const auto& c = event.counters;
+        const auto& c = markCounters.back();
         // Cumulative from "start": difference any two marks. tools/op1prof parses this.
-        std::printf("[mark] %s pc=0x%08x wall_ms=%.3f cpu_ms=%.3f runs=%" PRIu64 " packets=%" PRIu64
-                    " cycles=%" PRIu64 " translated=%" PRIu64 " mmio_r=%" PRIu64 " mmio_w=%" PRIu64
-                    " events=%" PRIu64 " deterministic=%d\n",
-                    name, pc, c.wall_ns / 1e6, c.cpu_ns / 1e6, c.runs, c.packets, c.cycles, c.translated,
-                    c.mmio_r, c.mmio_w, c.events, cpu.Time().Deterministic() ? 1 : 0);
+        std::printf("[mark] %s pc=0x%08x wall_ms=%.3f cpu_ms=%.3f process_cpu_ms=%.3f runs=%" PRIu64
+                    " packets=%" PRIu64 " cycles=%" PRIu64 " translated=%" PRIu64 " mmio_r=%" PRIu64
+                    " mmio_w=%" PRIu64 " events=%" PRIu64 " irq=%" PRIu64,
+                    name, pc, c.wall_ns / 1e6, c.cpu_ns / 1e6, c.process_cpu_ns / 1e6, c.runs, c.packets, c.cycles,
+                    c.translated, c.mmio_r, c.mmio_w, c.events, c.irq);
+        if (hw.IsOpen() && !countersFailed)
+            std::printf(" host_insns=%" PRIu64 " host_cycles=%" PRIu64, c.hostInsns, c.hostCycles);
+        std::printf(" deterministic=%d\n", cpu.Time().Deterministic() ? 1 : 0);
         std::fflush(stdout);
         if (census) DumpCensus(name);
         if (perfBegin == name) PerfWrite("enable\n");
@@ -397,32 +474,42 @@ struct Profiler::Impl : BcoreEventSink {
 
     bool WriteTrace() {
         if (options.tracePath.empty()) return true;
+        const bool counted = hw.IsOpen() && !countersFailed;
         FILE* file = std::fopen(options.tracePath.c_str(), "w");
         if (!file) {
             LogError("Cannot write trace %s", options.tracePath.c_str());
             return false;
         }
-        std::fprintf(file, "{\"schema\":\"op1.trace.v2\",\"clock\":\"CLOCK_MONOTONIC\",\"process_id\":%d,"
+        std::fprintf(file, "{\"schema\":\"op1.trace.v3\",\"clock\":\"CLOCK_MONOTONIC\",\"process_id\":%d,"
                            "\"cpu_thread_tid\":%ld,\"start_ns\":%" PRIu64 ",\"end_ns\":%" PRIu64 ",\"dropped\":%" PRIu64
-                           ",\"deterministic\":%s,\"traceEvents\":[",
+                           ",\"deterministic\":%s,\"counters\":%s,\"traceEvents\":[",
                      static_cast<int>(getpid()), cpuTid, startWall, endWall, lost,
-                     cpu.Time().Deterministic() ? "true" : "false");
+                     cpu.Time().Deterministic() ? "true" : "false", counted ? "true" : "false");
         for (size_t i = 0; i < used; ++i) {
             const auto& e = events[i];
             std::fprintf(file, "%s{\"name\":\"%s\",\"pid\":1,\"tid\":1,\"ts\":%.3f,", i ? "," : "", e.name, e.begin / 1000.0);
             if (e.mark) {
-                const auto& c = e.counters;
+                const auto& c = markCounters[e.counters];
                 std::fprintf(file, "\"cat\":\"mark\",\"ph\":\"i\",\"s\":\"g\",\"args\":{\"pc\":%u,\"wall_ns\":%" PRIu64
                                    ",\"thread_cpu_ns\":%" PRIu64 ",\"runs\":%" PRIu64 ",\"packets\":%" PRIu64
                                    ",\"cycles\":%" PRIu64 ",\"translated\":%" PRIu64 ",\"mmio_r\":%" PRIu64
-                                   ",\"mmio_w\":%" PRIu64 ",\"events\":%" PRIu64 "}}",
+                                   ",\"mmio_w\":%" PRIu64 ",\"events\":%" PRIu64 ",\"process_cpu_ns\":%" PRIu64
+                                   ",\"irq\":%" PRIu64 ",\"irq_levels\":[",
                              e.pc, c.wall_ns, c.cpu_ns, c.runs, c.packets, c.cycles, c.translated, c.mmio_r,
-                             c.mmio_w, c.events);
+                             c.mmio_w, c.events, c.process_cpu_ns, c.irq);
+                for (int level = 0; level < 16; ++level)
+                    std::fprintf(file, "%s%" PRIu64, level ? "," : "", c.irqLevels[level]);
+                std::fputs("]", file);
+                if (counted)
+                    std::fprintf(file, ",\"host_insns\":%" PRIu64 ",\"host_cycles\":%" PRIu64, c.hostInsns,
+                                 c.hostCycles);
+                std::fputs("}}", file);
             } else {
                 const bool translate = std::strcmp(e.name, "translate") == 0;
                 std::fprintf(file, "\"cat\":\"jit\",\"ph\":\"X\",\"dur\":%.3f,\"args\":{\"pc\":%u,\"ok\":%s",
                              (e.end - e.begin) / 1000.0, e.pc, e.ok ? "true" : "false");
                 if (translate) std::fprintf(file, ",\"cpu_ns\":%" PRIu64, e.cpu_ns);
+                if (translate && counted) std::fprintf(file, ",\"insns\":%" PRIu64, e.insns);
                 std::fputs("}}", file);
             }
         }
@@ -476,7 +563,15 @@ bool Profiler::Finish() {
     auto& impl = *impl_;
     impl.endWall = MonotonicNs();
     impl.cpu.SetCoreEventSink(nullptr);
-    bool ok = impl.WriteTrace() && !impl.censusFailed;
+    // A thread that ran on an efficiency core (or shared the counters with
+    // another user) counted only part of the time: partial instruction
+    // counts would read as a speedup. The last check covers the tail.
+    HwCounters::Values end;
+    if (impl.hw.IsOpen() && impl.ReadCounters(end))
+        std::fprintf(stderr, "[profile] counters missed %" PRIu64 " ns of %" PRIu64 " ns\n",
+                     end.enabled_ns - end.running_ns, end.enabled_ns);
+    if (impl.countersFailed) std::fprintf(stderr, "[profile] hardware counts are incomplete; do not use this run\n");
+    bool ok = impl.WriteTrace() && !impl.censusFailed && !impl.countersFailed;
     for (const auto& mark : impl.marks)
         if (!mark.fired) std::fprintf(stderr, "[profile] mark %s did not fire\n", mark.name.c_str());
     if (impl.hasFrame && !impl.frameMark.fired)

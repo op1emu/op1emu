@@ -14,6 +14,8 @@
 //    cost time, never enable them for timing).
 //  - perf control: enable/disable a `perf record --control=fifo` window at two
 //    marks, and LLVM jitdump output for `perf inject --jit`.
+//  - optional hardware counters: the CPU thread's user-space instructions and
+//    cycles at every mark and inside every translation.
 //
 // Threading: everything except the constructor and Finish() runs on the CPU
 // thread. Finish() runs after that thread has been joined.
@@ -36,10 +38,11 @@ struct ProfilerOptions {
     std::string perfWindow;    // --perf-window BEGIN:END
     std::string until;         // --profile-until MARK
     bool jitdump = false;      // --perf-jitdump
+    bool counters = false;     // --profile-counters
 
     bool Enabled() const {
         return !marksPath.empty() || !tracePath.empty() || !censusPrefix.empty() ||
-               !perfFifo.empty() || jitdump;
+               !perfFifo.empty() || jitdump || counters;
     }
 };
 

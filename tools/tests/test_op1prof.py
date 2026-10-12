@@ -560,3 +560,65 @@ def test_lbr_call_graph_needs_a_hardware_event():
     assert not perf.is_software_event("cycles:u") and not perf.is_software_event("cpu_core/cycles/u")
     assert perf.check_call_graph("cycles:u", "lbr") is None
     assert perf.check_call_graph("cpu-clock:u", "fp") is None
+
+
+# ---- host counters and interrupts (trace v3) ----
+
+def test_mark_lines_carry_interrupts_process_cpu_and_host_counters():
+    m = parse_mark("[mark] a pc=0x0 wall_ms=2.5 cpu_ms=2.0 process_cpu_ms=2.125 runs=3 packets=10 cycles=10 "
+                   "translated=1 mmio_r=0 mmio_w=0 events=1 irq=4 host_insns=900 host_cycles=1800 deterministic=1")
+    assert m.workload()["irq"] == 4 and m.counters["process_cpu_ms"] == 2.125 and m.counters["host_insns"] == 900
+
+
+def test_interrupts_gate_the_workload_only_when_both_sides_count_them():
+    line = ("[mark] a pc=0x0 wall_ms=0 cpu_ms=0 runs=1 packets=10 cycles=10 translated=1 mmio_r=0 mmio_w=0 "
+            "events=0{irq} host_insns={insns}")
+    old, new = parse_mark(line.format(irq="", insns=1)), parse_mark(line.format(irq=" irq=5", insns=2))
+    assert workload_diff([old], [new]) == []                       # an older binary has no irq
+    assert workload_diff([new], [parse_mark(line.format(irq=" irq=6", insns=2))])
+    assert workload_diff([new], [parse_mark(line.format(irq=" irq=5", insns=99))]) == []  # host cost
+    # A side that reports irq at one mark but not another is not an older binary.
+    second = lambda irq: parse_mark(line.format(irq=irq, insns=1).replace("[mark] a ", "[mark] b "))
+    assert any("missing" in p for p in workload_diff([new, second(" irq=5")], [new, second("")]))
+
+
+def test_counters_split_host_instructions_like_cpu(files, tmp_path):
+    result = run(spec(files, counters=True), tmp_path / "r")
+    assert "--profile-counters" in result.command and result.reached
+    phase = trace.phase(trace.load(str(result.trace_path)), "start", "main-frame")
+    assert phase.compile_insns == 15_000_000 and phase.noncompile_insns == 90_000_000
+    assert phase.host_cycles == 2 * phase.insns
+    assert phase.other_threads_cpu_ms == pytest.approx(0.0)
+    plain = trace.phase(trace.load(str(run(spec(files), tmp_path / "p").trace_path)), "start", "main-frame")
+    assert plain.insns is None and plain.noncompile_insns is None
+    with pytest.raises(ValueError):
+        spec(files, args=["--profile-counters"])
+
+
+def test_ab_reports_host_instructions_beside_cpu(files, tmp_path):
+    out = tmp_path / "ab"
+    out.mkdir()
+    fast = tmp_path / "fast.sh"
+    fast.write_text(f"#!/bin/sh\nFAKE_SCALE=0.8 exec {FAKE} \"$@\"\n")
+    fast.chmod(0o755)
+    new = ab.Side("new", snapshot_binary(fast, out), [], sha256_file(fast))
+    report = ab.compare(_side("base", files, out), new, spec(files, counters=True), 4, out,
+                        ("start", "main-frame"), 2.0, False)
+    insns = report["summary"]["noncompile_insns"]
+    assert insns["mean_pct"] == pytest.approx(-20.0) and report["status"] == "faster"
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert "noncompile_insns" not in ab.compare(_side("base", files, plain), _side("new", files, plain), spec(files),
+                                                4, plain, ("start", "main-frame"), 2.0, False)["summary"]
+
+
+def test_ab_gates_on_interrupts(files, tmp_path):
+    out = tmp_path / "ab"
+    out.mkdir()
+    more = tmp_path / "more.sh"
+    more.write_text(f"#!/bin/sh\nFAKE_IRQ=4 exec {FAKE} \"$@\"\n")
+    more.chmod(0o755)
+    new = ab.Side("new", snapshot_binary(more, out), [], sha256_file(more))
+    report = ab.compare(_side("base", files, out), new, spec(files), 4, out, ("start", "main-frame"), 2.0, False)
+    assert report["status"].startswith("workload changed")
+    assert any(".irq:" in line for p in report["pairs"] for line in p["workload_diff"])
