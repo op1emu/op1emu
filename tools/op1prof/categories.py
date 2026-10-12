@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
@@ -10,15 +11,21 @@ DEFAULT = Path(__file__).resolve().parents[2] / "profiling" / "categories.json"
 UNCATEGORIZED = "uncategorized"
 
 
+def _pattern(texts: Sequence[str]) -> re.Pattern:
+    """Literal patterns that match only at the start of a name, so "Bus::"
+    matches Bus::Read but not DMABus::Read."""
+    return re.compile("|".join(r"(?<![A-Za-z0-9_])" + re.escape(text) for text in texts))
+
+
 @dataclass(frozen=True)
 class Categories:
     roots: Tuple[str, ...]
-    rules: Tuple[Tuple[str, Tuple[str, ...]], ...]   # (bucket, patterns), in file order
+    rules: Tuple[Tuple[str, re.Pattern], ...]   # (bucket, any of its patterns), in file order
 
     @staticmethod
     def load(path: Optional[Path] = None) -> "Categories":
         config = json.loads((path or DEFAULT).read_text())
-        rules = tuple((entry["name"], tuple(entry["match"])) for entry in config["categories"])
+        rules = tuple((entry["name"], _pattern(entry["match"])) for entry in config["categories"])
         names = [name for name, _ in rules]
         if len(set(names)) != len(names) or UNCATEGORIZED in names:
             raise ValueError(f"{path or DEFAULT}: bucket names must be unique and not {UNCATEGORIZED!r}")
@@ -35,8 +42,8 @@ class Categories:
         device read called from generated code is device time, and a
         library leaf takes the bucket of its caller."""
         for symbol in symbols:
-            for name, patterns in self.rules:
-                if any(pattern in symbol for pattern in patterns):
+            for name, pattern in self.rules:
+                if pattern.search(symbol):
                     return name
         return UNCATEGORIZED
 

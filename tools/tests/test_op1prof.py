@@ -378,11 +378,18 @@ def test_attribution_weights_buckets_and_inclusive_time():
     assert result.self_symbols["memcpy (libc.so.6)"] == 100
 
 
+def test_overlapping_translate_spans_are_merged():
+    assert perf_report._merged([(10, 20), (0, 100), (150, 160), (155, 170)]) == [(0, 100), (150, 170)]
+
+
 def test_buckets_prefer_the_nearest_frame_then_rule_order():
     categories = Categories.load()
     assert categories.bucket(["DMABus::Transfer()", "Bus::Read()"]) == "dma"       # rule order within a frame
     assert categories.bucket(["std::_Hash_bytes", "JitEngine::lookup(unsigned int)"]) == "dispatch"
     assert categories.bucket(["libfoo"]) == "uncategorized"
+    assert categories.bucket(["Bus::Read()"]) == "memory callbacks"
+    assert categories.bucket(["OTG_USB::Poll()"]) == "uncategorized"     # patterns start a name
+    assert categories.bucket(["std::function<void ()>::operator()", "DummyI2CPeripheral::Read()"]) == "gpio/twi/sensors"
     assert not categories.complete(["memcpy", "[unknown]"])
 
 
@@ -409,7 +416,10 @@ def test_report_withholds_inclusive_tables_for_broken_chains(tmp_path):
     assert data["sampled_over_trace"] == pytest.approx(100 / 900)
     text = perf_report.format_report(data, 10)
     assert "withheld" in text and "not a precise event" in text
-    assert data["blocks"][0]["incl_s"] == pytest.approx(0.1 * 900e-9)
+    assert data["blocks"][0]["incl_s"] is None and data["blocks"][0]["self_s"] == pytest.approx(0.1 * 900e-9)
+    with pytest.raises(ValueError, match="whole call chains"):
+        perf_report.analyze(capture, Categories.load(), perf_report.Labels(), census_run=tmp_path,
+                            samples=perf_report.parse_samples(_script(*broken)))
 
 
 def _mark_entry(name, packets):
@@ -432,15 +442,18 @@ def test_census_join_prices_block_runs_and_refuses_other_work(tmp_path):
     _census(census_run / "census.pc.b", [(0x01a5e27e, 5, 24), (0x200, 3, 3)])
     _census(census_run / "census.mmio.a", [])
     _census(census_run / "census.mmio.b", [])
-    samples = list(perf_report.parse_samples(_script(*SAMPLES)))
+    whole = [sample for sample in SAMPLES if "[unknown]" not in sample[3][-1]]
+    whole.append((42, "10.000000600", 25, ["bb_0x00000300 (/j.so)", RUN]))   # a block the census never ran
+    samples = list(perf_report.parse_samples(_script(*whole)))
     labels = perf_report.Labels(ranges=[perf_report.PcRange.parse("fir=01a5e240:01a5e290")])
     data = perf_report.analyze(capture, Categories.load(), labels, census_run=census_run, samples=samples)
     rows = {row["block"]: row for row in data["census"]["blocks"]}
-    per_weight = 900e-9 / 500
+    per_weight = 900e-9 / 475
+    assert data["census"]["sampled_not_in_census_s"] == pytest.approx(25 * per_weight)
     assert rows["fir"]["runs"] == 4 and rows["fir"]["packets"] == 20
     assert rows["fir"]["ns_per_run"] == pytest.approx(400 * per_weight * 1e9 / 4)
     assert rows["bb_0x00000200"]["seconds"] == 0
-    assert data["census"]["outside_blocks_ns_per_run"] == pytest.approx(100 * per_weight * 1e9 / 7)
+    assert data["census"]["outside_blocks_ns_per_run"] == pytest.approx(50 * per_weight * 1e9 / 7)
     assert "ns/run" in perf_report.format_report(data, 10, "ns-per-run")
     (census_run / "log.txt").write_text("\n".join(map(_mark_line, [marks[0], _mark_entry("b", 21)])) + "\n")
     with pytest.raises(ValueError, match="different guest work"):
@@ -451,6 +464,8 @@ def test_pc_range_and_symbol_labels(tmp_path):
     assert perf_report.PcRange.parse("fir=0x10:0x20") == perf_report.PcRange("fir", 0x10, 0x20)
     with pytest.raises(ValueError):
         perf_report.PcRange.parse("fir")
+    with pytest.raises(ValueError, match="LO above HI"):
+        perf_report.PcRange.parse("fir=0x20:0x10")
     symbols = tmp_path / "syms.txt"
     symbols.write_text("00000100 dsp_fir\n")
     labels = perf_report.Labels(census.Symbols(symbols), [perf_report.PcRange("loop", 0x200, 0x2ff)])

@@ -12,6 +12,8 @@ from . import report as perf_report
 from .categories import Categories
 from .runner import REPO, RunSpec, reserved_args, run, sha256_file, snapshot_binary
 
+# A missing mark, file or field in a capture, or perf script failing.
+REPORT_ERRORS = (ValueError, KeyError, OSError, RuntimeError)
 DEFAULT_MARKS = REPO / "profiling" / "marks" / "op1-stock-nand.json"
 
 
@@ -178,7 +180,12 @@ def cmd_perf(args) -> int:
     if error:
         print(f"capture failed: {error} (log: {result.directory / 'log.txt'})", file=sys.stderr)
         return 1
-    print(perf_report.format_report(perf_report.analyze(out / "capture", Categories.load(), perf_report.Labels()), args.top))
+    try:
+        print(perf_report.format_report(perf_report.analyze(out / "capture", Categories.load(),
+                                                            perf_report.Labels()), args.top))
+    except REPORT_ERRORS as error:
+        print(f"report: {error}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -186,7 +193,7 @@ def cmd_report(args) -> int:
     try:
         labels = perf_report.Labels(census.Symbols(args.symbols), [perf_report.PcRange.parse(r) for r in args.pc_range])
         data = perf_report.analyze(args.capture, Categories.load(args.categories), labels, args.callers, args.census)
-    except ValueError as error:
+    except REPORT_ERRORS as error:
         print(f"report: {error}", file=sys.stderr)
         return 2
     if args.json:

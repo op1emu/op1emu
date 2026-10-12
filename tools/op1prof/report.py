@@ -88,7 +88,10 @@ class PcRange:
         lo, _, hi = span.partition(":")
         if not name or not hi:
             raise ValueError(f"--pc-range must be NAME=LO:HI, got {text!r}")
-        return PcRange(name, int(lo, 16), int(hi, 16))
+        span = PcRange(name, int(lo, 16), int(hi, 16))
+        if span.lo > span.hi:
+            raise ValueError(f"--pc-range {text!r} has LO above HI")
+        return span
 
 
 @dataclass
@@ -122,14 +125,25 @@ class Attribution:
         return self.weights["execution"]
 
 
+def _merged(spans: Iterable[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Disjoint, sorted intervals, so one bisect finds the span covering a time."""
+    out: List[Tuple[int, int]] = []
+    for begin, end in sorted(spans):
+        if out and begin <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((begin, end))
+    return out
+
+
 def attribute(samples: Iterable[Sample], trace_data: dict, window: Tuple[str, str], categories: Categories,
               labels: Labels, callers_of: Optional[str] = None) -> Attribution:
     """Weight every CPU-thread sample inside the window and outside
     translation by its period."""
     found = trace.marks(trace_data)
     lo, hi = (int(found[name]["ts"] * 1000) for name in window)
-    spans = sorted((int(e["ts"] * 1000), int((e["ts"] + e["dur"]) * 1000))
-                   for e in trace_data["traceEvents"] if e.get("name") == "translate")
+    spans = _merged((int(e["ts"] * 1000), int((e["ts"] + e["dur"]) * 1000))
+                    for e in trace_data["traceEvents"] if e.get("name") == "translate")
     starts = [s for s, _ in spans]
     tid = trace_data.get("cpu_thread_tid")
     out = Attribution()
@@ -204,7 +218,10 @@ def join_census(result: Attribution, census_run: Path, capture_marks: List[Mark]
         row[0] += runs
         row[1] += packets
     total_runs = sum(runs for runs, _ in counts.values())
-    in_blocks = sum(result.incl_blocks.values())
+    in_blocks = sum(weight for name, weight in result.incl_blocks.items() if name in counts)
+    # Sampled in a block the census never ran in this phase: a window edge,
+    # or labels that differ between the runs. Neither a row nor host time.
+    unmatched = sum(weight for name, weight in result.incl_blocks.items() if name not in counts)
     rows = []
     for name, (runs, packets) in counts.items():
         seconds = result.incl_blocks.get(name, 0) * seconds_per_weight
@@ -212,8 +229,9 @@ def join_census(result: Attribution, census_run: Path, capture_marks: List[Mark]
                      "ns_per_run": seconds * 1e9 / runs if runs else 0.0,
                      "ns_per_packet": seconds * 1e9 / packets if packets else 0.0})
     rows.sort(key=lambda row: -row["seconds"])
-    host = (result.execution - in_blocks) * seconds_per_weight
+    host = (result.execution - in_blocks - unmatched) * seconds_per_weight
     return {"window": list(window), "runs": total_runs, "blocks": rows,
+            "sampled_not_in_census_s": unmatched * seconds_per_weight,
             "outside_blocks_s": host, "outside_blocks_ns_per_run": host * 1e9 / total_runs if total_runs else 0.0}
 
 
@@ -244,10 +262,14 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
         "chain_complete_pct": complete_pct, "inclusive_valid": inclusive,
         "generated_code_pct": sum(result.self_blocks.values()) / execution * 100 if execution else 0.0,
         "buckets": _rows(result.buckets, execution, per_weight, "bucket") if execution else [],
+        # Without whole chains a block's callees may be missing from its
+        # inclusive time, so only self time is reported then.
         "blocks": [{"block": name, "self_s": result.self_blocks.get(name, 0) * per_weight,
                     "self_pct": result.self_blocks.get(name, 0) / execution * 100,
-                    "incl_s": weight * per_weight, "incl_pct": weight / execution * 100}
-                   for name, weight in result.incl_blocks.most_common()] if execution else [],
+                    "incl_s": weight * per_weight if inclusive else None,
+                    "incl_pct": weight / execution * 100 if inclusive else None}
+                   for name, weight in (result.incl_blocks if inclusive else result.self_blocks).most_common()]
+        if execution else [],
         "host_self": _rows(result.self_symbols, execution, per_weight, "symbol") if execution else [],
         "host_inclusive": _rows(result.incl_symbols, execution, per_weight, "symbol") if inclusive else [],
     }
@@ -255,6 +277,9 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
         data["callers"] = {"of": callers_of,
                            "rows": _rows(result.callers, execution, per_weight, "caller") if inclusive else []}
     if census_run:
+        if not inclusive:
+            raise ValueError(f"the census join needs whole call chains, but only {complete_pct:.1f}% reach the "
+                             "CPU loop: capture with --call-graph lbr")
         data["census"] = join_census(result, census_run, _marks(info["run"]["marks"]), window, labels, per_weight)
     return data
 
@@ -296,8 +321,8 @@ def format_report(data: dict, limit: int, sort: str = "seconds") -> str:
     lines += _table("host-path bucket", data["buckets"], "bucket", limit)
     lines += ["", f"{'guest block':40s} {'self s':>9} {'self':>6} {'incl s':>9} {'incl':>6}"]
     for row in data["blocks"][:limit]:
-        lines.append(f"{row['block'][:40]:40s} {row['self_s']:9.3f} {row['self_pct']:5.1f}% "
-                     f"{row['incl_s']:9.3f} {row['incl_pct']:5.1f}%")
+        incl = f"{row['incl_s']:9.3f} {row['incl_pct']:5.1f}%" if row["incl_s"] is not None else f"{'-':>9} {'-':>6}"
+        lines.append(f"{row['block'][:40]:40s} {row['self_s']:9.3f} {row['self_pct']:5.1f}% {incl}")
     lines += _table("host symbol (self)", data["host_self"], "symbol", limit)
     if data["host_inclusive"]:
         lines += _table("host symbol (inclusive)", data["host_inclusive"], "symbol", limit)
@@ -314,7 +339,8 @@ def _census_lines(joined: dict, limit: int, sort: str) -> List[str]:
     lines = ["", f"census join over {joined['runs']} runs: sampled estimates, not exact costs; "
                  "their error comes from repeated captures, not from sample counts",
              f"outside guest blocks (dispatch, devices, event queue, CPU loop): "
-             f"{joined['outside_blocks_s']:.3f} s = {joined['outside_blocks_ns_per_run']:.1f} ns per run",
+             f"{joined['outside_blocks_s']:.3f} s = {joined['outside_blocks_ns_per_run']:.1f} ns per run; "
+             f"sampled in blocks the census did not run: {joined['sampled_not_in_census_s']:.3f} s",
              f"{'guest block':40s} {'runs':>12} {'packets':>13} {'seconds':>9} {'ns/run':>8} {'ns/pkt':>7}"]
     for row in rows[:limit]:
         lines.append(f"{row['block'][:40]:40s} {row['runs']:>12} {row['packets']:>13} {row['seconds']:9.3f} "

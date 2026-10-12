@@ -1,5 +1,5 @@
 {
-  "comment": "Host-path buckets for `op1prof report`. Each execution sample goes to the bucket of the frame nearest its leaf that matches any rule; within one frame the first rule in this list wins. A pattern matches when it is a substring of the demangled symbol. Samples whose stack reaches no root have a broken call chain and are counted apart.",
+  "comment": "Host-path buckets for `op1prof report`. Each execution sample goes to the bucket of the frame nearest its leaf that matches any rule; within one frame the first rule in this list wins. A pattern matches where it starts a name in the demangled symbol (so Bus:: does not match DMABus::). Samples whose stack reaches no root have a broken call chain and are counted apart.",
   "roots": ["BlackFinCpu::Run(", "BootExcutionThread(", "LdrExecutionThread("],
   "categories": [
     {"name": "profiler",         "match": ["Profiler::", "FrameTap::"]},
@@ -11,7 +11,7 @@
     {"name": "usb",              "match": ["USBDevice::", "USB::"]},
     {"name": "timers",           "match": ["CoreTimer::", "GPTimer", "PanelOscillator::"]},
     {"name": "interrupts",       "match": ["SIC::", "cec_", "BlackFinCpu::ProcessInterrupt("]},
-    {"name": "gpio/twi/sensors", "match": ["GPIO", "TWI::", "I2CPeripheral", "MCP230XX::", "ADXL345::", "Potentiometer::", "Keyboard::"]},
+    {"name": "gpio/twi/sensors", "match": ["GPIO", "TWI::", "I2CPeripheral", "RegisterI2CPeripheral", "DummyI2CPeripheral", "MCP230XX::", "ADXL345::", "Potentiometer::", "Keyboard::"]},
     {"name": "event queue",      "match": ["BlackFinCpu::ProcessEvents(", "BlackFinCpu::QueueEvent("]},
     {"name": "memory callbacks", "match": ["EmulatorMemory::", "MemoryDevice::", "RegisterDevice::", "FastMem::", "EBIU::", "Bus::"]},
     {"name": "generated code",   "match": ["bb_0x"]},
