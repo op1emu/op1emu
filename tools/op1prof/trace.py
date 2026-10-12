@@ -18,6 +18,7 @@ class Phase:
     cpu_ms: float           # the CPU thread's CPU time between them
     compile_wall_ms: float  # union of translate spans inside the window
     compile_cpu_ms: float   # CPU time inside those spans
+    translations: int = 0   # translate spans inside the window
 
     @property
     def noncompile_cpu_ms(self) -> float:
@@ -38,7 +39,8 @@ class Phase:
     def to_json(self) -> dict:
         return {"wall_ms": self.wall_ms, "cpu_ms": self.cpu_ms, "offcpu_ms": self.offcpu_ms,
                 "compile_wall_ms": self.compile_wall_ms, "compile_cpu_ms": self.compile_cpu_ms,
-                "noncompile_cpu_ms": self.noncompile_cpu_ms, "noncompile_wall_ms": self.noncompile_wall_ms}
+                "noncompile_cpu_ms": self.noncompile_cpu_ms, "noncompile_wall_ms": self.noncompile_wall_ms,
+                "translations": self.translations}
 
 
 def load(path: str) -> dict:
@@ -93,4 +95,11 @@ def phase(trace: dict, begin: str, end: str) -> Phase:
         cpu_ms=(b["args"]["thread_cpu_ns"] - a["args"]["thread_cpu_ns"]) / 1e6,
         compile_wall_ms=_union(spans) / 1e3,
         compile_cpu_ms=compile_cpu_ns / 1e6,
+        translations=len(spans),
     )
+
+
+def phases(trace: dict) -> List[Tuple[str, str, Phase]]:
+    """Every pair of consecutive fired marks, in firing order."""
+    order = [e["name"] for e in sorted(marks(trace).values(), key=lambda e: e["ts"])]
+    return [(a, b, phase(trace, a, b)) for a, b in zip(order, order[1:])]

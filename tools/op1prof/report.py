@@ -1,0 +1,319 @@
+"""Attribute a perf capture: guest blocks, host symbols, host-path buckets,
+and, joined with a census run, cost per executed block."""
+from __future__ import annotations
+
+import bisect
+import json
+import re
+import subprocess
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+
+from . import census, trace
+from .categories import Categories
+from .marks import Mark, parse_marks, workload_diff
+
+SCHEMA = "op1prof.report.v1"
+# Below this share of execution weight with a call chain that reaches the
+# CPU loop, inclusive (caller) numbers would silently undercount.
+MIN_COMPLETE_PCT = 95.0
+# Events whose sample period is in nanoseconds of CPU time.
+TIME_EVENTS = ("cpu-clock", "task-clock")
+BLOCK_PREFIX = "bb_0x"
+
+HEADER = re.compile(r"^\s*(?P<tid>\d+)\s+(?P<time>\d+\.\d+):\s+(?P<period>\d+)\s*$")
+FRAME = re.compile(r"^\s+(?P<ip>[0-9a-f]+)\s+(?P<sym>.*)\s+\((?P<dso>[^()]*)\)\s*$")
+
+
+@dataclass(frozen=True)
+class Sample:
+    tid: int
+    time_ns: int
+    period: int
+    frames: Tuple[Tuple[str, str], ...]   # (symbol, dso basename), leaf first
+
+    @property
+    def symbols(self) -> Tuple[str, ...]:
+        return tuple(symbol for symbol, _ in self.frames)
+
+
+def parse_samples(lines: Iterable[str]) -> Iterator[Sample]:
+    """Samples from `perf script -F tid,time,period,ip,sym,dso --ns` with
+    call chains: a header line, one line per frame, a blank line."""
+    header, frames = None, []
+    for line in lines:
+        match = HEADER.match(line)
+        if match:
+            if header:
+                yield _sample(header, frames)
+            header, frames = match, []
+            continue
+        match = FRAME.match(line)
+        if header and match:
+            frames.append((match.group("sym"), match.group("dso").rsplit("/", 1)[-1]))
+        elif header and not line.strip():
+            yield _sample(header, frames)
+            header, frames = None, []
+    if header:
+        yield _sample(header, frames)
+
+
+def _sample(header: re.Match, frames: List[Tuple[str, str]]) -> Sample:
+    seconds, _, fraction = header.group("time").partition(".")
+    return Sample(tid=int(header.group("tid")),
+                  time_ns=int(seconds) * 1_000_000_000 + int(fraction.ljust(9, "0")[:9]),
+                  period=int(header.group("period")), frames=tuple(frames))
+
+
+def block_pc(symbol: str) -> Optional[int]:
+    if not symbol.startswith(BLOCK_PREFIX):
+        return None
+    try:
+        return int(symbol[len(BLOCK_PREFIX) - 2:], 16)
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class PcRange:
+    name: str
+    lo: int
+    hi: int
+
+    @staticmethod
+    def parse(text: str) -> "PcRange":
+        name, _, span = text.partition("=")
+        lo, _, hi = span.partition(":")
+        if not name or not hi:
+            raise ValueError(f"--pc-range must be NAME=LO:HI, got {text!r}")
+        return PcRange(name, int(lo, 16), int(hi, 16))
+
+
+@dataclass
+class Labels:
+    """Names for guest blocks: a PC range merges its blocks into one row."""
+    symbols: census.Symbols = field(default_factory=lambda: census.Symbols(None))
+    ranges: Sequence[PcRange] = ()
+
+    def __call__(self, pc: int) -> str:
+        for span in self.ranges:
+            if span.lo <= pc <= span.hi:
+                return span.name
+        name = self.symbols.name(pc)
+        return f"{BLOCK_PREFIX}{pc:08x}" + (f" {name}" if name else "")
+
+
+@dataclass
+class Attribution:
+    counts: Counter = field(default_factory=Counter)     # samples by fate
+    weights: Counter = field(default_factory=Counter)    # period by fate
+    complete: int = 0                                    # execution weight with a whole chain
+    self_blocks: Counter = field(default_factory=Counter)
+    incl_blocks: Counter = field(default_factory=Counter)
+    self_symbols: Counter = field(default_factory=Counter)
+    incl_symbols: Counter = field(default_factory=Counter)
+    buckets: Counter = field(default_factory=Counter)
+    callers: Counter = field(default_factory=Counter)
+
+    @property
+    def execution(self) -> int:
+        return self.weights["execution"]
+
+
+def attribute(samples: Iterable[Sample], trace_data: dict, window: Tuple[str, str], categories: Categories,
+              labels: Labels, callers_of: Optional[str] = None) -> Attribution:
+    """Weight every CPU-thread sample inside the window and outside
+    translation by its period."""
+    found = trace.marks(trace_data)
+    lo, hi = (int(found[name]["ts"] * 1000) for name in window)
+    spans = sorted((int(e["ts"] * 1000), int((e["ts"] + e["dur"]) * 1000))
+                   for e in trace_data["traceEvents"] if e.get("name") == "translate")
+    starts = [s for s, _ in spans]
+    tid = trace_data.get("cpu_thread_tid")
+    out = Attribution()
+    for sample in samples:
+        if tid is not None and sample.tid != tid:
+            fate = "other_threads"
+        elif not lo <= sample.time_ns < hi:
+            fate = "outside_window"
+        else:
+            index = bisect.bisect_right(starts, sample.time_ns) - 1
+            fate = "compile" if index >= 0 and sample.time_ns < spans[index][1] else "execution"
+        out.counts[fate] += 1
+        out.weights[fate] += sample.period
+        if fate == "execution":
+            _execution(out, sample, categories, labels, callers_of)
+    return out
+
+
+def _execution(out: Attribution, sample: Sample, categories: Categories, labels: Labels,
+               callers_of: Optional[str]) -> None:
+    weight, symbols = sample.period, sample.symbols
+    out.buckets[categories.bucket(symbols)] += weight
+    leaf_pc = block_pc(symbols[0]) if symbols else None
+    if leaf_pc is not None:
+        out.self_blocks[labels(leaf_pc)] += weight
+    elif sample.frames:
+        out.self_symbols[f"{sample.frames[0][0]} ({sample.frames[0][1]})"] += weight
+    # A block's inclusive time covers what it calls (memory callbacks,
+    # devices reached through them); one block per stack in this engine.
+    block = next((pc for pc in map(block_pc, symbols) if pc is not None), None)
+    if block is not None:
+        out.incl_blocks[labels(block)] += weight
+    if not categories.complete(symbols):
+        return
+    out.complete += weight
+    for symbol in set(s for s in symbols if block_pc(s) is None):
+        out.incl_symbols[symbol] += weight
+    if callers_of:
+        for depth, symbol in enumerate(symbols):
+            if callers_of in symbol:
+                out.callers[symbols[depth + 1] if depth + 1 < len(symbols) else "(root)"] += weight
+                break
+
+
+def _rows(counter: Counter, execution: int, seconds_per_weight: float, key: str) -> List[dict]:
+    return [{key: name, "seconds": weight * seconds_per_weight, "pct": weight / execution * 100}
+            for name, weight in counter.most_common()]
+
+
+def _marks(entries: List[dict]) -> List[Mark]:
+    keys = ("name", "pc", "wall_ms", "cpu_ms")
+    return [Mark(name=e["name"], pc=e["pc"], wall_ms=e["wall_ms"], cpu_ms=e["cpu_ms"],
+                 counters={k: v for k, v in e.items() if k not in keys}) for e in entries]
+
+
+def join_census(result: Attribution, census_run: Path, capture_marks: List[Mark], window: Tuple[str, str],
+                labels: Labels, seconds_per_weight: float) -> dict:
+    """Executed work from a census run of the same binary and inputs, priced
+    by the capture's samples: seconds per block and per execution. The
+    census changes timing, so it always comes from another run, and only a
+    run that did exactly the same guest work may be joined."""
+    log = census_run / "log.txt"
+    if not log.is_file():
+        raise ValueError(f"{census_run}: no log.txt; pass the run/ directory of `op1prof run --census`")
+    census_marks = parse_marks(log.read_text(errors="replace").splitlines())
+    diff = workload_diff(capture_marks, census_marks)
+    if diff:
+        raise ValueError("the census run did different guest work than the capture: " + "; ".join(diff[:5]))
+    counts: Dict[str, List[int]] = {}
+    for pc, (runs, packets) in census.phase(census_run / "census", "pc", *window).items():
+        row = counts.setdefault(labels(pc), [0, 0])
+        row[0] += runs
+        row[1] += packets
+    total_runs = sum(runs for runs, _ in counts.values())
+    in_blocks = sum(result.incl_blocks.values())
+    rows = []
+    for name, (runs, packets) in counts.items():
+        seconds = result.incl_blocks.get(name, 0) * seconds_per_weight
+        rows.append({"block": name, "runs": runs, "packets": packets, "seconds": seconds,
+                     "ns_per_run": seconds * 1e9 / runs if runs else 0.0,
+                     "ns_per_packet": seconds * 1e9 / packets if packets else 0.0})
+    rows.sort(key=lambda row: -row["seconds"])
+    host = (result.execution - in_blocks) * seconds_per_weight
+    return {"window": list(window), "runs": total_runs, "blocks": rows,
+            "outside_blocks_s": host, "outside_blocks_ns_per_run": host * 1e9 / total_runs if total_runs else 0.0}
+
+
+def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: Optional[str] = None,
+            census_run: Optional[Path] = None, samples: Optional[Iterable[Sample]] = None) -> dict:
+    info = json.loads((capture / "capture.json").read_text())
+    window = tuple(info["window"])
+    trace_data = trace.load(str(capture / "run" / "trace.json"))
+    if samples is None:
+        samples = parse_samples(_perf_script(capture / "perf.jit.data"))
+    result = attribute(samples, trace_data, window, categories, labels, callers_of)
+    phase = trace.phase(trace_data, *window)
+    execution = result.execution
+    per_weight = phase.noncompile_cpu_ms / 1e3 / execution if execution else 0.0
+    complete_pct = result.complete / execution * 100 if execution else 0.0
+    inclusive = complete_pct >= MIN_COMPLETE_PCT
+    event = info["event"]
+    data = {
+        "schema": SCHEMA, "event": event, "precise": info["precise"], "rate": info["rate"],
+        "window": list(window),
+        "samples": {fate: {"count": result.counts[fate], "weight": result.weights[fate]} for fate in result.counts},
+        "execution_cpu_s": phase.noncompile_cpu_ms / 1e3, "compile_cpu_s": phase.compile_cpu_ms / 1e3,
+        # For a time event the sampled period is CPU time: it should match
+        # the trace's execution CPU, and a large gap means lost samples.
+        "sampled_over_trace": (execution / 1e6 / phase.noncompile_cpu_ms
+                               if event.split(":")[0] in TIME_EVENTS and phase.noncompile_cpu_ms else None),
+        "chain_complete_pct": complete_pct, "inclusive_valid": inclusive,
+        "generated_code_pct": sum(result.self_blocks.values()) / execution * 100 if execution else 0.0,
+        "buckets": _rows(result.buckets, execution, per_weight, "bucket") if execution else [],
+        "blocks": [{"block": name, "self_s": result.self_blocks.get(name, 0) * per_weight,
+                    "self_pct": result.self_blocks.get(name, 0) / execution * 100,
+                    "incl_s": weight * per_weight, "incl_pct": weight / execution * 100}
+                   for name, weight in result.incl_blocks.most_common()] if execution else [],
+        "host_self": _rows(result.self_symbols, execution, per_weight, "symbol") if execution else [],
+        "host_inclusive": _rows(result.incl_symbols, execution, per_weight, "symbol") if inclusive else [],
+    }
+    if callers_of:
+        data["callers"] = {"of": callers_of,
+                           "rows": _rows(result.callers, execution, per_weight, "caller") if inclusive else []}
+    if census_run:
+        data["census"] = join_census(result, census_run, _marks(info["run"]["marks"]), window, labels, per_weight)
+    return data
+
+
+def _perf_script(data: Path) -> List[str]:
+    script = subprocess.run(["perf", "script", "-i", str(data), "-F", "tid,time,period,ip,sym,dso", "--ns"],
+                            capture_output=True, text=True)
+    if script.returncode != 0:
+        raise RuntimeError(f"perf script failed: {script.stderr.strip()[-300:]}")
+    return script.stdout.splitlines()
+
+
+def _table(title: str, rows: List[dict], key: str, limit: int, width: int = 60) -> List[str]:
+    lines = ["", f"{title:{width}s} {'seconds':>9} {'share':>6}"]
+    for row in rows[:limit]:
+        lines.append(f"{row[key][:width]:{width}s} {row['seconds']:9.3f} {row['pct']:5.1f}%")
+    return lines
+
+
+def format_report(data: dict, limit: int, sort: str = "seconds") -> str:
+    window = data["window"]
+    lines = [f"perf {data['event']} {' '.join(data['rate'])}, window {window[0]} -> {window[1]}",
+             "samples: " + ", ".join(f"{fate} {v['count']}" for fate, v in data["samples"].items()),
+             f"trace: execution CPU {data['execution_cpu_s']:.3f} s, compile CPU {data['compile_cpu_s']:.3f} s; "
+             "seconds below are execution CPU split by sampled weight",
+             f"generated code (self) {data['generated_code_pct']:.1f}% of execution",
+             "Shares are where samples landed, not what removing that code would save."]
+    if data["sampled_over_trace"] is not None:
+        lines.append(f"sampled CPU / trace execution CPU = {data['sampled_over_trace']:.3f}")
+    if not data["precise"]:
+        lines.append(f"{data['event']} is not a precise event: use these totals by block and symbol, "
+                     "never to rank single instructions (use cycles:upp for that).")
+    lines.append(f"call chains reaching the CPU loop: {data['chain_complete_pct']:.1f}% of execution weight")
+    if not data["inclusive_valid"]:
+        lines.append(f"  below {MIN_COMPLETE_PCT:g}%: inclusive and caller tables are withheld (code without "
+                     "frame pointers breaks the chain); buckets use the frames nearest the leaf")
+    lines += _table("host-path bucket", data["buckets"], "bucket", limit)
+    lines += ["", f"{'guest block':40s} {'self s':>9} {'self':>6} {'incl s':>9} {'incl':>6}"]
+    for row in data["blocks"][:limit]:
+        lines.append(f"{row['block'][:40]:40s} {row['self_s']:9.3f} {row['self_pct']:5.1f}% "
+                     f"{row['incl_s']:9.3f} {row['incl_pct']:5.1f}%")
+    lines += _table("host symbol (self)", data["host_self"], "symbol", limit)
+    if data["host_inclusive"]:
+        lines += _table("host symbol (inclusive)", data["host_inclusive"], "symbol", limit)
+    if "callers" in data:
+        lines += _table(f"callers of {data['callers']['of']}", data["callers"]["rows"], "caller", limit)
+    if "census" in data:
+        lines += _census_lines(data["census"], limit, sort)
+    return "\n".join(lines)
+
+
+def _census_lines(joined: dict, limit: int, sort: str) -> List[str]:
+    key = {"seconds": "seconds", "ns-per-run": "ns_per_run", "ns-per-packet": "ns_per_packet"}[sort]
+    rows = sorted(joined["blocks"], key=lambda row: -row[key])
+    lines = ["", f"census join over {joined['runs']} runs: sampled estimates, not exact costs; "
+                 "their error comes from repeated captures, not from sample counts",
+             f"outside guest blocks (dispatch, devices, event queue, CPU loop): "
+             f"{joined['outside_blocks_s']:.3f} s = {joined['outside_blocks_ns_per_run']:.1f} ns per run",
+             f"{'guest block':40s} {'runs':>12} {'packets':>13} {'seconds':>9} {'ns/run':>8} {'ns/pkt':>7}"]
+    for row in rows[:limit]:
+        lines.append(f"{row['block'][:40]:40s} {row['runs']:>12} {row['packets']:>13} {row['seconds']:9.3f} "
+                     f"{row['ns_per_run']:8.1f} {row['ns_per_packet']:7.2f}")
+    return lines

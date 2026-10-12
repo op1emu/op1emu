@@ -149,7 +149,7 @@ python3 -m op1prof ab     --base-bin $B $IN --aa --pairs 4   # noise floor
 python3 -m op1prof run    --binary $B $IN --census
 python3 -m op1prof census op1prof-run-*/run --phase main-boot:lap-end
 python3 -m op1prof perf   --binary $B $IN --window main-boot:main-display
-python3 -m op1prof report op1prof-perf-*/capture
+python3 -m op1prof report op1prof-perf-*/capture --census op1prof-run-*/run --sort ns-per-run
 ```
 
 Every run uses `--deterministic`, fixed sensors, `--nand-snapshot`, its own
@@ -162,8 +162,11 @@ the middle of a batch cannot change what is measured. Runs end at
 `--until` (default `main-frame`). A run that exits nonzero, never reaches
 that mark, goes `--progress-timeout` seconds without a new mark, or closes its
 output without exiting is a failed run; its process group is killed and kept in the results. Each command writes
-`results.json` with every run, its command line and the machine state before
-and after it.
+`results.json` with every run, its command line, the SHA-256 of its NAND, OTP
+and marks files, and the machine state before and after it. `verify
+--write-expect` saves those hashes and `--expect` compares them: nothing else
+binds the OTP image, and a different one changes the boot (with a mostly
+empty image the guest re-entered the bootrom early and never reached `lap-begin`).
 
 Before starting, op1prof refuses to run when another emulator is running (it
 would compete for CPU and memory, and a second instance cannot bind the USB/IP
@@ -201,11 +204,44 @@ window end, is rejected rather than recorded empty, and a capture fails if
 its window marks did not both fire or the marks fired out of file order),
 then `perf inject --jit`. It checks first that perf may
 record the event; it never changes `kernel.perf_event_paranoid` but says what
-to set (2 is enough). `report` (also printed after `perf`) keeps the CPU thread's samples
-inside the window, drops those inside `translate` spans, and attributes the
-rest by guest block (`bb_0x<pc>`) and by host symbol, beside the trace's
-execution and compile CPU. For a non-precise event it says that the totals
-are only valid per block and symbol.
+to set (2 is enough).
+
+`report` (also printed after `perf`) keeps the CPU thread's samples inside
+the window, drops those inside `translate` spans, and weights the rest by
+their sample period. It splits the trace's execution CPU in proportion, so
+every table is in seconds of execution CPU:
+
+- **Host-path buckets** from `profiling/categories.json`: each sample goes to
+  the bucket of the frame nearest its leaf that matches a rule (a device read
+  called from generated code is device time; a `memcpy` takes its caller's
+  bucket). The buckets and `uncategorized` add up to all execution.
+- **Guest blocks**: `self` is time in the block's own code, `incl` adds what
+  it called (memory callbacks, devices reached through them). `--symbols`
+  names blocks; `--pc-range NAME=LO:HI` merges a range, such as a loop that
+  spans several blocks, into one row.
+- **Host symbols**, self and inclusive; `--callers SYMBOL` breaks a symbol
+  down by caller.
+
+Inclusive numbers need whole call chains. The report states how much of the
+execution weight has a chain reaching the CPU loop (the `roots` in the
+categories file); below 95% it withholds the inclusive and caller tables,
+since code without frame pointers breaks the chain and the missing callers
+would silently undercount. For `cpu-clock` it also compares the sampled CPU
+time with the trace's execution CPU. For a non-precise event it says that the
+totals are only valid per block and symbol.
+
+`report --census RUNDIR` joins a capture with the census of a separate
+`run --census` (the census changes timing, so never the same run) and gives
+each guest block its runs, packets, seconds, **ns per run** and ns per packet,
+plus the cost per run of everything outside guest blocks (dispatch, devices,
+event queue, CPU loop). The census run must have done exactly the capture's
+guest work, or the join is refused. `--sort ns-per-run` ranks blocks by how
+expensive one execution is rather than by total share. These are sampled
+estimates: their error comes from repeating captures, not from sample counts.
+`--json FILE` writes the whole report for further analysis.
+
+`run` prints a table of every phase between consecutive marks (CPU,
+compile, execution, off-CPU, translations) and stores it in `results.json`.
 
 ## Measurement rules
 

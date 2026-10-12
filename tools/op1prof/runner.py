@@ -41,6 +41,24 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+_HASHES: dict = {}
+
+
+def input_hashes(spec: "RunSpec") -> dict:
+    """SHA-256 of the files a run reads. The marks file binds the NAND image
+    but nothing binds the OTP image, and a different one changes the boot
+    (one stopped making progress after te-boot), so every run records
+    them all. Cached by path, size and mtime: the NAND is 512 MiB."""
+    out = {}
+    for name, path in (("nand", spec.nand), ("otp", spec.otp), ("marks", spec.marks)):
+        info = os.stat(path)
+        key = (str(path), info.st_size, info.st_mtime_ns)
+        if key not in _HASHES:
+            _HASHES[key] = sha256_file(path)
+        out[f"{name}_sha256"] = _HASHES[key]
+    return out
+
+
 def snapshot_binary(binary: str | Path, out_dir: Path) -> Path:
     """Copy the binary aside so a rebuild during a batch cannot change what
     is measured. Named by content, so identical binaries share one copy.
@@ -86,6 +104,7 @@ class RunResult:
     elapsed_s: float
     before: dict
     after: dict
+    inputs: dict = field(default_factory=dict)
 
     @property
     def reached(self) -> bool:
@@ -104,7 +123,7 @@ class RunResult:
             "elapsed_s": self.elapsed_s, "reached": self.reached,
             "marks": [{"name": m.name, "pc": m.pc, "wall_ms": m.wall_ms, "cpu_ms": m.cpu_ms,
                        **m.counters} for m in self.marks],
-            "machine_before": self.before, "machine_after": self.after,
+            "inputs": self.inputs, "machine_before": self.before, "machine_after": self.after,
         }
 
 
@@ -148,6 +167,7 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
     command += spec.args
     command = spec.prefix + command
 
+    inputs = input_hashes(spec)
     before = machine.snapshot(spec.cpu).to_json()
     marks: List[Mark] = []
     error: Optional[str] = None
@@ -211,4 +231,4 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
         error = f"mark {spec.until!r} never fired"
     return RunResult(directory=directory, command=command, returncode=returncode, marks=marks,
                      error=error, elapsed_s=time.monotonic() - start, before=before,
-                     after=machine.snapshot(spec.cpu).to_json(), until=spec.until)
+                     after=machine.snapshot(spec.cpu).to_json(), until=spec.until, inputs=inputs)

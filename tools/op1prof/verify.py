@@ -48,10 +48,18 @@ def verify(spec: RunSpec, runs: int, out: Path, expect: Optional[Path], write_ex
     for index, other in enumerate(tuples[1:], 1):
         report["differences"] += [f"run {index}: {line}" for line in _diff(tuples[0], other)]
     if expect:
-        expected = json.loads(expect.read_text())["marks"]
+        saved = json.loads(expect.read_text())
+        expected = saved["marks"]
+        # Older expect files carry no inputs; when they do, a different
+        # image explains a different workload before any counter does.
+        inputs = report["runs"][0]["inputs"]
+        for key, value in saved.get("inputs", {}).items():
+            if inputs.get(key) != value:
+                report["differences"].append(f"expected: input {key}: {value} vs {inputs.get(key)}")
         report["differences"] += [f"expected: {line}" for line in _diff(expected, tuples[0])]
     if write_expect and not report["differences"]:
-        write_expect.write_text(json.dumps({"schema": "op1prof.expect.v1", "marks": tuples[0]}, indent=1) + "\n")
+        write_expect.write_text(json.dumps({"schema": "op1prof.expect.v1", "inputs": report["runs"][0]["inputs"],
+                                             "marks": tuples[0]}, indent=1) + "\n")
     report["status"] = "deterministic" if not report["differences"] else "differences found"
     path.write_text(json.dumps(report, indent=1))
     return report

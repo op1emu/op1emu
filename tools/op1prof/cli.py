@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 
 from . import ab, census, machine, perf, trace, verify
+from . import report as perf_report
+from .categories import Categories
 from .runner import REPO, RunSpec, reserved_args, run, sha256_file, snapshot_binary
 
 DEFAULT_MARKS = REPO / "profiling" / "marks" / "op1-stock-nand.json"
@@ -88,8 +90,10 @@ def cmd_run(args) -> int:
     report = {"schema": "op1prof.run.v1", "run": result.to_json(),
               "status": "reached" if result.reached else f"failed: {result.error}"}
     if result.reached:
+        trace_data = trace.load(str(result.trace_path))
         report["phase"] = {"begin": _phase(args)[0], "end": _phase(args)[1],
-                           **trace.phase(trace.load(str(result.trace_path)), *_phase(args)).to_json()}
+                           **trace.phase(trace_data, *_phase(args)).to_json()}
+        report["phases"] = [{"begin": a, "end": b, **p.to_json()} for a, b, p in trace.phases(trace_data)]
     (out / "results.json").write_text(json.dumps(report, indent=1))
     for mark in result.marks:
         c = mark.counters
@@ -98,6 +102,10 @@ def cmd_run(args) -> int:
     if not result.reached:
         print(f"run failed: {result.error} (log: {result.directory / 'log.txt'})", file=sys.stderr)
         return 1
+    print(f"\n{'phase':28s} {'cpu s':>9} {'compile':>9} {'execution':>9} {'off-CPU':>8} {'transl':>7}")
+    for p in report["phases"]:
+        print(f"{p['begin'] + ' -> ' + p['end']:28s} {p['cpu_ms'] / 1e3:9.3f} {p['compile_cpu_ms'] / 1e3:9.3f} "
+              f"{p['noncompile_cpu_ms'] / 1e3:9.3f} {p['offcpu_ms'] / 1e3:8.3f} {p['translations']:>7}")
     p = report["phase"]
     print(f"{p['begin']} -> {p['end']}: cpu {p['cpu_ms'] / 1e3:.3f} s = compile {p['compile_cpu_ms'] / 1e3:.3f} s"
           f" + execution {p['noncompile_cpu_ms'] / 1e3:.3f} s; wall {p['wall_ms'] / 1e3:.3f} s"
@@ -168,12 +176,20 @@ def cmd_perf(args) -> int:
     if error:
         print(f"capture failed: {error} (log: {result.directory / 'log.txt'})", file=sys.stderr)
         return 1
-    print(perf.report(out / "capture", args.top))
+    print(perf_report.format_report(perf_report.analyze(out / "capture", Categories.load(), perf_report.Labels()), args.top))
     return 0
 
 
 def cmd_report(args) -> int:
-    print(perf.report(args.capture, args.top))
+    try:
+        labels = perf_report.Labels(census.Symbols(args.symbols), [perf_report.PcRange.parse(r) for r in args.pc_range])
+        data = perf_report.analyze(args.capture, Categories.load(args.categories), labels, args.callers, args.census)
+    except ValueError as error:
+        print(f"report: {error}", file=sys.stderr)
+        return 2
+    if args.json:
+        args.json.write_text(json.dumps(data, indent=1) + "\n")
+    print(perf_report.format_report(data, args.top, args.sort))
     return 0
 
 
@@ -229,6 +245,16 @@ def main(argv=None) -> int:
     p = sub.add_parser("report", help="re-report an earlier perf capture directory")
     p.add_argument("capture", type=Path, help="the capture/ directory of an op1prof perf run")
     p.add_argument("--top", type=int, default=25)
+    p.add_argument("--symbols", type=Path, help="ADDRESS NAME lines to name guest blocks")
+    p.add_argument("--pc-range", action="append", default=[], metavar="NAME=LO:HI",
+                   help="report the blocks in a guest PC range as one row (repeatable)")
+    p.add_argument("--categories", type=Path, help="host-path bucket rules (default profiling/categories.json)")
+    p.add_argument("--callers", metavar="SYMBOL", help="also break down the callers of a host symbol")
+    p.add_argument("--census", type=Path, metavar="RUNDIR",
+                   help="run/ directory of an `op1prof run --census` with the same workload: cost per block run")
+    p.add_argument("--sort", choices=("seconds", "ns-per-run", "ns-per-packet"), default="seconds",
+                   help="order of the census join")
+    p.add_argument("--json", type=Path, help="also write the full report as JSON")
     p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("census", help="per-PC and MMIO counts between two marks of a --census run")

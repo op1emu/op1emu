@@ -199,6 +199,19 @@ def test_verify_needs_a_run(files, tmp_path):
         verify.verify(spec(files), 0, tmp_path, None, None)
 
 
+
+def test_verify_records_inputs_and_checks_them_against_an_expect_file(files, tmp_path):
+    expect = tmp_path / "expect.json"
+    report = verify.verify(spec(files), 1, tmp_path / "v1", None, expect)
+    inputs = report["runs"][0]["inputs"]
+    assert report["status"] == "deterministic" and set(inputs) == {"nand_sha256", "otp_sha256", "marks_sha256"}
+    assert json.loads(expect.read_text())["inputs"] == inputs
+    (files / "otp.bin").write_text("another unit")  # same workload from the fake, different image
+    report = verify.verify(spec(files), 1, tmp_path / "v2", expect, None)
+    assert report["status"] == "differences found"
+    assert any("input otp_sha256" in line for line in report["differences"])
+
+
 # ---- ab ----
 
 def _side(name, files, out, args=()):
@@ -262,6 +275,8 @@ def test_ab_requires_balanced_pairs(files, tmp_path):
 # ---- perf ----
 
 from op1prof import census, perf  # noqa: E402
+from op1prof import report as perf_report  # noqa: E402
+from op1prof.categories import Categories  # noqa: E402
 
 
 def test_precise_events():
@@ -299,34 +314,163 @@ def test_perf_fails_when_the_window_never_closed(files, monkeypatch, capsys):
                                  "frame": {"name": "main-frame"}}))
     monkeypatch.setattr(perf, "preflight", lambda *a: None)
     monkeypatch.setattr(perf, "record", lambda spec, directory, *a: run(spec, directory))
-    monkeypatch.setattr(perf, "report", lambda *a: pytest.fail("reported an unclosed window"))
+    monkeypatch.setattr(perf_report, "analyze", lambda *a: pytest.fail("reported an unclosed window"))
     assert cli.main(["perf", "--binary", str(FAKE), "--nand", str(files / "nand.bin"), "--otp", str(files / "otp.bin"),
                      "--marks", str(marks), "--window", "bootrom:lap-end", "--force",
                      "--out", str(files / "p"), "--timeout", "30", "--progress-timeout", "5"]) == 1
     assert "window marks did not fire: ['lap-end']" in capsys.readouterr().err
 
 
-def test_samples_are_attributed_outside_compilation():
-    lines = [
-        " 42 10.000000100:  7f00 bb_0x01a5e27e (/tmp/jitted-42-1.so)",
-        " 42 10.000000200:  7f01 bb_0x01a5e27e (/tmp/jitted-42-1.so)",
-        " 42 10.000000300:  4000 EmulatorMemory::read32 (/x/op1emu)",
-        " 42 10.000000550:  7f02 bb_0x00000000 (/tmp/jitted-42-2.so)",   # inside a translate span
-        " 43 10.000000300:  4000 glfwPollEvents (/x/libglfw.so)",          # another thread
-        " 42 11.000000000:  7f00 bb_0x01a5e27e (/tmp/jitted-42-1.so)",    # after the window
-        "unrelated line",
-    ]
-    samples = list(perf.parse_samples(lines))
-    assert samples[0] == (42, 10_000_000_100, "bb_0x01a5e27e", "jitted-42-1.so")
-    trace_data = {"cpu_thread_tid": 42, "traceEvents": [
-        {"name": "a", "cat": "mark", "ts": 10_000_000.0},
-        {"name": "translate", "ph": "X", "ts": 10_000_000.5, "dur": 0.1},
-        {"name": "b", "cat": "mark", "ts": 10_000_001.0},
+RUN = "BlackFinCpu::Run() (/x/op1emu)"
+
+
+def _script(*samples):
+    """perf script text: (tid, seconds, period, [frame, ...]) with frames leaf first."""
+    lines = []
+    for tid, seconds, period, frames in samples:
+        lines.append(f" {tid} {seconds}:     {period} ")
+        lines += [f"\t    {0x1000 + i:x} {frame}" for i, frame in enumerate(frames)]
+        lines.append("")
+    return lines
+
+
+def test_parse_samples_reads_call_chains():
+    lines = _script((42, "10.000000100", 250, ["bb_0x01a5e27e (/tmp/jitted-42-1.so)",
+                                                "Core::run(unsigned int) (/x/op1emu)", RUN]))
+    lines += [" 43 10.5:     7 ", "\t    7f00 [unknown] ([unknown])"]   # last sample, no blank line
+    first, last = perf_report.parse_samples(lines)
+    assert (first.tid, first.time_ns, first.period) == (42, 10_000_000_100, 250)
+    assert first.frames == (("bb_0x01a5e27e", "jitted-42-1.so"), ("Core::run(unsigned int)", "op1emu"),
+                            ("BlackFinCpu::Run()", "op1emu"))
+    assert last.frames == (("[unknown]", "[unknown]"),) and last.period == 7
+
+
+def _perf_trace(tid=42):
+    return {"schema": "op1.trace.v2", "dropped": 0, "cpu_thread_tid": tid, "traceEvents": [
+        {"name": "a", "cat": "mark", "ts": 10_000_000.0, "args": {"wall_ns": 0, "thread_cpu_ns": 0}},
+        {"name": "translate", "ph": "X", "ts": 10_000_000.5, "dur": 0.1, "args": {"cpu_ns": 100}},
+        {"name": "b", "cat": "mark", "ts": 10_000_001.0, "args": {"wall_ns": 1000, "thread_cpu_ns": 1000}},
     ]}
-    result = perf.attribute(samples, trace_data, ("a", "b"))
-    assert result["counts"] == {"execution": 3, "compile": 1, "other_threads": 1, "outside_window": 1}
-    assert result["blocks"]["bb_0x01a5e27e"] == 2
-    assert result["symbols"]["EmulatorMemory::read32 (op1emu)"] == 1
+
+
+SAMPLES = [
+    (42, "10.000000100", 100, ["bb_0x01a5e27e (/j.so)", "Core::run(unsigned int) (/x/op1emu)", RUN]),
+    (42, "10.000000200", 300, ["NFC::Read(unsigned int) (/x/op1emu)", "EmulatorMemory::read16(unsigned int) (/x/op1emu)",
+                               "bb_0x01a5e27e (/j.so)", "Core::run(unsigned int) (/x/op1emu)", RUN]),
+    (42, "10.000000300", 50, ["memcpy (/lib/libc.so.6)", "BlackFinCpu::ProcessEvents() (/x/op1emu)", RUN]),
+    (42, "10.000000400", 50, ["memcpy (/lib/libc.so.6)", "[unknown] ([unknown])"]),          # broken chain
+    (42, "10.000000550", 999, ["bb_0x00000000 (/j.so)", RUN]),                               # translating
+    (43, "10.000000300", 999, ["glfwPollEvents (/x/libglfw.so)"]),                           # another thread
+    (42, "11.000000000", 999, ["bb_0x01a5e27e (/j.so)", RUN]),                               # after the window
+]
+
+
+def test_attribution_weights_buckets_and_inclusive_time():
+    samples = list(perf_report.parse_samples(_script(*SAMPLES)))
+    result = perf_report.attribute(samples, _perf_trace(), ("a", "b"), Categories.load(), perf_report.Labels())
+    assert result.counts == {"execution": 4, "compile": 1, "other_threads": 1, "outside_window": 1}
+    assert result.execution == 500 and result.complete == 450
+    # The device read is device time even though generated code called it.
+    assert result.buckets == {"generated code": 100, "nand": 300, "event queue": 50, "uncategorized": 50}
+    assert result.self_blocks == {"bb_0x01a5e27e": 100}
+    assert result.incl_blocks == {"bb_0x01a5e27e": 400}
+    assert result.incl_symbols["BlackFinCpu::Run()"] == 450 and result.incl_symbols["NFC::Read(unsigned int)"] == 300
+    assert result.self_symbols["memcpy (libc.so.6)"] == 100
+
+
+def test_buckets_prefer_the_nearest_frame_then_rule_order():
+    categories = Categories.load()
+    assert categories.bucket(["DMABus::Transfer()", "Bus::Read()"]) == "dma"       # rule order within a frame
+    assert categories.bucket(["std::_Hash_bytes", "JitEngine::lookup(unsigned int)"]) == "dispatch"
+    assert categories.bucket(["libfoo"]) == "uncategorized"
+    assert not categories.complete(["memcpy", "[unknown]"])
+
+
+def _capture(tmp_path, trace_data, marks=()):
+    capture = tmp_path / "capture"
+    (capture / "run").mkdir(parents=True)
+    (capture / "run" / "trace.json").write_text(json.dumps(trace_data))
+    (capture / "capture.json").write_text(json.dumps({
+        "event": "cpu-clock:u", "precise": False, "rate": ["-F", "999"], "window": ["a", "b"],
+        "run": {"marks": list(marks)}}))
+    return capture
+
+
+def test_report_withholds_inclusive_tables_for_broken_chains(tmp_path):
+    capture = _capture(tmp_path, _perf_trace())
+    broken = [(42, "10.000000100", 10, ["bb_0x01a5e27e (/j.so)", RUN]),
+              (42, "10.000000200", 90, ["memcpy (/lib/libc.so.6)"])]
+    data = perf_report.analyze(capture, Categories.load(), perf_report.Labels(), callers_of="memcpy",
+                               samples=perf_report.parse_samples(_script(*broken)))
+    assert data["chain_complete_pct"] == 10.0 and not data["inclusive_valid"]
+    assert data["host_inclusive"] == [] and data["callers"]["rows"] == []
+    assert data["buckets"]  # still reported
+    # cpu-clock periods are CPU nanoseconds: 100 ns sampled vs 1000 - 100 ns of execution
+    assert data["sampled_over_trace"] == pytest.approx(100 / 900)
+    text = perf_report.format_report(data, 10)
+    assert "withheld" in text and "not a precise event" in text
+    assert data["blocks"][0]["incl_s"] == pytest.approx(0.1 * 900e-9)
+
+
+def _mark_entry(name, packets):
+    return {"name": name, "pc": 0, "wall_ms": 0.0, "cpu_ms": 0.0, "runs": 1, "packets": packets, "cycles": packets,
+            "translated": 1, "mmio_r": 0, "mmio_w": 0, "events": 0}
+
+
+def _mark_line(entry):
+    fields = " ".join(f"{k}={v}" for k, v in entry.items() if k not in ("name", "pc"))
+    return f"[mark] {entry['name']} pc=0x0 {fields}"
+
+
+def test_census_join_prices_block_runs_and_refuses_other_work(tmp_path):
+    marks = [_mark_entry("a", 10), _mark_entry("b", 20)]
+    capture = _capture(tmp_path, _perf_trace(), marks)
+    census_run = tmp_path / "census-run"
+    census_run.mkdir()
+    (census_run / "log.txt").write_text("\n".join(map(_mark_line, marks)) + "\n")
+    _census(census_run / "census.pc.a", [(0x01a5e27e, 1, 4)])
+    _census(census_run / "census.pc.b", [(0x01a5e27e, 5, 24), (0x200, 3, 3)])
+    _census(census_run / "census.mmio.a", [])
+    _census(census_run / "census.mmio.b", [])
+    samples = list(perf_report.parse_samples(_script(*SAMPLES)))
+    labels = perf_report.Labels(ranges=[perf_report.PcRange.parse("fir=01a5e240:01a5e290")])
+    data = perf_report.analyze(capture, Categories.load(), labels, census_run=census_run, samples=samples)
+    rows = {row["block"]: row for row in data["census"]["blocks"]}
+    per_weight = 900e-9 / 500
+    assert rows["fir"]["runs"] == 4 and rows["fir"]["packets"] == 20
+    assert rows["fir"]["ns_per_run"] == pytest.approx(400 * per_weight * 1e9 / 4)
+    assert rows["bb_0x00000200"]["seconds"] == 0
+    assert data["census"]["outside_blocks_ns_per_run"] == pytest.approx(100 * per_weight * 1e9 / 7)
+    assert "ns/run" in perf_report.format_report(data, 10, "ns-per-run")
+    (census_run / "log.txt").write_text("\n".join(map(_mark_line, [marks[0], _mark_entry("b", 21)])) + "\n")
+    with pytest.raises(ValueError, match="different guest work"):
+        perf_report.analyze(capture, Categories.load(), labels, census_run=census_run, samples=samples)
+
+
+def test_pc_range_and_symbol_labels(tmp_path):
+    assert perf_report.PcRange.parse("fir=0x10:0x20") == perf_report.PcRange("fir", 0x10, 0x20)
+    with pytest.raises(ValueError):
+        perf_report.PcRange.parse("fir")
+    symbols = tmp_path / "syms.txt"
+    symbols.write_text("00000100 dsp_fir\n")
+    labels = perf_report.Labels(census.Symbols(symbols), [perf_report.PcRange("loop", 0x200, 0x2ff)])
+    assert labels(0x104) == "bb_0x00000104 dsp_fir+0x4" and labels(0x250) == "loop"
+    assert perf_report.block_pc("bb_0x01a5e27e") == 0x01a5e27e and perf_report.block_pc("bb_main") is None
+
+
+def test_phases_cover_every_pair_of_consecutive_marks():
+    data = {"traceEvents": [
+        {"name": "start", "cat": "mark", "ts": 0.0, "args": {"wall_ns": 0, "thread_cpu_ns": 0}},
+        {"name": "translate", "ph": "X", "ts": 1.0, "dur": 2.0, "args": {"cpu_ns": 1500}},
+        {"name": "a", "cat": "mark", "ts": 5.0, "args": {"wall_ns": 5000, "thread_cpu_ns": 4000}},
+        {"name": "translate", "ph": "X", "ts": 6.0, "dur": 1.0, "args": {"cpu_ns": 1000}},
+        {"name": "translate", "ph": "X", "ts": 7.0, "dur": 1.0, "args": {"cpu_ns": 1000}},
+        {"name": "b", "cat": "mark", "ts": 9.0, "args": {"wall_ns": 9000, "thread_cpu_ns": 8000}},
+    ]}
+    table = trace.phases(data)
+    assert [(a, b) for a, b, _ in table] == [("start", "a"), ("a", "b")]
+    assert [p.translations for _, _, p in table] == [1, 2]
+    assert table[1][2].noncompile_cpu_ms == pytest.approx(0.002)
 
 
 # ---- census ----

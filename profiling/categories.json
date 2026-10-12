@@ -1,0 +1,21 @@
+{
+  "comment": "Host-path buckets for `op1prof report`. Each execution sample goes to the bucket of the frame nearest its leaf that matches any rule; within one frame the first rule in this list wins. A pattern matches when it is a substring of the demangled symbol. Samples whose stack reaches no root have a broken call chain and are counted apart.",
+  "roots": ["BlackFinCpu::Run(", "ExecutionThread("],
+  "categories": [
+    {"name": "profiler",         "match": ["Profiler::", "FrameTap::"]},
+    {"name": "nand",             "match": ["NFC::", "NandFlash::", "MT29F4G08::"]},
+    {"name": "sport/audio",      "match": ["SPORT::", "AudioOutput"]},
+    {"name": "ppi/display",      "match": ["PPI::", "Display::", "OLED::"]},
+    {"name": "dma",              "match": ["DMAChannel::", "DMABus::", "DMA::"]},
+    {"name": "rtc",              "match": ["RTC::"]},
+    {"name": "usb",              "match": ["USBDevice::", "USB::"]},
+    {"name": "timers",           "match": ["CoreTimer::", "GPTimer", "PanelOscillator::"]},
+    {"name": "interrupts",       "match": ["SIC::", "cec_", "BlackFinCpu::ProcessInterrupt("]},
+    {"name": "gpio/twi/sensors", "match": ["GPIO", "TWI::", "I2CPeripheral", "MCP230XX::", "ADXL345::", "Potentiometer::", "Keyboard::"]},
+    {"name": "event queue",      "match": ["BlackFinCpu::ProcessEvents(", "BlackFinCpu::QueueEvent("]},
+    {"name": "memory callbacks", "match": ["EmulatorMemory::", "MemoryDevice::", "RegisterDevice::", "FastMem::", "EBIU::", "Bus::"]},
+    {"name": "generated code",   "match": ["bb_0x"]},
+    {"name": "dispatch",         "match": ["Core::run(", "JitEngine::lookup("]},
+    {"name": "cpu loop",         "match": ["BlackFinCpu::"]}
+  ]
+}
