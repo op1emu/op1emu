@@ -519,9 +519,9 @@ struct Profiler::Impl : BcoreEventSink {
                 if (translate) {
                     // The hash as a string: JSON numbers lose 64-bit integers.
                     std::fprintf(file, ",\"cpu_ns\":%" PRIu64 ",\"ir_insns\":%" PRIu64 ",\"ir_blocks\":%" PRIu64
-                                       ",\"object_bytes\":%" PRIu64 ",\"object_hash\":\"%016" PRIx64 "\"",
+                                       ",\"object_bytes\":%" PRIu64 ",\"object_hash\":\"%016" PRIx64 "\",\"collect_ns\":%" PRIu64,
                                  e.cpu_ns, e.shape.ir_instructions, e.shape.ir_blocks, e.shape.object_bytes,
-                                 e.shape.object_hash);
+                                 e.shape.object_hash, e.shape.collect_ns);
                 }
                 if (translate && counted) std::fprintf(file, ",\"insns\":%" PRIu64, e.insns);
                 std::fputs("}}", file);
