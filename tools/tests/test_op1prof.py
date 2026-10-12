@@ -663,6 +663,8 @@ def hybrid(tmp_path, monkeypatch):
         topo.mkdir(parents=True)
         (topo / "thread_siblings_list").write_text(siblings + "\n")
     monkeypatch.setattr(machine, "SYS", str(sys_root))
+    # Any CPU of the fake machine, whatever this host's affinity is.
+    monkeypatch.setattr(machine.os, "sched_getaffinity", lambda pid: set(range(6)))
     return sys_root
 
 
@@ -673,6 +675,14 @@ def test_hybrid_cpus_need_a_pinned_performance_core(hybrid):
     assert not any("--cpu" in p for p in machine.preflight(None, 0))     # a single run may float
     assert any("efficiency core" in p for p in machine.preflight(4, 0))
     assert not any("core" in p for p in machine.preflight(2, 0, require_pin=True))
+
+
+def test_an_inherited_single_cpu_affinity_counts_as_pinned(hybrid, monkeypatch):
+    monkeypatch.setattr(machine.os, "sched_getaffinity", lambda pid: {2})       # taskset -c 2
+    assert not any("core" in p for p in machine.preflight(None, 0, require_pin=True))
+    monkeypatch.setattr(machine.os, "sched_getaffinity", lambda pid: {4})       # taskset -c 4
+    assert any("CPU 4 is an efficiency core" in p for p in machine.preflight(None, 0))
+    assert any("not in this process's affinity mask" in p for p in machine.preflight(2, 0))
 
 
 def test_sibling_load_during_a_run_comes_from_cpu_times():

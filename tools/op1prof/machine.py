@@ -214,8 +214,12 @@ def snapshot(cpu: Optional[int]) -> Snapshot:
 def preflight(cpu: Optional[int], min_mem_gb: float, require_pin: bool = False) -> List[str]:
     """Reasons not to start measuring; empty when the machine is usable.
     `require_pin`: the command compares runs (ab, verify), so on a hybrid CPU
-    every run must stay on one kind of core."""
+    every run must stay on one kind of core. A run pinned by the affinity it
+    inherits (taskset) counts as pinned to that CPU, as in its snapshots."""
     problems = []
+    if cpu is not None and cpu not in os.sched_getaffinity(0):
+        problems.append(f"CPU {cpu} is not in this process's affinity mask")
+    cpu = measured_cpu(cpu)
     types = core_types()
     if types and cpu is None and require_pin:
         problems.append("this CPU has performance and efficiency cores and an unpinned run moves between "
@@ -231,8 +235,6 @@ def preflight(cpu: Optional[int], min_mem_gb: float, require_pin: bool = False) 
     if available < min_mem_gb:
         problems.append(f"MemAvailable is {available:.1f} GB, below {min_mem_gb:g} GB "
                         "(memory pressure stretched compilation 4.4x before)")
-    if cpu is not None and cpu not in os.sched_getaffinity(0):
-        problems.append(f"CPU {cpu} is not in this process's affinity mask")
     return problems
 
 
