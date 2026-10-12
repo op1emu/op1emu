@@ -98,6 +98,7 @@ class RunResult:
     before: dict
     after: dict
     inputs: dict = field(default_factory=dict)
+    cpu: Optional[int] = None
 
     @property
     def reached(self) -> bool:
@@ -109,6 +110,13 @@ class RunResult:
     def trace_path(self) -> Path:
         return self.directory / "trace.json"
 
+    def contention(self) -> dict:
+        """What shared the pinned core during the run: its SMT sibling's
+        load and the core's thermal throttling events."""
+        before, after = self.before.get("throttle_count"), self.after.get("throttle_count")
+        return {"sibling_busy": machine.sibling_busy(self.before, self.after, self.cpu),
+                "throttle_events": after - before if before is not None and after is not None else None}
+
     def to_json(self) -> dict:
         return {
             "directory": str(self.directory), "command": self.command,
@@ -117,6 +125,7 @@ class RunResult:
             "marks": [{"name": m.name, "pc": m.pc, "wall_ms": m.wall_ms, "cpu_ms": m.cpu_ms,
                        **m.counters} for m in self.marks],
             "inputs": self.inputs, "machine_before": self.before, "machine_after": self.after,
+            "contention": self.contention(),
         }
 
 
@@ -226,4 +235,4 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
         error = f"mark {spec.until!r} never fired"
     return RunResult(directory=directory, command=command, returncode=returncode, marks=marks,
                      error=error, elapsed_s=time.monotonic() - start, before=before,
-                     after=machine.snapshot(spec.cpu).to_json(), until=spec.until, inputs=inputs)
+                     after=machine.snapshot(spec.cpu).to_json(), until=spec.until, inputs=inputs, cpu=spec.cpu)

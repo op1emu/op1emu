@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import ab, census, machine, perf, trace, verify
+from . import ab, census, machine, perf, stats, trace, verify
 from . import report as perf_report
 from .categories import Categories
 from .runner import REPO, RunSpec, reserved_args, run, sha256_file, snapshot_binary
@@ -54,8 +54,8 @@ def _positive(text: str) -> int:
     return value
 
 
-def _preflight(args) -> bool:
-    problems = machine.preflight(args.cpu, args.min_mem_gb)
+def _preflight(args, compares: bool = False) -> bool:
+    problems = machine.preflight(args.cpu, args.min_mem_gb, require_pin=compares)
     for problem in problems:
         print(f"preflight: {problem}", file=sys.stderr)
     if problems and not args.force:
@@ -133,7 +133,7 @@ def cmd_run(args) -> int:
 
 def cmd_verify(args) -> int:
     _check_args(args.arg)
-    if not _preflight(args):
+    if not _preflight(args, compares=True):
         return 2
     out = _out(args, "verify")
     report = verify.verify(_spec(args, snapshot_binary(args.binary, out)), args.runs, out,
@@ -146,7 +146,7 @@ def cmd_verify(args) -> int:
 
 def cmd_ab(args) -> int:
     _check_args(args.arg + args.base_arg + args.new_arg)
-    if not _preflight(args):
+    if not _preflight(args, compares=True):
         return 2
     out = _out(args, "ab")
     new_binary = args.new_bin or args.base_bin
@@ -158,22 +158,59 @@ def cmd_ab(args) -> int:
     base = ab.Side("base", snapshot_binary(args.base_bin, out), list(args.base_arg), sha256_file(args.base_bin))
     new = ab.Side("new", snapshot_binary(new_binary, out), list(args.new_arg if not args.aa else args.base_arg),
                   sha256_file(new_binary))
-    report = ab.compare(base, new, _spec(args, base.binary), args.pairs, out, _phase(args),
-                        args.min_effect, args.allow_workload_change)
-    print(f"status: {report['status']}  ({out / 'results.json'})")
+    try:
+        report = ab.compare(base, new, _spec(args, base.binary), args.pairs, out, _phase(args),
+                            args.min_effect, args.allow_workload_change)
+    except ValueError as error:
+        raise SystemExit(str(error))
+    return _print_ab(report, out)
+
+
+def cmd_extend(args) -> int:
+    results = args.batch / "results.json"
+    try:
+        previous = json.loads(results.read_text())
+        if "config" not in previous:
+            raise ValueError(f"{results} has no batch configuration (written by an older op1prof)")
+        base, new, spec = ab.from_config(previous["config"])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise SystemExit(f"extend: {error}")
+    args.cpu, args.arg = spec.cpu, spec.args
+    if not _preflight(args, compares=True):
+        return 2
+    config = previous["config"]
+    try:
+        report = ab.compare(base, new, spec, args.pairs, args.batch.resolve(), tuple(config["phase"]),
+                            config["min_effect_pct"], config["allow_workload_change"], config["seed"], previous)
+    except ValueError as error:
+        raise SystemExit(f"extend: {error}")
+    return _print_ab(report, args.batch)
+
+
+def _print_ab(report: dict, out: Path) -> int:
+    extended = f", extended {report['extensions']} time(s) after its first verdict" if report.get("extensions") else ""
+    print(f"status: {report['status']}  ({len(report['pairs'])} pairs{extended}; {out / 'results.json'})")
     for line in report.get("unstable", []):
         print(f"unstable: {line}")
     for pair in report["pairs"]:
         for line in pair["workload_diff"]:
             print(f"pair {pair['pair']} workload: {line}")
+        for line in pair.get("contended", []):
+            print(f"pair {pair['pair']} contended: {line}")
+    for line in report.get("drift", []):
+        print(f"drift: {line}")
     for metric, s in report.get("summary", {}).items():
         if "skipped" in s:
             print(f"{metric}: {s['skipped']}")
             continue
         low, high = s["ci95_pct"]
         print(f"{metric}: {s['mean_pct']:+.2f}% (95% CI {low:+.2f}..{high:+.2f}), "
-              f"{s['wins']}/{s['pairs']} new faster -> {s['verdict']}")
-    return 0 if report["status"] in ("faster", "slower", "inconclusive") else 1
+              f"{s['wins']}/{s['pairs']} new faster (sign test p={s['sign_test_p']:.3f}) -> {s['verdict']}")
+    if report.get("decided_on", "noncompile_cpu_ms") != "noncompile_cpu_ms":
+        print(f"status decided on {report['decided_on']}: pairs whose core was shared are left out")
+    if report.get("summary", {}).get("noncompile_insns"):
+        print("noncompile_insns is host work, not time: it never decides the status")
+    return 0 if report["status"] in stats.VERDICTS else 1
 
 
 def cmd_perf(args) -> int:
@@ -259,6 +296,13 @@ def main(argv=None) -> int:
     _counters(p)
     _common(p)
     p.set_defaults(func=cmd_ab)
+
+    p = sub.add_parser("extend", help="add pairs to an earlier ab batch, with its binaries and settings")
+    p.add_argument("batch", type=Path, help="the directory of an op1prof ab batch")
+    p.add_argument("--pairs", type=int, default=2, help="pairs to add (even)")
+    p.add_argument("--min-mem-gb", type=float, default=10.0, help="refuse to start below this MemAvailable")
+    p.add_argument("--force", action="store_true", help="start despite preflight problems (recorded)")
+    p.set_defaults(func=cmd_extend)
 
     p = sub.add_parser("perf", help="perf capture between two marks, reported by guest block")
     p.add_argument("--binary", required=True, type=Path)

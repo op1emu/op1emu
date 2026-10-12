@@ -162,6 +162,7 @@ python3 -m op1prof run    --binary $B $IN                    # one boot: marks, 
 python3 -m op1prof verify --binary $B $IN --runs 2           # the workload must repeat exactly
 python3 -m op1prof ab     --base-bin old/op1emu --new-bin $B $IN --pairs 4
 python3 -m op1prof ab     --base-bin $B $IN --aa --pairs 4   # noise floor
+python3 -m op1prof extend op1prof-ab-* --pairs 2           # more pairs for the same batch
 python3 -m op1prof run    --binary $B $IN --census
 python3 -m op1prof census op1prof-run-*/run --phase main-boot:lap-end
 python3 -m op1prof perf   --binary $B $IN --window main-boot:main-display
@@ -197,8 +198,12 @@ and delivered events (`runs` and `translated` may differ, since an
 optimization that forms longer blocks changes them legitimately). Each side
 must also reproduce its own workload across pairs. The verdict is reached on
 **execution CPU** (thread CPU between the phase marks minus translation CPU),
-with a 95% bootstrap interval over whole pairs and a practical threshold
-`--min-effect` (percent). Compile CPU is reported beside it. Wall-clock
+with a 95% interval over whole pairs and a practical threshold `--min-effect`
+(percent). The interval is the wider of a bootstrap and Student's t: with
+four pairs a bootstrap can never reach past the smallest and largest delta,
+so alone it is too narrow. Each metric also reports how many pairs the new
+side won and the exact sign-test p value (four of four is p = 0.125, not
+evidence by itself). Compile CPU is reported beside it. Wall-clock
 execution is reported only over clean pairs (both runs: wall at most 1.05x
 CPU and at most 1 s off-CPU). The workload gate includes `irq` when both
 sides report it.
@@ -215,10 +220,43 @@ while execution instructions stayed within 20,000 of 1,197,820,170,000
 (about 2e-8): the spread in time was the instructions per cycle (2.35 to
 2.52), not the work.
 
-The status is `faster`, `slower` or `inconclusive`, or one of:
+The status is `faster` or `slower` (the interval lies beyond the threshold),
+`faster (below threshold)` or `slower (below threshold)` (it excludes zero but
+not the threshold: a real difference smaller than the one asked for, which a
+plain `inconclusive` used to hide), `inconclusive`, or one of:
 `workload changed` (the sides did different guest work: no speed verdict
 unless `--allow-workload-change`), `unusable` (a configuration did not
 repeat itself), or `failed` (a run failed; the batch stopped).
+
+`op1prof extend BATCH --pairs N` adds N (even) pairs to an earlier batch with
+its own binary snapshots and settings, continuing the AB/BA order, and
+recomputes the summary over all pairs. The report counts the extensions:
+adding pairs after seeing a verdict is a choice the reader should know about.
+
+Every report also lists what the verdict cannot see:
+
+- **Drift**: with six or more runs per side, compile or execution CPU that
+  trends with the run order (a rank correlation that a permutation test puts
+  below p = 0.01) is printed with each run's value and MemAvailable. Compile time once climbed from 220 s to
+  270 s across a batch and took execution time with it.
+- **Contention**: each run records how busy its pinned CPU's SMT sibling was
+  during the run (from `/proc/stat`) and the core's thermal throttling
+  events. Pairs with a sibling above 10% busy or with throttling are listed:
+  their CPU time includes sharing the core. The load is an average over the
+  run, so a short burst on the sibling barely shows. When at least four pairs
+  were not contended, the status is decided on those
+  (`noncompile_cpu_ms_uncontended`, `decided_on` in the results) and the
+  all-pairs result is reported beside it: contention is measured during each
+  run, independently of its result. In one A/A of six pairs, three runs with
+  a sibling 19-37% busy ran at 1.98-2.20 instructions per cycle instead of
+  about 2.43 and took 100-112 s instead of about 83 s; the interval over all
+  pairs was -9.1..+21.8%, over the uncontended ones -4.4..+8.9%.
+
+`ab` and `verify` refuse to start unpinned on a hybrid CPU (performance and
+efficiency cores, such as 12th-generation Intel), where an unpinned thread
+moves between kinds of core, and every command refuses an efficiency core.
+Each run's machine state also records the core type, the energy-performance
+preference and whether turbo is enabled.
 
 ### `census`, `perf` and `report`
 

@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from op1prof import ab, cli, stats, trace, verify  # noqa: E402
+from op1prof import ab, cli, machine, stats, trace, verify  # noqa: E402
 from op1prof.marks import parse_mark, workload_diff, parse_marks  # noqa: E402
 from op1prof.runner import RESERVED_ARGS, RunSpec, run, snapshot_binary, sha256_file  # noqa: E402
 
@@ -622,3 +622,130 @@ def test_ab_gates_on_interrupts(files, tmp_path):
     report = ab.compare(_side("base", files, out), new, spec(files), 4, out, ("start", "main-frame"), 2.0, False)
     assert report["status"].startswith("workload changed")
     assert any(".irq:" in line for p in report["pairs"] for line in p["workload_diff"])
+
+
+# ---- statistics and machine rigor ----
+
+def test_small_samples_use_the_wider_t_interval_and_report_a_sign_test():
+    c = stats.paired([100] * 4, [96, 99, 97, 98])
+    assert c.t_ci_pct[0] < c.bootstrap_ci_pct[0] and (c.ci_low_pct, c.ci_high_pct)[0] == c.t_ci_pct[0]
+    assert c.bootstrap_ci_pct[0] >= -4.0          # a bootstrap of four cannot pass their minimum
+    assert c.sign_p == pytest.approx(0.125)       # four wins out of four
+    assert stats.sign_test_p(0, 0) == 1.0 and stats.sign_test_p(5, 5) == 1.0
+
+
+def test_a_real_but_small_difference_is_not_inconclusive():
+    c = stats.paired([100] * 6, [99.0, 99.2, 98.9, 99.1, 99.0, 98.8])
+    assert c.ci_high_pct < 0 and c.verdict(2.0) == stats.FASTER_SMALL
+    assert stats.paired([100] * 6, [101.0, 100.8, 101.1, 100.9, 101.0, 101.2]).verdict(2.0) == stats.SLOWER_SMALL
+    assert stats.paired([100] * 4, [99, 101, 100, 100]).verdict(2.0) == stats.INCONCLUSIVE
+
+
+def test_spearman_permutation_p():
+    assert stats.spearman_p(range(8), range(8)) < 0.001
+    assert stats.spearman_p(range(6), [3, 1, 4, 1, 5, 9]) > 0.05
+
+
+def test_spearman():
+    assert stats.spearman([1, 2, 3, 4], [10, 20, 30, 40]) == pytest.approx(1.0)
+    assert stats.spearman([1, 2, 3, 4], [4, 3, 2, 1]) == pytest.approx(-1.0)
+    assert stats.spearman([1, 2, 3], [5, 5, 5]) == 0.0
+
+
+@pytest.fixture
+def hybrid(tmp_path, monkeypatch):
+    sys_root = tmp_path / "sys"
+    for pmu, cpus in (("cpu_core", "0-3"), ("cpu_atom", "4-5")):
+        (sys_root / "devices" / pmu).mkdir(parents=True)
+        (sys_root / "devices" / pmu / "cpus").write_text(cpus + "\n")
+    for cpu, siblings in ((2, "2-3"), (3, "2-3"), (4, "4")):
+        topo = sys_root / "devices" / "system" / "cpu" / f"cpu{cpu}" / "topology"
+        topo.mkdir(parents=True)
+        (topo / "thread_siblings_list").write_text(siblings + "\n")
+    monkeypatch.setattr(machine, "SYS", str(sys_root))
+    return sys_root
+
+
+def test_hybrid_cpus_need_a_pinned_performance_core(hybrid):
+    assert machine.core_types() == {"performance": {0, 1, 2, 3}, "efficiency": {4, 5}}
+    assert machine.siblings(2) == [3] and machine.siblings(4) == []
+    assert any("pass --cpu with a performance core (0-3)" in p for p in machine.preflight(None, 0, require_pin=True))
+    assert not any("--cpu" in p for p in machine.preflight(None, 0))     # a single run may float
+    assert any("efficiency core" in p for p in machine.preflight(4, 0))
+    assert not any("core" in p for p in machine.preflight(2, 0, require_pin=True))
+
+
+def test_sibling_load_during_a_run_comes_from_cpu_times():
+    before = {"cpu_times": {"2": [100, 1000], "3": [50, 1000]}}
+    after = {"cpu_times": {"2": [1100, 2000], "3": [350, 2000]}}
+    assert machine.sibling_busy(before, after, 2) == pytest.approx(0.3)
+    assert machine.sibling_busy(before, after, None) is None
+
+
+def _drifting(tmp_path, name, step):
+    """A fake whose execution slows by `step` on every call (a drifting machine)."""
+    counter = tmp_path / f"{name}.count"
+    script = tmp_path / f"{name}.sh"
+    script.write_text(f"#!/bin/sh\nn=$(cat {counter} 2>/dev/null || echo 0); echo $((n + 1)) > {counter}\n"
+                      f"FAKE_SCALE=$(python3 -c \"print(1 + $n * {step})\") exec {FAKE} \"$@\"\n")
+    script.chmod(0o755)
+    return script
+
+
+def test_extend_adds_pairs_to_a_batch_and_drift_is_reported(files, tmp_path, monkeypatch):
+    out = tmp_path / "ab"
+    out.mkdir()
+    slow = _drifting(tmp_path, "drift", 0.05)
+    side = lambda name: ab.Side(name, snapshot_binary(slow, out), [], sha256_file(slow))
+    report = ab.compare(side("base"), side("new"), spec(files), 4, out, ("start", "main-frame"), 2.0, False)
+    assert len(report["pairs"]) == 4 and report["drift"] == []         # too few runs to call a trend
+    assert cli.main(["extend", str(out), "--pairs", "2", "--force"]) == 0
+    report = json.loads((out / "results.json").read_text())
+    assert len(report["pairs"]) == 6 and report["extensions"] == 1
+    assert [p["order"] for p in report["pairs"]][4:] == [["new", "base"], ["base", "new"]]
+    assert any("noncompile_cpu_ms trends with run order" in line for line in report["drift"])
+    assert report["summary"]["noncompile_cpu_ms"]["pairs"] == 6
+    with pytest.raises(SystemExit):
+        cli.main(["extend", str(out), "--pairs", "3", "--force"])       # odd: orders would not balance
+    (files / "otp.bin").write_text("another image")
+    with pytest.raises(SystemExit, match="input otp_sha256 changed"):
+        cli.main(["extend", str(out), "--pairs", "2", "--force"])
+
+
+def test_only_a_finished_batch_can_be_extended(files, tmp_path):
+    out = tmp_path / "ab"
+    out.mkdir()
+    failing = tmp_path / "failing.sh"
+    failing.write_text(f"#!/bin/sh\nFAKE_MODE=fail exec {FAKE} \"$@\"\n")
+    failing.chmod(0o755)
+    new = ab.Side("new", snapshot_binary(failing, out), [], sha256_file(failing))
+    report = ab.compare(_side("base", files, out), new, spec(files), 4, out, ("start", "main-frame"), 2.0, False)
+    assert report["status"].startswith("failed")
+    with pytest.raises(SystemExit, match="only a finished batch"):
+        cli.main(["extend", str(out), "--pairs", "2", "--force"])
+
+
+def test_pairs_with_a_busy_sibling_are_reported(files, tmp_path, monkeypatch):
+    monkeypatch.setattr(machine, "sibling_busy", lambda before, after, cpu: 0.5)
+    out = tmp_path / "ab"
+    out.mkdir()
+    report = ab.compare(_side("base", files, out), _side("new", files, out), spec(files), 4, out,
+                        ("start", "main-frame"), 2.0, False)
+    assert report["contended_pairs"] == 4
+    assert all("SMT sibling 50% busy" in p["contended"][0] for p in report["pairs"])
+    assert report["decided_on"] == "noncompile_cpu_ms"   # no uncontended pairs to decide on
+
+
+def test_status_is_decided_on_uncontended_pairs_when_there_are_enough(files, tmp_path, monkeypatch):
+    calls = []
+
+    def busy(before, after, cpu):
+        calls.append(1)
+        return 0.5 if len(calls) in (1, 2) else 0.0   # only pair 0 shared its core
+    monkeypatch.setattr(machine, "sibling_busy", busy)
+    out = tmp_path / "ab"
+    out.mkdir()
+    report = ab.compare(_side("base", files, out), _side("new", files, out), spec(files), 6, out,
+                        ("start", "main-frame"), 2.0, False)
+    assert report["contended_pairs"] == 1 and report["decided_on"] == "noncompile_cpu_ms_uncontended"
+    assert report["summary"]["noncompile_cpu_ms_uncontended"]["uncontended_pairs"] == 5
