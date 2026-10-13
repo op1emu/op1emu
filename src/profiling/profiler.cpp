@@ -388,7 +388,8 @@ struct Profiler::Impl : BcoreEventSink {
         for (const auto& [path, text] : pendingDumps) {
             std::ofstream file(path);
             file << text;
-            if (!file) {
+            file.close();  // a small file is still buffered: its write error shows only here
+            if (file.fail()) {
                 LogError("Cannot write %s", path.c_str());
                 dumpFailed = true;
             }
