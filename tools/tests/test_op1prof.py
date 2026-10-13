@@ -969,3 +969,71 @@ def test_edges_must_match_block_runs(tmp_path):
     Path(f"{prefix}.edge.b").write_bytes(b"".join(census.EDGE.pack(*r) for r in [(0x100, 0x200, 3), (0x200, 0x100, 1)]))
     with pytest.raises(ValueError, match="0x00000200: 1 transitions out, 2 runs"):
         census.edge_report(prefix, "a", "b", 5, census.Symbols(None))
+
+
+def test_a_run_that_floods_its_output_is_stopped(files, tmp_path, monkeypatch):
+    from op1prof import runner
+    monkeypatch.setattr(runner, "MAX_LOG_BYTES", 1 << 20)
+    result = run(spec(files, env={"FAKE_MODE": "spew"}), tmp_path / "r")
+    assert not result.reached and "output passed 1 MiB" in result.error
+    assert (tmp_path / "r" / "log.txt").stat().st_size < 4 << 20
+
+
+# ---- probes, threads and first MMR access ----
+
+def _probe_trace():
+    hit = lambda name, cycles, current: {"name": name, "cat": "probe", "ph": "i", "ts": cycles / 400.0,
+                                         "args": {"pc": 1, "runs": cycles, "packets": cycles, "cycles": cycles,
+                                                  "R1": current, "current": current, "prio": None}}
+    mark = lambda name, cycles: {"name": name, "cat": "mark", "ph": "i", "ts": cycles / 400.0,
+                                 "args": {"cycles": cycles, "wall_ns": cycles, "thread_cpu_ns": cycles}}
+    return {"schema": "op1.trace.v3", "dropped": 0, "traceEvents": [
+        mark("start", 0), hit("switch", 100, 0xA), hit("switch-irq", 300, 0xB), mark("a", 400),
+        hit("switch", 600, 0xA), mark("b", 1000),
+        {"name": "table", "cat": "read", "ph": "i", "ts": 2.5, "args": {"mark": "a", "addr": 16, "words": [1, None]}},
+    ]}
+
+
+def test_thread_time_splits_guest_time_between_switches():
+    from op1prof import probes
+    switches = [(100, 0xA), (300, 0xB), (600, 0xA)]
+    assert probes.thread_time(switches, 0, 400) == {-1: 100, 0xA: 200, 0xB: 100}
+    assert probes.thread_time(switches, 400, 1000) == {0xB: 200, 0xA: 400}
+    assert probes.thread_time(switches, 650, 700) == {0xA: 50}
+
+
+def test_threads_report_and_perfetto(tmp_path):
+    from op1prof import probes
+    data = _probe_trace()
+    text = probes.threads_report(data, ["switch", "switch-irq"], "current", {0xA: "main"})
+    assert "3 switches" in text and "a -> b" in text
+    assert "main" in text and "0xb" in text and "(before the first switch)" in text
+    with pytest.raises(ValueError, match="no captured value 'R7'"):
+        probes.timeline(data, ["switch"], "R7")
+    with pytest.raises(ValueError, match="no hits"):
+        probes.timeline(data, ["missing"], "current")
+    out = tmp_path / "threads.json"
+    probes.perfetto(data, ["switch", "switch-irq"], "current", {0xA: "main"}, out)
+    events = json.loads(out.read_text())["traceEvents"]
+    slices = [e for e in events if e["ph"] == "X"]
+    assert [(e["name"], e["ts"], e["dur"]) for e in slices] == [("main", 0.25, 0.5), ("0xb", 0.75, 0.75),
+                                                                ("main", 1.5, 1.0)]
+    summary = probes.summary(data, 3)
+    assert "switch: 2 hits" in summary and "prio         - x2" in summary
+    assert "read table at a (0x00000010): 1,-" in summary
+
+
+def test_first_mmr_access_report(tmp_path):
+    prefix = tmp_path / "census"
+    _census(Path(f"{prefix}.mmio.a"), [(0xffc00800, 1, 0)])
+    _census(Path(f"{prefix}.mmio.b"), [(0xffc00800, 3, 1), (0xffc00c40, 0, 2)])
+    Path(f"{prefix}.mmiofirst.b").write_bytes(census.FIRST.pack(0xffc00800, 0x100, 400, 900) +
+                                              census.FIRST.pack(0xffc00c40, 0x200, 4_000_000, 4_000_000))
+    text = census.mmio_first_report(prefix, "a", "b", (1000, 5_000_000), 10, census.Symbols(None))
+    assert "first accessed a -> b: 1" in text           # 0xffc00800 was first touched before the phase
+    assert "0xffc00c40     10.000          0          2 0x00000200" in text
+
+
+def test_run_passes_probes(files, tmp_path):
+    result = run(spec(files, probes=True), tmp_path / "r")
+    assert "--profile-probes" in result.command and result.reached

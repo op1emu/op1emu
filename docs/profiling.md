@@ -32,6 +32,7 @@ host makes the guest do more work, so two runs never execute the same thing.
 | `--perf-window A:B` | Write `enable` to the FIFO at mark A and `disable` at mark B |
 | `--perf-jitdump` | LLVM jitdump for `perf inject --jit` (under `$JITDUMPDIR/.debug/jit/`) |
 | `--profile-counters` | The CPU thread's user-space instructions and cycles at every mark and translation |
+| `--profile-probes` | Capture the marks file's probes: registers and memory at chosen block entries (diagnostic) |
 | `--profile-checksum FILE` | Guest-state checksums every `--profile-checksum-every N` blocks (default 65536), from block `--profile-checksum-from` (diagnostic) |
 
 Every option is checked before the CPU starts: an unknown mark, a missing FIFO
@@ -131,12 +132,14 @@ makes the emulator exit nonzero. Do not use it. The header also records
 
 ## Census
 
-`--profile-census PREFIX` writes `PREFIX.pc.MARK`, `PREFIX.mmio.MARK` and
-`PREFIX.edge.MARK` at every mark, sorted little-endian records with
+`--profile-census PREFIX` writes `PREFIX.pc.MARK`, `PREFIX.mmio.MARK`,
+`PREFIX.mmiofirst.MARK` and `PREFIX.edge.MARK` at every mark, sorted little-endian records with
 cumulative counts:
 
 - `pc` (`u32 key, u64, u64`): block entry PC, runs, packets executed from that entry.
 - `mmio` (`u32 key, u64, u64`): MMR address, guest reads, guest writes.
+- `mmiofirst` (`u32 MMR, u32 block PC, u64 first, u64 last`): guest cycles of
+  the first and last access to each MMR, and the block of the first.
 - `edge` (`u32 from, u32 to, u64 count`): block entry, the entry of the block
   that ran next, how often. The next block is whatever the guest ran next,
   so interrupt entries are edges too. A transition is counted in the phase
@@ -147,6 +150,55 @@ cumulative counts:
 Difference two marks' files for one phase. The census costs hash-map updates
 per block and per MMR access: it changes timing, so never combine it with a
 timing measurement. The counts themselves do not depend on it.
+
+## Reads and probes
+
+The marks file can also read guest memory. A mark's `read` entries copy words
+when it fires, printed as a `[read]` line and recorded in the trace
+(category `read`):
+
+```json
+{"name": "main-display", ..., "read": [{"name": "fw-stage-table", "addr": "0x01ab3030", "words": 25}]}
+```
+
+`probes` capture registers and memory each time a block starts at a PC, with
+`--profile-probes` only (checking every block costs time):
+
+```json
+{"name": "vdk-switch", "pc": "0xffa09d40", "regs": ["R0", "R1"],
+ "mem": [{"name": "r1_prio", "base": "R1", "offset": "0xc"}, {"name": "current", "addr": "0xff802de4"}]}
+```
+
+`regs` takes R0-R7, P0-P5, SP, FP, I0-I3, LC0, LC1, RETS, RETI, RETX, RETN,
+USP, SEQSTAT and SYSCFG; `mem` reads `words` 32-bit words (default 1) at an
+absolute `addr` or at a `base` register plus `offset`, up to 16 values per
+probe. Each hit is a trace event (category `probe`) with the block count,
+packets, guest cycles and the values; a probe keeps at most `limit` hits
+(default 65536) and reports the rest as dropped. Probes see block entries
+only: a PC inside a block never fires, and the emulator says so at exit.
+Neither reads nor probes read the MMR space (0xFFC00000 and up), where a
+read can change what the guest does: such an address is refused in the
+file and skipped at run time. Neither changes the guest's work: a stock
+boot with both does the same packets, interrupts and MMIO accesses as one
+without.
+
+The stock marks file reads the firmware's own stage table at `main-display`
+and declares the three VDK context-switch paths. At each, the L1 word
+`current` already holds the thread switched to, so:
+
+```sh
+python3 -m op1prof run --binary $B $IN --probes --until main-display
+python3 -m op1prof probes op1prof-run-*/run          # what each probe captured
+python3 -m op1prof threads op1prof-run-*/run --probe vdk-switch --probe vdk-switch-irq \
+  --probe vdk-start --thread current --name 14914=main --name 1324=fir-fill --perfetto threads.json
+```
+
+`threads` splits each phase's guest time between the threads (time in a
+thread includes the interrupts taken while it ran) and can write guest-time
+thread tracks for Perfetto. On a stock boot, between `main-boot` and
+`lap-end` (1,859 ms of guest time) the main thread ran 68% and the
+lowest-priority FIR fill thread, which runs only when every other thread is
+blocked, 32%.
 
 ## Checksums
 
@@ -220,6 +272,8 @@ and marks files, and the machine state before and after it. `verify
 --write-expect` saves those hashes and `--expect` compares them: nothing else
 binds the OTP image, and a different one changes the boot (with a mostly
 empty image the guest re-entered the bootrom early and never reached `lap-begin`).
+A run whose output passes 200 MiB is stopped and failed, before a runaway
+print can fill the disk.
 
 Before starting, op1prof refuses to run when another emulator is running (it
 would compete for CPU and memory, and a second instance cannot bind the USB/IP
@@ -314,7 +368,9 @@ preference and whether turbo is enabled.
 
 `census` differences the census dumps of a `run --census` between two marks:
 blocks by packets executed (with runs and packets per run), and MMRs by
-accesses. `census --edges` lists the hottest block-to-block transitions and,
+accesses. `census --mmio-first` lists the MMRs first accessed in the phase, in order,
+with the guest time and the block of the first access: which devices a phase
+starts using, and from where. `census --edges` lists the hottest block-to-block transitions and,
 for the busiest blocks, how many successors each has and what share of its
 runs went to the most common one: a block that nearly always continues to
 the same successor is a candidate to join with it, one with many successors

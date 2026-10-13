@@ -5,9 +5,10 @@ import argparse
 import json
 import sys
 import time
+from typing import List
 from pathlib import Path
 
-from . import ab, census, compilation, diverge, machine, perf, stats, trace, verify
+from . import ab, census, compilation, diverge, machine, perf, probes, stats, trace, verify
 from . import report as perf_report
 from .categories import Categories
 from .runner import REPO, RunSpec, reserved_args, run, sha256_file, snapshot_binary
@@ -86,7 +87,8 @@ def _spec(args, binary: Path) -> RunSpec:
                    marks=args.marks.resolve(), until=args.until, args=list(args.arg),
                    timeout_s=args.timeout, progress_timeout_s=args.progress_timeout, cpu=args.cpu,
                    counters=getattr(args, "counters", False),
-                   checksum_every=getattr(args, "checksum", None), checksum_from=getattr(args, "checksum_from", 0))
+                   checksum_every=getattr(args, "checksum", None), checksum_from=getattr(args, "checksum_from", 0),
+                   probes=getattr(args, "probes", False))
 
 
 def _phase(args) -> tuple:
@@ -280,6 +282,43 @@ def cmd_report(args) -> int:
     return 0
 
 
+def _trace_of(run: Path) -> dict:
+    return trace.load(str(run / "trace.json" if run.is_dir() else run))
+
+
+def cmd_probes(args) -> int:
+    try:
+        print(probes.summary(_trace_of(args.run), args.top))
+    except (OSError, ValueError, KeyError) as error:
+        print(f"probes: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _thread_names(pairs: List[str]) -> dict:
+    names = {}
+    for pair in pairs:
+        value, _, name = pair.partition("=")
+        if not name:
+            raise SystemExit(f"--name must be VALUE=NAME, got {pair!r}")
+        names[int(value, 16)] = name
+    return names
+
+
+def cmd_threads(args) -> int:
+    names = _thread_names(args.name)
+    try:
+        data = _trace_of(args.run)
+        print(probes.threads_report(data, args.probe, args.thread, names))
+        if args.perfetto:
+            probes.perfetto(data, args.probe, args.thread, names, args.perfetto)
+            print(f"guest-time thread tracks: {args.perfetto}")
+    except (OSError, ValueError, KeyError) as error:
+        print(f"threads: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_diverge(args) -> int:
     try:
         print(diverge.report(args.a, args.b, census.Symbols(args.symbols)))
@@ -314,9 +353,14 @@ def cmd_census(args) -> int:
     try:
         if args.edges:
             print(census.edge_report(args.run / "census", begin, end, args.top, symbols))
+        elif args.mmio_first:
+            from .marks import parse_marks
+            fired = {m.name: m for m in parse_marks((args.run / "log.txt").read_text(errors="replace").splitlines())}
+            window = (fired[begin].counters["cycles"], fired[end].counters["cycles"])
+            print(census.mmio_first_report(args.run / "census", begin, end, window, args.top, symbols))
         else:
             print(census.report(args.run / "census", begin, end, args.top, symbols))
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, KeyError) as error:
         print(f"census: {error}", file=sys.stderr)
         return 2
     return 0
@@ -329,6 +373,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("run", help="one run: marks and the compile/execution split")
     p.add_argument("--binary", required=True, type=Path)
     p.add_argument("--census", action="store_true", help="also write per-PC/MMIO census (changes timing)")
+    p.add_argument("--probes", action="store_true", help="capture the marks file's probes (diagnostic)")
     _counters(p)
     _checksum(p)
     _common(p)
@@ -406,7 +451,21 @@ def main(argv=None) -> int:
     p.add_argument("--top", type=int, default=25)
     p.add_argument("--symbols", type=Path, help="ADDRESS NAME lines to name PCs")
     p.add_argument("--edges", action="store_true", help="block-to-block transitions instead of per-block counts")
+    p.add_argument("--mmio-first", action="store_true", help="MMRs first accessed in the phase, in order")
     p.set_defaults(func=cmd_census)
+
+    p = sub.add_parser("probes", help="what the probes of a run --probes captured, and the mark reads")
+    p.add_argument("run", type=Path, help="run directory (or trace.json)")
+    p.add_argument("--top", type=int, default=6, help="most frequent values per field")
+    p.set_defaults(func=cmd_probes)
+
+    p = sub.add_parser("threads", help="guest thread timeline from context-switch probes")
+    p.add_argument("run", type=Path, help="run directory (or trace.json) of a run --probes")
+    p.add_argument("--probe", action="append", required=True, help="a switch probe (repeatable)")
+    p.add_argument("--thread", required=True, help="captured value naming the thread switched to, e.g. R1")
+    p.add_argument("--name", action="append", default=[], metavar="VALUE=NAME", help="name a thread (hex value)")
+    p.add_argument("--perfetto", type=Path, help="also write guest-time thread tracks for Perfetto")
+    p.set_defaults(func=cmd_threads)
 
     p = sub.add_parser("diverge", help="where two runs' guest state first differs (runs made with --checksum)")
     p.add_argument("a", type=Path, help="run directory (or checksum.bin)")

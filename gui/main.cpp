@@ -106,6 +106,7 @@ static int RunEmulator(int argc, char* argv[]) {
     std::string profileChecksum, profileChecksumEvery, profileChecksumFrom;
     bool perfJitdump = false;
     bool profileCounters = false;
+    bool profileProbes = false;
     const std::pair<const char*, std::string*> valueOptions[] = {
         {"--profile-marks", &profileMarks}, {"--profile-trace", &profileTrace},
         {"--profile-census", &profileCensus}, {"--perf-ctl-fifo", &perfFifo},
@@ -135,6 +136,7 @@ static int RunEmulator(int argc, char* argv[]) {
         }
         else if (options && arg == "--perf-jitdump") perfJitdump = anyProfiling = true;
         else if (options && arg == "--profile-counters") profileCounters = anyProfiling = true;
+        else if (options && arg == "--profile-probes") profileProbes = anyProfiling = true;
         else if (options && std::any_of(std::begin(valueOptions), std::end(valueOptions),
                                         [&](const auto& option) { return arg == option.first; })) {
             if (++i == argc || !*argv[i]) throw std::runtime_error(arg + " requires a nonempty value");
@@ -170,6 +172,7 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --perf-jitdump        Write LLVM jitdump for perf inject --jit\n"
                      "  --profile-counters    CPU thread's user-space instructions and cycles at every mark\n"
                      "  --profile-checksum F  Guest-state checksum every N blocks (diagnostic)\n"
+                     "  --profile-probes      Capture the marks file's probes (diagnostic)\n"
                      "  --profile-checksum-every N  Blocks between checksums (default 65536)\n"
                      "  --profile-checksum-from N   First block to checksum (default 0)\n"
                      "Headless commands (one per line):\n"
@@ -232,6 +235,7 @@ static int RunEmulator(int argc, char* argv[]) {
         profile.until = profileUntil;
         profile.jitdump = perfJitdump;
         profile.counters = profileCounters;
+        profile.probes = profileProbes;
         profile.checksumPath = profileChecksum;
         auto count = [](const std::string& text, const char* option, bool zero) {
             size_t used = 0;

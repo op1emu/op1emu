@@ -14,6 +14,8 @@
 //    (diagnostic: they cost time, never enable them for timing).
 //  - optional guest-state checksums every N blocks, to find where two runs
 //    that should do the same work first differ.
+//  - guest memory read at marks, and optional probes capturing registers and
+//    memory at chosen block entries (see probes.h).
 //  - perf control: enable/disable a `perf record --control=fifo` window at two
 //    marks, and LLVM jitdump output for `perf inject --jit`.
 //  - optional hardware counters: the CPU thread's user-space instructions and
@@ -44,10 +46,11 @@ struct ProfilerOptions {
     std::string until;         // --profile-until MARK
     bool jitdump = false;      // --perf-jitdump
     bool counters = false;     // --profile-counters
+    bool probes = false;       // --profile-probes: the marks file's probes
 
     bool Enabled() const {
         return !marksPath.empty() || !tracePath.empty() || !censusPrefix.empty() ||
-               !perfFifo.empty() || jitdump || counters || !checksumPath.empty();
+               !perfFifo.empty() || jitdump || counters || !checksumPath.empty() || probes;
     }
 };
 

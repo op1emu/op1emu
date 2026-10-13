@@ -2,6 +2,7 @@
 
 #include "cpu/cpu.h"
 #include "hw_counters.h"
+#include "probes.h"
 #include "sha256.h"
 #include "utils/log.h"
 #include "core.h"
@@ -145,7 +146,12 @@ struct Profiler::Impl : BcoreEventSink {
 
     bool census = false;
     struct PcCount { uint64_t runs = 0, packets = 0; };
-    struct MmioCount { uint64_t reads = 0, writes = 0; };
+    struct MmioCount {
+        uint64_t reads = 0, writes = 0;
+        // When the guest first and last touched it, and from which block.
+        uint64_t firstCycles = 0, lastCycles = 0;
+        uint32_t firstPc = 0;
+    };
     std::unordered_map<uint32_t, PcCount> pcCensus;
     std::unordered_map<uint32_t, MmioCount> mmioCensus;
     // Block-to-block transitions: (previous block entry << 32 | this entry).
@@ -154,6 +160,20 @@ struct Profiler::Impl : BcoreEventSink {
     std::unordered_map<uint64_t, uint64_t> edgeCensus;
     uint32_t lastPc = 0;
     bool haveLastPc = false;
+
+    // Guest memory read when a mark fires, by mark name; rare, so it may allocate.
+    std::unordered_map<std::string, std::vector<profiling::MemoryRead>> markReads;
+    struct ReadEvent {
+        std::string mark, name;
+        uint64_t wallNs = 0;
+        uint32_t address = 0;
+        std::vector<uint32_t> values;
+        std::vector<bool> valid;
+    };
+    std::vector<ReadEvent> readEvents;
+    profiling::Probes probes;
+    bool probesOn = false;
+    uint32_t blockPc = 0;  // the block running now, for the MMIO census
 
     FILE* checksums = nullptr;
     bool checksumFailed = false;
@@ -209,6 +229,7 @@ struct Profiler::Impl : BcoreEventSink {
             mark.lo = ParseAddress(entry.at("lo"), mark.name + ".lo");
             mark.hi = ParseAddress(entry.at("hi"), mark.name + ".hi");
             if (mark.lo > mark.hi) throw std::runtime_error("Mark " + mark.name + " has lo > hi");
+            LoadReads(mark.name, entry);
             if (entry.contains("after")) {
                 mark.after = FindMark(entry.at("after").get<std::string>());
                 if (mark.after < 0) throw std::runtime_error("Mark " + mark.name + " is after an unknown or later mark");
@@ -226,6 +247,23 @@ struct Profiler::Impl : BcoreEventSink {
             if (frameMark.after < 0) throw std::runtime_error("Frame mark is after an unknown mark");
             frameSha = entry.at("rgb565_sha256").get<std::string>();
             hasFrame = true;
+            LoadReads(frameMark.name, entry);
+        }
+        if (options.probes) {
+            if (!json.contains("probes") || json.at("probes").empty())
+                throw std::runtime_error("--profile-probes: " + options.marksPath + " declares no probes");
+            probes.Load(json.at("probes"));
+            probesOn = true;
+        }
+    }
+
+    void LoadReads(const std::string& mark, const nlohmann::json& entry) {
+        if (!entry.contains("read")) return;
+        for (const auto& read : entry.at("read")) {
+            auto parsed = profiling::ParseMemoryRead(read, "mark " + mark + " read");
+            if (parsed.baseRegister >= 0)
+                throw std::runtime_error("mark " + mark + " read " + parsed.name + ": a mark reads absolute addresses");
+            markReads[mark].push_back(parsed);
         }
     }
 
@@ -398,7 +436,30 @@ struct Profiler::Impl : BcoreEventSink {
         if (census) DumpCensus(name);
         if (perfBegin == name) PerfWrite("enable\n");
         if (perfEnd == name) PerfWrite("disable\n");
+        ReadAtMark(name);
         if (options.until == name) requestStop();
+    }
+
+    void ReadAtMark(const char* mark) {
+        auto found = markReads.find(mark);
+        if (found == markReads.end()) return;
+        for (const auto& read : found->second) {
+            ReadEvent event;
+            event.mark = mark;
+            event.name = read.name;
+            event.wallNs = MonotonicNs();
+            event.address = read.address;
+            std::vector<uint32_t> values(read.words);
+            bool valid[64];
+            profiling::Read(read, cpu.State(), cpu.GetEmulator(), values.data(), valid);
+            event.values = values;
+            event.valid.assign(valid, valid + read.words);
+            std::printf("[read] %s %s addr=0x%08x words=", mark, read.name.c_str(), read.address);
+            for (size_t i = 0; i < values.size(); ++i) std::printf("%s%u", i ? "," : "", values[i]);
+            std::printf("\n");
+            std::fflush(stdout);
+            readEvents.push_back(std::move(event));
+        }
     }
 
     void PerfWrite(const char* command) {
@@ -428,6 +489,23 @@ struct Profiler::Impl : BcoreEventSink {
         }
         return std::fclose(file) == 0 && ok;
     }
+    // When each MMR was first and last accessed: little-endian records
+    // (u32 address, u32 first block PC, u64 first cycles, u64 last cycles), sorted.
+    bool WriteMmioFirst(const std::string& path) {
+        std::vector<uint32_t> keys;
+        for (const auto& [key, value] : mmioCensus) keys.push_back(key);
+        std::sort(keys.begin(), keys.end());
+        FILE* file = std::fopen(path.c_str(), "wb");
+        if (!file) return false;
+        bool ok = true;
+        for (uint32_t key : keys) {
+            const auto& c = mmioCensus.at(key);
+            ok = ok && std::fwrite(&key, 4, 1, file) == 1 && std::fwrite(&c.firstPc, 4, 1, file) == 1 &&
+                 std::fwrite(&c.firstCycles, 8, 1, file) == 1 && std::fwrite(&c.lastCycles, 8, 1, file) == 1;
+        }
+        return std::fclose(file) == 0 && ok;
+    }
+
     // Cumulative edge counts as little-endian records (u32 from, u32 to, u64 count), sorted.
     bool WriteEdges(const std::string& path) {
         std::vector<std::pair<uint64_t, uint64_t>> edges(edgeCensus.begin(), edgeCensus.end());
@@ -477,7 +555,7 @@ struct Profiler::Impl : BcoreEventSink {
         const bool ok =
             WriteCensus(base + "pc." + mark, pcCensus, [](const PcCount& c) { return std::pair{c.runs, c.packets}; }) &&
             WriteCensus(base + "mmio." + mark, mmioCensus, [](const MmioCount& c) { return std::pair{c.reads, c.writes}; }) &&
-            WriteEdges(base + "edge." + mark);
+            WriteEdges(base + "edge." + mark) && WriteMmioFirst(base + "mmiofirst." + mark);
         if (!ok) {
             LogError("Failed to write census %s*.%s", base.c_str(), mark);
             censusFailed = true;
@@ -594,6 +672,18 @@ struct Profiler::Impl : BcoreEventSink {
                 std::fputs("}}", file);
             }
         }
+        probes.WriteTrace(file);
+        for (const auto& r : readEvents) {
+            std::fprintf(file, ",{\"name\":\"%s\",\"cat\":\"read\",\"ph\":\"i\",\"s\":\"g\",\"pid\":1,\"tid\":1,"
+                               "\"ts\":%.3f,\"args\":{\"mark\":\"%s\",\"addr\":%u,\"words\":[",
+                         r.name.c_str(), r.wallNs / 1000.0, r.mark.c_str(), r.address);
+            for (size_t i = 0; i < r.values.size(); ++i) {
+                if (i) std::fputc(',', file);
+                if (r.valid[i]) std::fprintf(file, "%u", r.values[i]);
+                else std::fputs("null", file);
+            }
+            std::fputs("]}}", file);
+        }
         std::fputs("]}\n", file);
         const bool ok = std::fclose(file) == 0;
         std::fprintf(stderr, "[profile] trace records=%zu dropped=%" PRIu64 " write=%s path=%s\n", used, lost,
@@ -614,6 +704,10 @@ void Profiler::BeforeRun(uint32_t pc) {
     if (!impl.started) impl.Start(pc);
     // The transition into this block belongs with the block it leaves, like
     // that block's run in the PC census: count it before a mark here dumps.
+    impl.blockPc = pc;
+    if (impl.probesOn)
+        impl.probes.OnBlock(pc, impl.cpu.State(), impl.cpu.GetEmulator(), MonotonicNs(), impl.runs,
+                            impl.cpu.Time().Packets(), impl.cpu.Time().Cycles());
     if (impl.census) {
         if (impl.haveLastPc) ++impl.edgeCensus[uint64_t(impl.lastPc) << 32 | pc];
         impl.lastPc = pc;
@@ -645,6 +739,12 @@ void Profiler::OnMmio(uint32_t addr, bool write) {
     else ++impl.mmioReads;
     if (impl.census) {
         auto& count = impl.mmioCensus[addr];
+        const uint64_t cycles = impl.cpu.Time().Cycles();  // at the block's start
+        if (count.reads + count.writes == 0) {
+            count.firstCycles = cycles;
+            count.firstPc = impl.blockPc;
+        }
+        count.lastCycles = cycles;
         if (write) ++count.writes;
         else ++count.reads;
     }
@@ -670,6 +770,7 @@ bool Profiler::Finish() {
     bool ok = impl.WriteTrace() && !impl.censusFailed && !impl.countersFailed && !impl.checksumFailed;
     for (const auto& mark : impl.marks)
         if (!mark.fired) std::fprintf(stderr, "[profile] mark %s did not fire\n", mark.name.c_str());
+    if (impl.probesOn) impl.probes.Report(stderr);
     if (impl.framePending)
         std::fprintf(stderr, "[profile] frame %s was verified but no block ran after it to fire its mark\n",
                      impl.frameMark.name.c_str());

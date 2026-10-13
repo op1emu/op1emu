@@ -7,7 +7,8 @@ Behavior comes from FAKE_* variables (the runner keeps those):
   FAKE_SCALE   multiply execution CPU by this (default 1.0)
   FAKE_WORK    packets per mark step (default 1000)
   FAKE_MODE    comma list: hang, fail, noise (random workload), dropped,
-               closeout (close stdout after the first marks, keep running)
+               closeout (close stdout after the first marks, keep running),
+               spew (print without end after the first mark)
   FAKE_IRQ     interrupts taken per mark step (default 3)
   FAKE_CODE    seed of the compiled code's hashes (default 0); FAKE_NOSHAPE drops them
   FAKE_DIVERGE checksum record from which the data registers differ
@@ -66,6 +67,9 @@ for step, name in enumerate(names):
           + " ".join(f"{k}={v}" for k, v in {**counters, **host}.items()) + " deterministic=1", flush=True)
     if name == until:
         break
+    if "spew" in mode and step == 1:
+        while True:
+            sys.stdout.write("x" * 65536 + "\n")
     if "hang" in mode and step == 1:
         time.sleep(3600)
     if "closeout" in mode and step == 1:

@@ -27,6 +27,9 @@ RESERVED_ARGS = ("--", "--nand-rw", "--nand-snapshot", "--headless", "--determin
                  "--profile-marks", "--profile-until", "--profile-trace", "--profile-counters")
 # How long an emulator that closed its output may take to exit.
 EXIT_GRACE_S = 60.0
+# A run whose output grows past this is failed and stopped: a stock boot
+# writes kilobytes, and a runaway print once wrote 28 GB and filled the disk.
+MAX_LOG_BYTES = 200 << 20
 
 
 def reserved_args(args: List[str]) -> List[str]:
@@ -80,6 +83,7 @@ class RunSpec:
     counters: bool = False    # --profile-counters (needs perf_event_paranoid <= 2)
     checksum_every: Optional[int] = None   # --profile-checksum checksum.bin every N blocks
     checksum_from: int = 0
+    probes: bool = False      # --profile-probes (diagnostic)
     prefix: List[str] = field(default_factory=list)   # e.g. perf record ... --
     env: dict = field(default_factory=dict)           # added after cleaning
 
@@ -170,6 +174,8 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
         command += ["--profile-census", "census"]
     if spec.counters:
         command += ["--profile-counters"]
+    if spec.probes:
+        command += ["--profile-probes"]
     if spec.checksum_every:
         command += ["--profile-checksum", "checksum.bin", "--profile-checksum-every", str(spec.checksum_every),
                     "--profile-checksum-from", str(spec.checksum_from)]
@@ -191,6 +197,7 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
         selector = selectors.DefaultSelector()
         selector.register(proc.stdout, selectors.EVENT_READ)
         pending = b""
+        logged = 0
         last_progress = start
         while True:
             now = time.monotonic()
@@ -217,6 +224,10 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
                 break
             log.write(chunk)
             log.flush()  # keep log.txt current for anyone watching a long run
+            logged += len(chunk)
+            if logged > MAX_LOG_BYTES:
+                error = f"output passed {MAX_LOG_BYTES >> 20} MiB (log.txt); stopped before it fills the disk"
+                break
             pending += chunk
             *lines, pending = pending.split(b"\n")
             for line in lines:

@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 
 RECORD = struct.Struct("<IQQ")
 EDGE = struct.Struct("<IIQ")   # from block entry, to block entry, count
+FIRST = struct.Struct("<IIQQ")  # MMR, first block PC, first and last guest cycles
 
 
 def load(path: Path) -> Dict[int, Tuple[int, int]]:
@@ -90,6 +91,26 @@ def edge_report(prefix: Path, begin: str, end: str, limit: int, symbols: Symbols
         top, top_count = max(successors.items(), key=lambda kv: kv[1])
         lines.append(f"0x{a:08x} {runs:>12} {len(successors):>5} 0x{top:08x} {top_count / runs * 100:5.1f}%  "
                      f"{symbols.name(a)}")
+    return "\n".join(lines)
+
+
+def mmio_first_report(prefix: Path, begin: str, end: str, window: Tuple[int, int], limit: int,
+                      symbols: "Symbols") -> str:
+    """MMRs the guest touched for the first time in a phase, in the order it
+    did: which device the phase starts using, and from which block. `window`
+    is the phase in guest cycles (from the marks)."""
+    data = Path(f"{prefix}.mmiofirst.{end}").read_bytes()
+    if len(data) % FIRST.size:
+        raise ValueError(f"{prefix}.mmiofirst.{end}: truncated ({len(data)} bytes)")
+    counts = phase(prefix, "mmio", begin, end)
+    lo, hi = window
+    rows = sorted((first, addr, pc) for addr, pc, first, _ in FIRST.iter_unpack(data) if lo <= first < hi)
+    lines = [f"MMRs first accessed {begin} -> {end}: {len(rows)} "
+             f"(guest time from the start; cycles are at the accessing block's start)", "",
+             f"{'MMR':>10} {'first ms':>10} {'reads':>10} {'writes':>10} {'first block':>11}  symbol"]
+    for first, addr, pc in rows[:limit]:
+        reads, writes = counts.get(addr, (0, 0))
+        lines.append(f"0x{addr:08x} {first / 400e3:10.3f} {reads:>10} {writes:>10} 0x{pc:08x}  {symbols.name(pc)}")
     return "\n".join(lines)
 
 

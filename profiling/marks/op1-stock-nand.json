@@ -1,5 +1,5 @@
 {
-  "comment": "Boot phase marks for the stock NAND image. Ranges are guest PC ranges that fire on entry, in order; 'after' arms a mark only once another has fired. main-display is a firmware address, not proof the UI is drawn; main-frame is: the first complete panel frame after main-display whose RGB565 bytes match the reference.",
+  "comment": "Boot phase marks for the stock NAND image. Ranges are guest PC ranges that fire on entry, in order; 'after' arms a mark only once another has fired. main-display is a firmware address, not proof the UI is drawn; main-frame is: the first complete panel frame after main-display whose RGB565 bytes match the reference. 'read' entries copy guest memory when a mark fires; 'probes' (captured only with --profile-probes) record registers and memory at a block entry. The three VDK probes are the context-switch paths: 'current' is the running-thread pointer in L1, already the new thread at each probe, and TCB+0xc holds the priority in its low byte (0x14914 main 25, 0x1324 FIR fill 1, 0x38f0c periodic 29).",
   "nand_sha256": "0527b38ab6d5a8a49300b18c57cddba343e7a50c7df04bb70ecdb452aa3fec20",
   "marks": [
     {"name": "bootrom",      "lo": "0xffa00000", "hi": "0xffa00020"},
@@ -8,7 +8,13 @@
     {"name": "main-boot",    "lo": "0x019ab880", "hi": "0x019ab8d4"},
     {"name": "lap-end",      "lo": "0x01967b28", "hi": "0x01967b48"},
     {"name": "register_cb",  "lo": "0x01a2fac4", "hi": "0x01a2fae4"},
-    {"name": "main-display", "lo": "0x019ab8b6", "hi": "0x019ab8d6", "after": "register_cb"}
+    {"name": "main-display", "lo": "0x019ab8b6", "hi": "0x019ab8d6", "after": "register_cb",
+     "read": [{"name": "fw-stage-table", "addr": "0x01ab3030", "words": 25}]}
   ],
-  "frame": {"name": "main-frame", "after": "main-display", "rgb565_sha256": "a9aa6ed5b83e5f95d34e8bf8eecf474b0ef4405353da1eff9102b0b0c5925dff"}
+  "frame": {"name": "main-frame", "after": "main-display", "rgb565_sha256": "a9aa6ed5b83e5f95d34e8bf8eecf474b0ef4405353da1eff9102b0b0c5925dff"},
+  "probes": [
+    {"name": "vdk-switch", "pc": "0xffa09d40", "regs": ["R0", "R1"], "mem": [{"name": "r0_prio", "base": "R0", "offset": "0xc"}, {"name": "r1_prio", "base": "R1", "offset": "0xc"}, {"name": "current", "addr": "0xff802de4"}]},
+    {"name": "vdk-switch-irq", "pc": "0xffa09da4", "regs": ["R0", "R1"], "mem": [{"name": "r0_prio", "base": "R0", "offset": "0xc"}, {"name": "r1_prio", "base": "R1", "offset": "0xc"}, {"name": "current", "addr": "0xff802de4"}]},
+    {"name": "vdk-start", "pc": "0xffa09d24", "regs": ["R0", "R1"], "mem": [{"name": "r0_prio", "base": "R0", "offset": "0xc"}, {"name": "r1_prio", "base": "R1", "offset": "0xc"}, {"name": "current", "addr": "0xff802de4"}]}
+  ]
 }
