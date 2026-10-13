@@ -53,8 +53,9 @@ def summary(trace_data: dict, limit: int) -> str:
         by_probe[h.probe].append(h)
     lines = []
     for name, probe_hits in by_probe.items():
+        lost = trace_data.get("probes", {}).get(name, {}).get("dropped", 0)
         lines.append(f"{name}: {len(probe_hits)} hits, guest cycles {probe_hits[0].cycles:,} .. "
-                     f"{probe_hits[-1].cycles:,}")
+                     f"{probe_hits[-1].cycles:,}" + (f"; {lost} more dropped past its limit" if lost else ""))
         for field in probe_hits[0].values:
             common = Counter(_value(h.values[field]) for h in probe_hits).most_common(limit)
             lines.append(f"  {field:12s} " + ", ".join(f"{v} x{n}" for v, n in common))
@@ -64,9 +65,20 @@ def summary(trace_data: dict, limit: int) -> str:
     return "\n".join(lines) if lines else "no probe hits or reads in this trace (run with --probes)"
 
 
+def dropped(trace_data: dict, probes: Sequence[str]) -> Dict[str, int]:
+    stats = trace_data.get("probes", {})
+    return {name: stats[name]["dropped"] for name in probes if stats.get(name, {}).get("dropped")}
+
+
 def timeline(trace_data: dict, probes: Sequence[str], field: str) -> List[Tuple[int, int]]:
     """(guest cycles, thread) at every switch: `field` names the thread that
-    runs from then on (for example the register holding the new TCB)."""
+    runs from then on (for example the register holding the new TCB). A
+    switch probe that dropped hits would silently charge the rest of the run
+    to the last thread it recorded, so that is an error."""
+    lost = dropped(trace_data, probes)
+    if lost:
+        raise ValueError("switch probes dropped hits, so the timeline would be wrong: "
+                         + ", ".join(f"{name} {count}" for name, count in lost.items()) + " (raise their limit)")
     switches = []
     for h in hits(trace_data, probes):
         value = h.values.get(field)

@@ -1018,6 +1018,11 @@ def test_threads_report_and_perfetto(tmp_path):
     slices = [e for e in events if e["ph"] == "X"]
     assert [(e["name"], e["ts"], e["dur"]) for e in slices] == [("main", 0.25, 0.5), ("0xb", 0.75, 0.75),
                                                                 ("main", 1.5, 1.0)]
+    data["probes"] = {"switch": {"hits": 70000, "dropped": 4464}, "switch-irq": {"hits": 1, "dropped": 0}}
+    with pytest.raises(ValueError, match="dropped hits.*switch 4464"):
+        probes.timeline(data, ["switch", "switch-irq"], "current")
+    assert "4464 more dropped" in probes.summary(data, 3)
+    del data["probes"]
     summary = probes.summary(data, 3)
     assert "switch: 2 hits" in summary and "prio         - x2" in summary
     assert "read table at a (0x00000010): 1,-" in summary

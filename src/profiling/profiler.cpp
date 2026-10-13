@@ -250,6 +250,8 @@ struct Profiler::Impl : BcoreEventSink {
             LoadReads(frameMark.name, entry);
         }
         if (options.probes) {
+            if (options.tracePath.empty())
+                throw std::runtime_error("--profile-probes records into the trace: add --profile-trace");
             if (!json.contains("probes") || json.at("probes").empty())
                 throw std::runtime_error("--profile-probes: " + options.marksPath + " declares no probes");
             probes.Load(json.at("probes"));
@@ -263,6 +265,9 @@ struct Profiler::Impl : BcoreEventSink {
             auto parsed = profiling::ParseMemoryRead(read, "mark " + mark + " read");
             if (parsed.baseRegister >= 0)
                 throw std::runtime_error("mark " + mark + " read " + parsed.name + ": a mark reads absolute addresses");
+            for (const auto& other : markReads[mark])
+                if (other.name == parsed.name)
+                    throw std::runtime_error("mark " + mark + " reads " + parsed.name + " twice");
             markReads[mark].push_back(parsed);
         }
     }
@@ -635,9 +640,15 @@ struct Profiler::Impl : BcoreEventSink {
         }
         std::fprintf(file, "{\"schema\":\"op1.trace.v3\",\"clock\":\"CLOCK_MONOTONIC\",\"process_id\":%d,"
                            "\"cpu_thread_tid\":%ld,\"start_ns\":%" PRIu64 ",\"end_ns\":%" PRIu64 ",\"dropped\":%" PRIu64
-                           ",\"deterministic\":%s,\"counters\":%s,\"traceEvents\":[",
+                           ",\"deterministic\":%s,\"counters\":%s,",
                      static_cast<int>(getpid()), cpuTid, startWall, endWall, lost,
                      cpu.Time().Deterministic() ? "true" : "false", counted ? "true" : "false");
+        if (probesOn) {
+            std::fputs("\"probes\":", file);
+            probes.WriteStats(file);
+            std::fputc(',', file);
+        }
+        std::fputs("\"traceEvents\":[", file);
         for (size_t i = 0; i < used; ++i) {
             const auto& e = events[i];
             std::fprintf(file, "%s{\"name\":\"%s\",\"pid\":1,\"tid\":1,\"ts\":%.3f,", i ? "," : "", e.name, e.begin / 1000.0);
@@ -674,9 +685,12 @@ struct Profiler::Impl : BcoreEventSink {
         }
         probes.WriteTrace(file);
         for (const auto& r : readEvents) {
-            std::fprintf(file, ",{\"name\":\"%s\",\"cat\":\"read\",\"ph\":\"i\",\"s\":\"g\",\"pid\":1,\"tid\":1,"
-                               "\"ts\":%.3f,\"args\":{\"mark\":\"%s\",\"addr\":%u,\"words\":[",
-                         r.name.c_str(), r.wallNs / 1000.0, r.mark.c_str(), r.address);
+            std::fputs(",{\"name\":\"", file);
+            profiling::WriteJsonString(file, r.name);
+            std::fprintf(file, "\",\"cat\":\"read\",\"ph\":\"i\",\"s\":\"g\",\"pid\":1,\"tid\":1,\"ts\":%.3f,"
+                               "\"args\":{\"mark\":\"", r.wallNs / 1000.0);
+            profiling::WriteJsonString(file, r.mark);
+            std::fprintf(file, "\",\"addr\":%u,\"words\":[", r.address);
             for (size_t i = 0; i < r.values.size(); ++i) {
                 if (i) std::fputc(',', file);
                 if (r.valid[i]) std::fprintf(file, "%u", r.values[i]);
@@ -739,7 +753,8 @@ void Profiler::OnMmio(uint32_t addr, bool write) {
     else ++impl.mmioReads;
     if (impl.census) {
         auto& count = impl.mmioCensus[addr];
-        const uint64_t cycles = impl.cpu.Time().Cycles();  // at the block's start
+        // Guest time: in deterministic mode the packets before this block.
+        const uint64_t cycles = impl.cpu.Time().Cycles();
         if (count.reads + count.writes == 0) {
             count.firstCycles = cycles;
             count.firstPc = impl.blockPc;

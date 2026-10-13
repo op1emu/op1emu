@@ -74,6 +74,12 @@ void Emulator::MemoryWrite(u32 addr, const void* buffer, int length)
     }
 }
 
+bool Emulator::Maps(u32 addr, u32 length)
+{
+    const Device* dev = get_device(addr, deviceSegments);
+    return dev && uint64_t(addr) + length - 1 <= dev->EndAddress();
+}
+
 u8 Emulator::MemoryRead8(u32 vaddr)
 {
     u8 value = 0;  // an unmapped address reads 0, as in MemoryRead32

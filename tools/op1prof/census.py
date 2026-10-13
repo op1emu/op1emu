@@ -106,7 +106,7 @@ def mmio_first_report(prefix: Path, begin: str, end: str, window: Tuple[int, int
     lo, hi = window
     rows = sorted((first, addr, pc) for addr, pc, first, _ in FIRST.iter_unpack(data) if lo <= first < hi)
     lines = [f"MMRs first accessed {begin} -> {end}: {len(rows)} "
-             f"(guest time from the start; cycles are at the accessing block's start)", "",
+             f"(guest time from the start; in deterministic mode, at the accessing block's start)", "",
              f"{'MMR':>10} {'first ms':>10} {'reads':>10} {'writes':>10} {'first block':>11}  symbol"]
     for first, addr, pc in rows[:limit]:
         reads, writes = counts.get(addr, (0, 0))

@@ -42,6 +42,8 @@ public:
     u8 MemoryRead8(u32 vaddr);
     u16 MemoryRead16(u32 vaddr);
     u32 MemoryRead32(u32 vaddr);
+    // True when a device maps every byte of [addr, addr + length).
+    bool Maps(u32 addr, u32 length);
     u64 MemoryRead64(u32 vaddr);
 
     void MemoryWrite8(u32 vaddr, u8 value);

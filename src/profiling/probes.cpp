@@ -41,14 +41,15 @@ uint32_t ParseHex(const nlohmann::json& value, const std::string& what) {
     return static_cast<uint32_t>(parsed);
 }
 
-void Escape(FILE* file, const std::string& text) {
-    for (char c : text) {
-        if (c == '"' || c == '\\') std::fputc('\\', file);
-        std::fputc(c, file);
+} // namespace
+
+void WriteJsonString(FILE* file, const std::string& text) {
+    for (unsigned char c : text) {
+        if (c == '"' || c == '\\') std::fprintf(file, "\\%c", c);
+        else if (c < 0x20) std::fprintf(file, "\\u%04x", c);
+        else std::fputc(c, file);
     }
 }
-
-} // namespace
 
 int RegisterIndex(const std::string& name) {
     for (size_t i = 0; i < std::size(kRegisters); ++i)
@@ -85,7 +86,10 @@ void Read(const MemoryRead& read, const CpuState& state, Emulator& memory, uint3
                                                 : uint64_t(RegisterValue(state, read.baseRegister)) + read.address;
     for (uint32_t i = 0; i < read.words; ++i) {
         const uint64_t address = base + 4ull * i;
-        valid[i] = address + 4 <= kMmrBase;
+        // Devices start and end on 4-byte boundaries, so an aligned mapped
+        // word lies inside one device and never past its buffer.
+        valid[i] = address + 4 <= kMmrBase && (address & 3) == 0 &&
+                   memory.Maps(static_cast<uint32_t>(address), 4);
         out[i] = valid[i] ? memory.MemoryRead32(static_cast<uint32_t>(address)) : 0;
     }
 }
@@ -111,6 +115,14 @@ void Probes::Load(const nlohmann::json& probes) {
                 values += spec.memory.back().words;
             }
         }
+        std::vector<std::string> names{"pc", "runs", "packets", "cycles"};
+        for (int reg : spec.registers) names.push_back(RegisterName(reg));
+        for (const auto& read : spec.memory) names.push_back(read.name);
+        for (size_t i = 4; i < names.size(); ++i)
+            for (size_t j = 0; j < i; ++j)
+                if (names[i] == names[j])
+                    throw std::runtime_error("probe " + spec.name + ": captured name " + names[i] +
+                                             " is used twice (pc, runs, packets and cycles are taken)");
         if (values > kMaxValues)
             throw std::runtime_error("probe " + spec.name + " captures more than " + std::to_string(kMaxValues) +
                                      " words");
@@ -120,6 +132,9 @@ void Probes::Load(const nlohmann::json& probes) {
         for (const auto& other : specs_)
             if (other.name == spec.name) throw std::runtime_error("duplicate probe " + spec.name);
         total += spec.limit;
+        if (total > kMaxRecords)
+            throw std::runtime_error("probes keep at most " + std::to_string(kMaxRecords) +
+                                     " hits in all: lower their limits");
         chunks_.set((spec.pc >> 5) % chunks_.size());
         specs_.push_back(spec);
     }
@@ -163,14 +178,14 @@ void Probes::WriteTrace(FILE* file) const {
         const Record& r = records_[i];
         const Spec& spec = specs_[r.probe];
         std::fputs(",{\"name\":\"", file);
-        Escape(file, spec.name);
+        WriteJsonString(file, spec.name);
         std::fprintf(file, "\",\"cat\":\"probe\",\"ph\":\"i\",\"s\":\"t\",\"pid\":1,\"tid\":1,\"ts\":%.3f,"
                            "\"args\":{\"pc\":%u,\"runs\":%" PRIu64 ",\"packets\":%" PRIu64 ",\"cycles\":%" PRIu64,
                      r.wallNs / 1000.0, r.pc, r.runs, r.packets, r.cycles);
         size_t slot = 0;
         auto value = [&](const char* name, size_t at) {
             std::fputs(",\"", file);
-            Escape(file, name);
+            WriteJsonString(file, name);
             if (r.valid & (1u << at)) std::fprintf(file, "\":%u", r.values[at]);
             else std::fputs("\":null", file);
         };
@@ -181,7 +196,7 @@ void Probes::WriteTrace(FILE* file) const {
                 continue;
             }
             std::fputs(",\"", file);
-            Escape(file, read.name);
+            WriteJsonString(file, read.name);
             std::fputs("\":[", file);
             for (uint32_t w = 0; w < read.words; ++w, ++slot) {
                 if (w) std::fputc(',', file);
@@ -192,6 +207,16 @@ void Probes::WriteTrace(FILE* file) const {
         }
         std::fputs("}}", file);
     }
+}
+
+void Probes::WriteStats(FILE* file) const {
+    std::fputc('{', file);
+    for (size_t i = 0; i < specs_.size(); ++i) {
+        std::fputs(i ? ",\"" : "\"", file);
+        WriteJsonString(file, specs_[i].name);
+        std::fprintf(file, "\":{\"hits\":%" PRIu64 ",\"dropped\":%" PRIu64 "}", specs_[i].hits, specs_[i].dropped);
+    }
+    std::fputc('}', file);
 }
 
 void Probes::Report(FILE* out) const {

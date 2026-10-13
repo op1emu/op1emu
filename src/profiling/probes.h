@@ -33,20 +33,26 @@ struct MemoryRead {
     uint32_t words = 1;
 };
 
+// JSON string contents, escaped (quotes, backslashes, control characters).
+void WriteJsonString(FILE* file, const std::string& text);
+
 // Parses a register name (R0-R7, P0-P5, SP, FP, RETS, ...); -1 if unknown.
 int RegisterIndex(const std::string& name);
 const char* RegisterName(int index);
 uint32_t RegisterValue(const CpuState& state, int index);
 
 MemoryRead ParseMemoryRead(const nlohmann::json& entry, const std::string& where);
-// Reads `read`'s words into `out`; a word whose address is in the MMR space or
-// that wraps past 4 GiB is not read and reported false in `valid`.
+// Reads `read`'s words into `out`. A word is read only at a 4-byte aligned
+// address below the MMR space that one device maps (an unaligned word could
+// run past the device's buffer); any other is reported false in `valid`.
 void Read(const MemoryRead& read, const CpuState& state, Emulator& memory, uint32_t* out, bool* valid);
 
 class Probes {
 public:
     // Up to this many captured words per hit (registers plus memory).
     static constexpr size_t kMaxValues = 16;
+    // Records kept in all, preallocated: about 34 MB.
+    static constexpr uint64_t kMaxRecords = 262144;
 
     void Load(const nlohmann::json& probes);
     bool Empty() const { return specs_.empty(); }
@@ -62,6 +68,8 @@ public:
     void WriteTrace(FILE* file) const;
     // Hit and drop counts; warns about probes that never fired.
     void Report(FILE* out) const;
+    // The same counts as a JSON object for the trace header.
+    void WriteStats(FILE* file) const;
 
 private:
     struct Spec {
