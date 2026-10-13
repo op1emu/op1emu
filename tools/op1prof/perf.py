@@ -80,6 +80,29 @@ def check_call_graph(event: str, call_graph: str) -> Optional[str]:
     return None
 
 
+def annotate(capture: Path, pc: int, allow_imprecise: bool, lines: int) -> str:
+    """perf annotate of one guest block's generated code, from the code the
+    capture's jitdump recorded. Instruction-level shares need a precise
+    event: cpu-clock once put 6.74% on an instruction that cycles:pp ranked
+    outside the top 20."""
+    info = json.loads((capture / "capture.json").read_text())
+    if not info["precise"] and not allow_imprecise:
+        raise ValueError(f"{info['event']} is not a precise event, so it cannot rank instructions: capture with "
+                         "--event cycles:upp (or pass --allow-imprecise to see it anyway)")
+    symbol = f"bb_0x{pc:08x}"
+    result = subprocess.run(["perf", "annotate", "-i", str(capture / "perf.jit.data"), "--stdio", "-s", symbol],
+                            capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise ValueError(f"perf annotate found no samples in {symbol}: {result.stderr.strip()[-300:]}")
+    text = result.stdout.splitlines()
+    head = [f"perf annotate {symbol} ({info['event']}, window {' -> '.join(info['window'])})"]
+    if not info["precise"]:
+        head.append("not a precise event: shares are where the timer landed, not where the time went")
+    dumps = sorted((capture / "run" / "ir").glob(f"{symbol}.*.ll")) if (capture / "run" / "ir").is_dir() else []
+    head += [f"IR: {path}" for path in dumps]
+    return "\n".join(head + text[:lines] + ([f"... {len(text) - lines} more lines"] if len(text) > lines else []))
+
+
 def preflight(event: str, rate: List[str], call_graph: str = "fp") -> Optional[str]:
     try:
         paranoid = int(Path("/proc/sys/kernel/perf_event_paranoid").read_text())

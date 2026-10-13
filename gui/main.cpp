@@ -103,7 +103,7 @@ static int RunEmulator(int argc, char* argv[]) {
     std::string inputScript;
     // Profiling options (profiling builds only; see docs/profiling.md).
     std::string profileMarks, profileTrace, profileCensus, perfFifo, perfWindow, profileUntil;
-    std::string profileChecksum, profileChecksumEvery, profileChecksumFrom;
+    std::string profileChecksum, profileChecksumEvery, profileChecksumFrom, profileDumpIr, profileDumpDir;
     bool perfJitdump = false;
     bool profileCounters = false;
     bool profileProbes = false;
@@ -113,6 +113,7 @@ static int RunEmulator(int argc, char* argv[]) {
         {"--perf-window", &perfWindow}, {"--profile-until", &profileUntil},
         {"--profile-checksum", &profileChecksum}, {"--profile-checksum-every", &profileChecksumEvery},
         {"--profile-checksum-from", &profileChecksumFrom},
+        {"--profile-dump-ir", &profileDumpIr}, {"--profile-dump-dir", &profileDumpDir},
     };
     bool anyProfiling = false;
     for (int i = 1; i < argc; i++) {
@@ -173,6 +174,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --profile-counters    CPU thread's user-space instructions and cycles at every mark\n"
                      "  --profile-checksum F  Guest-state checksum every N blocks (diagnostic)\n"
                      "  --profile-probes      Capture the marks file's probes (diagnostic)\n"
+                     "  --profile-dump-ir PCS Write the LLVM IR of blocks at these PCs (comma-separated hex)\n"
+                     "  --profile-dump-dir D  Directory for those files (default ir)\n"
                      "  --profile-checksum-every N  Blocks between checksums (default 65536)\n"
                      "  --profile-checksum-from N   First block to checksum (default 0)\n"
                      "Headless commands (one per line):\n"
@@ -236,6 +239,18 @@ static int RunEmulator(int argc, char* argv[]) {
         profile.jitdump = perfJitdump;
         profile.counters = profileCounters;
         profile.probes = profileProbes;
+        if (!profileDumpDir.empty()) profile.dumpIrDir = profileDumpDir;
+        for (size_t at = 0; !profileDumpIr.empty() && at <= profileDumpIr.size();) {
+            const size_t comma = std::min(profileDumpIr.find(',', at), profileDumpIr.size());
+            const std::string text = profileDumpIr.substr(at, comma - at);
+            size_t used = 0;
+            unsigned long long pc = 0;
+            try { pc = std::stoull(text, &used, 16); } catch (const std::exception&) { used = 0; }
+            if (used == 0 || used != text.size() || pc > 0xFFFFFFFFull)
+                throw std::runtime_error("Invalid --profile-dump-ir PC: " + text);
+            profile.dumpIrPcs.push_back(static_cast<uint32_t>(pc));
+            at = comma + 1;
+        }
         profile.checksumPath = profileChecksum;
         auto count = [](const std::string& text, const char* option, bool zero) {
             size_t used = 0;

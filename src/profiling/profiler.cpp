@@ -21,6 +21,7 @@
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <stdexcept>
@@ -175,6 +176,10 @@ struct Profiler::Impl : BcoreEventSink {
     bool probesOn = false;
     uint32_t blockPc = 0;  // the block running now, for the MMIO census
 
+    std::map<uint32_t, unsigned> dumpCount;
+    std::vector<std::pair<std::string, std::string>> pendingDumps;
+    bool dumpFailed = false;
+
     FILE* checksums = nullptr;
     bool checksumFailed = false;
     bool censusFailed = false;
@@ -273,6 +278,12 @@ struct Profiler::Impl : BcoreEventSink {
     }
 
     void Configure() {
+        if (!options.dumpIrPcs.empty()) {
+            std::sort(options.dumpIrPcs.begin(), options.dumpIrPcs.end());
+            std::error_code error;
+            std::filesystem::create_directories(options.dumpIrDir, error);
+            if (error) throw std::runtime_error("Cannot create --profile-dump-dir " + options.dumpIrDir);
+        }
         if (options.probes && options.marksPath.empty())
             throw std::runtime_error("--profile-probes captures the probes of a marks file: add --profile-marks");
         if (!options.marksPath.empty()) LoadMarks();
@@ -361,6 +372,29 @@ struct Profiler::Impl : BcoreEventSink {
     // Every translation is described: the cost is a pass over its IR and its
     // machine code, microseconds against milliseconds of compilation.
     bool wantsCompileMetrics() const override { return !events.empty(); }
+    bool wantsIrDump(uint32_t pc) const override {
+        return std::binary_search(options.dumpIrPcs.begin(), options.dumpIrPcs.end(), pc);
+    }
+    void onIrDump(uint32_t pc, const char* stage, const std::string& ir) override {
+        // Kept until the next block: writing a file here would land inside
+        // the translation's span. Numbered per PC, since the cache is
+        // flushed at a boot ROM entry and a block can be compiled again.
+        if (std::strcmp(stage, "lifted") == 0) ++dumpCount[pc];
+        char name[64];
+        std::snprintf(name, sizeof(name), "bb_0x%08x.%u.%s.ll", pc, dumpCount[pc], stage);
+        pendingDumps.emplace_back(options.dumpIrDir + "/" + name, ir);
+    }
+    void WriteDumps() {
+        for (const auto& [path, text] : pendingDumps) {
+            std::ofstream file(path);
+            file << text;
+            if (!file) {
+                LogError("Cannot write %s", path.c_str());
+                dumpFailed = true;
+            }
+        }
+        pendingDumps.clear();
+    }
     void onCompileMetrics(uint32_t, const BcoreCompileMetrics& metrics) override { pendingShape = metrics; }
     void onTranslateEnd(uint32_t pc, uint64_t) override { Translated(pc, true); }
     void onTranslateFailure(uint32_t pc, uint64_t) override { Translated(pc, false); }
@@ -414,7 +448,7 @@ struct Profiler::Impl : BcoreEventSink {
         startWall = MonotonicNs();
         startCpu = ThreadCpuNs();
         startProcessCpu = ProcessCpuNs();
-        if (!events.empty()) cpu.SetCoreEventSink(this);
+        if (!events.empty() || !options.dumpIrPcs.empty()) cpu.SetCoreEventSink(this);
         if (options.jitdump) cpu.SetPerfJitdump(true);
         Fire("start", pc);
     }
@@ -725,6 +759,7 @@ void Profiler::BeforeRun(uint32_t pc) {
     // The transition into this block belongs with the block it leaves, like
     // that block's run in the PC census: count it before a mark here dumps.
     impl.blockPc = pc;
+    if (!impl.pendingDumps.empty()) impl.WriteDumps();
     if (impl.probesOn)
         impl.probes.OnBlock(pc, impl.cpu.State(), impl.cpu.GetEmulator(), MonotonicNs(), impl.runs,
                             impl.cpu.Time().Packets(), impl.cpu.Time().Cycles());
@@ -788,7 +823,9 @@ bool Profiler::Finish() {
                      end.enabled_ns - end.running_ns, end.enabled_ns);
     if (impl.countersFailed) std::fprintf(stderr, "[profile] hardware counts are incomplete; do not use this run\n");
     if (impl.checksums && std::fflush(impl.checksums) != 0) impl.checksumFailed = true;
-    bool ok = impl.WriteTrace() && !impl.censusFailed && !impl.countersFailed && !impl.checksumFailed;
+    impl.WriteDumps();
+    bool ok = impl.WriteTrace() && !impl.censusFailed && !impl.countersFailed && !impl.checksumFailed &&
+              !impl.dumpFailed;
     for (const auto& mark : impl.marks)
         if (!mark.fired) std::fprintf(stderr, "[profile] mark %s did not fire\n", mark.name.c_str());
     if (impl.probesOn) impl.probes.Report(stderr);

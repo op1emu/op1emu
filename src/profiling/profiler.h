@@ -16,6 +16,7 @@
 //    that should do the same work first differ.
 //  - guest memory read at marks, and optional probes capturing registers and
 //    memory at chosen block entries (see probes.h).
+//  - the LLVM IR of chosen blocks, lifted and optimized, as files.
 //  - perf control: enable/disable a `perf record --control=fifo` window at two
 //    marks, and LLVM jitdump output for `perf inject --jit`.
 //  - optional hardware counters: the CPU thread's user-space instructions and
@@ -47,10 +48,12 @@ struct ProfilerOptions {
     bool jitdump = false;      // --perf-jitdump
     bool counters = false;     // --profile-counters
     bool probes = false;       // --profile-probes: the marks file's probes
+    std::vector<uint32_t> dumpIrPcs;  // --profile-dump-ir PC[,PC...]
+    std::string dumpIrDir = "ir";     // --profile-dump-dir
 
     bool Enabled() const {
         return !marksPath.empty() || !tracePath.empty() || !censusPrefix.empty() ||
-               !perfFifo.empty() || jitdump || counters || !checksumPath.empty() || probes;
+               !perfFifo.empty() || jitdump || counters || !checksumPath.empty() || probes || !dumpIrPcs.empty();
     }
 };
 

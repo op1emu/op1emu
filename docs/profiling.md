@@ -32,6 +32,7 @@ host makes the guest do more work, so two runs never execute the same thing.
 | `--perf-window A:B` | Write `enable` to the FIFO at mark A and `disable` at mark B |
 | `--perf-jitdump` | LLVM jitdump for `perf inject --jit` (under `$JITDUMPDIR/.debug/jit/`) |
 | `--profile-counters` | The CPU thread's user-space instructions and cycles at every mark and translation |
+| `--profile-dump-ir PCS` | The LLVM IR of the blocks at these PCs (comma-separated hex), lifted and optimized, into `--profile-dump-dir` (default `ir`) |
 | `--profile-probes` | Capture the marks file's probes: registers and memory at chosen block entries (diagnostic) |
 | `--profile-checksum FILE` | Guest-state checksums every `--profile-checksum-every N` blocks (default 65536), from block `--profile-checksum-from` (diagnostic) |
 
@@ -199,6 +200,29 @@ thread tracks for Perfetto. On a stock boot, between `main-boot` and
 `lap-end` (1,859 ms of guest time) the main thread ran 68% and the
 lowest-priority FIR fill thread, which runs only when every other thread is
 blocked, 32%.
+
+## IR of chosen blocks
+
+`--profile-dump-ir PC,...` writes, for every translation of a block starting
+at one of those PCs, `bb_0x<pc>.<n>.lifted.ll` (the IR as decoded) and, when
+the IR pipeline runs, `bb_0x<pc>.<n>.optimized.ll` (the IR as compiled). `n`
+counts translations: the cache is flushed when the boot ROM is re-entered,
+so a block may be compiled more than once, and its code may have changed
+in between. bcore hands over the text; the files are written at the next
+block, outside the translation's span. Printing IR is diagnostic: it adds
+to those blocks' compile CPU in the trace. `run --dump-pc PC` and
+`perf --dump-pc PC` (repeatable) put the files in the run's `ir/`.
+
+`annotate CAPTURE --pc PC` shows `perf annotate` of that block's generated
+code from a perf capture, beside the IR files of the same run. It refuses a
+non-precise event, which cannot rank instructions, unless
+`--allow-imprecise`:
+
+```sh
+python3 -m op1prof perf --binary $B $IN --window main-boot:lap-end --until lap-end \
+  --event cycles:upp --period 4000000 --dump-pc 1a5e27e
+python3 -m op1prof annotate op1prof-perf-*/capture --pc 1a5e27e
+```
 
 ## Checksums
 

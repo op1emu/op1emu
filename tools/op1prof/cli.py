@@ -43,6 +43,18 @@ def _checksum(parser: argparse.ArgumentParser) -> None:
                         help="first block to record (narrow down a divergence)")
 
 
+def _hex(text: str) -> int:
+    value = int(text, 16)
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise argparse.ArgumentTypeError(f"not a 32-bit address: {text}")
+    return value
+
+
+def _dump_pc(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dump-pc", type=_hex, action="append", metavar="PC",
+                        help="write the lifted and optimized IR of the block at PC into ir/ (repeatable)")
+
+
 def _counters(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--counters", action="store_true",
                         help="count the CPU thread's user-space instructions and cycles (perf_event_paranoid <= 2; "
@@ -88,7 +100,7 @@ def _spec(args, binary: Path) -> RunSpec:
                    timeout_s=args.timeout, progress_timeout_s=args.progress_timeout, cpu=args.cpu,
                    counters=getattr(args, "counters", False),
                    checksum_every=getattr(args, "checksum", None), checksum_from=getattr(args, "checksum_from", 0),
-                   probes=getattr(args, "probes", False))
+                   probes=getattr(args, "probes", False), dump_pcs=getattr(args, "dump_pc", None) or [])
 
 
 def _phase(args) -> tuple:
@@ -269,6 +281,15 @@ def cmd_perf(args) -> int:
     return 0
 
 
+def cmd_annotate(args) -> int:
+    try:
+        print(perf.annotate(args.capture, args.pc, args.allow_imprecise, args.lines))
+    except (OSError, ValueError, KeyError) as error:
+        print(f"annotate: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_report(args) -> int:
     try:
         labels = perf_report.Labels(census.Symbols(args.symbols), [perf_report.PcRange.parse(r) for r in args.pc_range])
@@ -374,6 +395,7 @@ def main(argv=None) -> int:
     p.add_argument("--binary", required=True, type=Path)
     p.add_argument("--census", action="store_true", help="also write per-PC/MMIO census (changes timing)")
     p.add_argument("--probes", action="store_true", help="capture the marks file's probes (diagnostic)")
+    _dump_pc(p)
     _counters(p)
     _checksum(p)
     _common(p)
@@ -416,12 +438,20 @@ def main(argv=None) -> int:
     p.add_argument("--event", default="cpu-clock:u", help="perf event (cycles:upp for instruction-level work; needs a hardware PMU)")
     p.add_argument("--period", type=_positive, help="fixed event count per sample (prefer for precise events)")
     p.add_argument("--freq", type=_positive, default=999, help="samples per second when no --period")
+    _dump_pc(p)
     p.add_argument("--call-graph", choices=("fp", "lbr"), default="fp",
                    help="frame pointers, or Intel LBR call stacks (whole chains through code without frame "
                         "pointers; needs a hardware event)")
     p.add_argument("--top", type=int, default=25)
     _common(p)
     p.set_defaults(func=cmd_perf)
+
+    p = sub.add_parser("annotate", help="instruction-level samples of one guest block's generated code")
+    p.add_argument("capture", type=Path, help="the capture/ directory of an op1prof perf run")
+    p.add_argument("--pc", type=_hex, required=True, help="guest block entry PC (hex)")
+    p.add_argument("--allow-imprecise", action="store_true", help="annotate a non-precise capture anyway")
+    p.add_argument("--lines", type=int, default=120, help="lines of perf annotate output to show")
+    p.set_defaults(func=cmd_annotate)
 
     p = sub.add_parser("report", help="re-report an earlier perf capture directory")
     p.add_argument("capture", type=Path, help="the capture/ directory of an op1prof perf run")

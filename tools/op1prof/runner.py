@@ -84,6 +84,7 @@ class RunSpec:
     checksum_every: Optional[int] = None   # --profile-checksum checksum.bin every N blocks
     checksum_from: int = 0
     probes: bool = False      # --profile-probes (diagnostic)
+    dump_pcs: List[int] = field(default_factory=list)   # --profile-dump-ir into ir/
     prefix: List[str] = field(default_factory=list)   # e.g. perf record ... --
     env: dict = field(default_factory=dict)           # added after cleaning
 
@@ -176,6 +177,8 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
         command += ["--profile-counters"]
     if spec.probes:
         command += ["--profile-probes"]
+    if spec.dump_pcs:
+        command += ["--profile-dump-ir", ",".join(f"{pc:x}" for pc in spec.dump_pcs), "--profile-dump-dir", "ir"]
     if spec.checksum_every:
         command += ["--profile-checksum", "checksum.bin", "--profile-checksum-every", str(spec.checksum_every),
                     "--profile-checksum-from", str(spec.checksum_from)]

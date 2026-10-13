@@ -1052,3 +1052,22 @@ def test_first_mmr_access_report(tmp_path):
 def test_run_passes_probes(files, tmp_path):
     result = run(spec(files, probes=True), tmp_path / "r")
     assert "--profile-probes" in result.command and result.reached
+
+
+def test_run_dumps_ir_of_chosen_blocks_and_annotate_needs_a_precise_event(files, tmp_path, monkeypatch):
+    result = run(spec(files, dump_pcs=[0x1a5e27e, 0xffa00000]), tmp_path / "r")
+    at = result.command.index("--profile-dump-ir")
+    assert result.command[at + 1:at + 4] == ["1a5e27e,ffa00000", "--profile-dump-dir", "ir"]
+    capture = tmp_path / "capture"
+    capture.mkdir()
+    (capture / "capture.json").write_text(json.dumps({"event": "cpu-clock:u", "precise": False, "window": ["a", "b"]}))
+    with pytest.raises(ValueError, match="not a precise event"):
+        perf.annotate(capture, 0x1a5e27e, False, 10)
+    calls = []
+
+    class Done:
+        returncode, stdout, stderr = 0, "\n".join(f"line {i}" for i in range(5)), ""
+    monkeypatch.setattr(perf.subprocess, "run", lambda command, **kw: calls.append(command) or Done())
+    text = perf.annotate(capture, 0x1a5e27e, True, 3)
+    assert calls[0][-2:] == ["-s", "bb_0x01a5e27e"]
+    assert "shares are where the timer landed" in text and "... 2 more lines" in text
