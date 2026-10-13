@@ -982,6 +982,12 @@ def test_a_run_that_floods_its_output_is_stopped(files, tmp_path, monkeypatch):
 # ---- probes, threads and first MMR access ----
 
 def _probe_trace():
+    trace_data = _probe_events()
+    trace_data["probes"] = {"switch": {"hits": 2, "dropped": 0}, "switch-irq": {"hits": 1, "dropped": 0}}
+    return trace_data
+
+
+def _probe_events():
     hit = lambda name, cycles, current: {"name": name, "cat": "probe", "ph": "i", "ts": cycles / 400.0,
                                          "args": {"pc": 1, "runs": cycles, "packets": cycles, "cycles": cycles,
                                                   "R1": current, "current": current, "prio": None}}
@@ -1010,8 +1016,12 @@ def test_threads_report_and_perfetto(tmp_path):
     assert "main" in text and "0xb" in text and "(before the first switch)" in text
     with pytest.raises(ValueError, match="no captured value 'R7'"):
         probes.timeline(data, ["switch"], "R7")
-    with pytest.raises(ValueError, match="no hits"):
-        probes.timeline(data, ["missing"], "current")
+    with pytest.raises(ValueError, match="not declared in this trace: swich"):
+        probes.timeline(data, ["switch", "swich"], "current")   # a typo must not drop switches
+    data["probes"]["quiet"] = {"hits": 0, "dropped": 0}
+    with pytest.raises(ValueError, match="no hits of quiet"):
+        probes.timeline(data, ["quiet"], "current")
+    del data["probes"]["quiet"]
     out = tmp_path / "threads.json"
     probes.perfetto(data, ["switch", "switch-irq"], "current", {0xA: "main"}, out)
     events = json.loads(out.read_text())["traceEvents"]
@@ -1022,7 +1032,7 @@ def test_threads_report_and_perfetto(tmp_path):
     with pytest.raises(ValueError, match="dropped hits.*switch 4464"):
         probes.timeline(data, ["switch", "switch-irq"], "current")
     assert "4464 more dropped" in probes.summary(data, 3)
-    del data["probes"]
+    data["probes"] = {"switch": {"hits": 2, "dropped": 0}, "switch-irq": {"hits": 1, "dropped": 0}}
     summary = probes.summary(data, 3)
     assert "switch: 2 hits" in summary and "prio         - x2" in summary
     assert "read table at a (0x00000010): 1,-" in summary

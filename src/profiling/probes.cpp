@@ -5,6 +5,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cinttypes>
 #include <cstddef>
 #include <stdexcept>
@@ -41,6 +43,19 @@ uint32_t ParseHex(const nlohmann::json& value, const std::string& what) {
     return static_cast<uint32_t>(parsed);
 }
 
+// Probe and read names become JSON keys and trace event names: the same
+// rule as mark names, so nothing needs escaping and no byte (a NUL, say) is
+// lost on the way out.
+std::string CheckedName(const nlohmann::json& value, const std::string& what) {
+    const auto name = value.get<std::string>();
+    const bool ok = !name.empty() && name.size() <= 64 &&
+        std::all_of(name.begin(), name.end(), [](char c) {
+            return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.';
+        });
+    if (!ok) throw std::runtime_error("Invalid " + what + " name: \"" + name + "\" (letters, digits, - _ . only)");
+    return name;
+}
+
 } // namespace
 
 void WriteJsonString(FILE* file, const std::string& text) {
@@ -65,7 +80,7 @@ uint32_t RegisterValue(const CpuState& state, int index) {
 
 MemoryRead ParseMemoryRead(const nlohmann::json& entry, const std::string& where) {
     MemoryRead read;
-    read.name = entry.at("name").get<std::string>();
+    read.name = CheckedName(entry.at("name"), where + " read");
     const std::string what = where + "." + read.name;
     if (entry.contains("base")) {
         read.baseRegister = RegisterIndex(entry.at("base").get<std::string>());
@@ -98,7 +113,7 @@ void Probes::Load(const nlohmann::json& probes) {
     size_t total = 0;
     for (const auto& entry : probes) {
         Spec spec;
-        spec.name = entry.at("name").get<std::string>();
+        spec.name = CheckedName(entry.at("name"), "probe");
         spec.pc = ParseHex(entry.at("pc"), "probe " + spec.name + ".pc");
         size_t values = 0;
         if (entry.contains("regs")) {

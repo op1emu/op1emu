@@ -273,6 +273,8 @@ struct Profiler::Impl : BcoreEventSink {
     }
 
     void Configure() {
+        if (options.probes && options.marksPath.empty())
+            throw std::runtime_error("--profile-probes captures the probes of a marks file: add --profile-marks");
         if (!options.marksPath.empty()) LoadMarks();
         if (!options.until.empty() && !KnownMark(options.until))
             throw std::runtime_error("--profile-until names an unknown mark: " + options.until);
@@ -460,7 +462,11 @@ struct Profiler::Impl : BcoreEventSink {
             event.values = values;
             event.valid.assign(valid, valid + read.words);
             std::printf("[read] %s %s addr=0x%08x words=", mark, read.name.c_str(), read.address);
-            for (size_t i = 0; i < values.size(); ++i) std::printf("%s%u", i ? "," : "", values[i]);
+            // A word that could not be read is null, as in the trace, never a 0.
+            for (size_t i = 0; i < values.size(); ++i) {
+                if (valid[i]) std::printf("%s%u", i ? "," : "", values[i]);
+                else std::printf("%snull", i ? "," : "");
+            }
             std::printf("\n");
             std::fflush(stdout);
             readEvents.push_back(std::move(event));

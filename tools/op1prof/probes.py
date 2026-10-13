@@ -75,6 +75,13 @@ def timeline(trace_data: dict, probes: Sequence[str], field: str) -> List[Tuple[
     runs from then on (for example the register holding the new TCB). A
     switch probe that dropped hits would silently charge the rest of the run
     to the last thread it recorded, so that is an error."""
+    declared = trace_data.get("probes", {})
+    unknown = [name for name in probes if name not in declared]
+    if unknown:
+        # A misspelled switch probe would silently drop its switches.
+        raise ValueError(f"probes not declared in this trace: {', '.join(unknown)}"
+                         + (f" (declared: {', '.join(declared)})" if declared else
+                            " (it records no probes: run with --probes)"))
     lost = dropped(trace_data, probes)
     if lost:
         raise ValueError("switch probes dropped hits, so the timeline would be wrong: "
