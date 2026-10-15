@@ -31,6 +31,10 @@ public:
 
     uint32_t rawmem_limit() const override { return 0; }
 
+    // Emulator::DirectPages(), so generated code reaches RAM without calling
+    // back here; null while the memory census counts every access.
+    uint8_t* const* page_table() const override;
+
 #ifdef ENABLE_PROFILING
     // Counts guest accesses to the MMR space (0xFFC00000 and up). Not owned.
     void SetProfiler(Profiler* profiler) { profiler_ = profiler; }

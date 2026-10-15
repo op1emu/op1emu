@@ -58,6 +58,18 @@ void EmulatorMemory::write32(uint32_t addr, uint32_t val) {
     emulator_.MemoryWrite32(addr, val);
 }
 
+static_assert(PAGE_BITS == Memory::kPageBits, "bcore's page table has op1emu's page size");
+static_assert(NUM_PAGE_TABLE_ENTRIES == Memory::kPageTableEntries, "one entry per guest page");
+
+uint8_t* const* EmulatorMemory::page_table() const {
+#ifdef ENABLE_PROFILING
+    // The census counts in read*/write*. It is switched on before the first
+    // translation, so no block that bypasses it is ever compiled.
+    if (census_) return nullptr;
+#endif
+    return emulator_.DirectPages();
+}
+
 const uint8_t* EmulatorMemory::raw() const {
     return nullptr;
 }

@@ -166,7 +166,8 @@ microseconds, the clock `perf record -k mono` uses.
   It is a static label of the block, not of each run: a run can leave
   earlier, through a taken branch, a hardware loop or an exception. The same code has the same hash in every process, wherever the JIT
   placed it (bcore's fastmem and rawmem paths would embed a host address and
-  break that; op1emu uses neither). `collect_ns` is the time spent collecting
+  break that; op1emu uses neither, and its page-table path loads the table
+  from `CpuState` rather than embedding it). `collect_ns` is the time spent collecting
   these metrics, included in the span's `cpu_ns`: about 0.09% of compile
   CPU.
 
@@ -217,8 +218,13 @@ counts in the phase of the block it ends.
 
 `PREFIX.memory.MARK` (JSON, `op1.memory.v1`) counts the guest's loads and
 stores by device and width (8, 16, 32 bits), found the way the emulator
-finds the device, with `unmapped` for addresses no device maps. Every one
-of them is a call from generated code into the host in op1emu. bcore reads
+finds the device, with `unmapped` for addresses no device maps. Outside
+census runs, generated code loads and stores most of them itself, through
+the RAM pages of `Emulator::DirectPages()` (bcore's `Memory::page_table()`);
+a census run turns that off, so every access is a call into the host and
+is counted, and the exit census's per-block accesses are complete. MMRs
+(0xFFC00000 and up) are never in the table: every MMR access is a call in
+every run, and `mmio_r`/`mmio_w` count them all. bcore reads
 a block's instructions through the same interface while it translates the
 block; those reads are compilation, once per translation, and the census
 leaves them out (a stock boot's 21,631 translations fetched 263,295 times).

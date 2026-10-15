@@ -3,6 +3,7 @@
 #include <map>
 #include <mutex>
 #include <functional>
+#include <vector>
 #include "io.h"
 #include "fastmem.h"
 
@@ -58,13 +59,24 @@ public:
     std::array<u8*, NUM_PAGE_TABLE_ENTRIES>& PageTable() { return *pageTable; }
     FastMem& GetFastMem() { return *fastmem; }
 
-    void AddReadHook(u32 addr, std::function<u32(u32)> hook) { readHooks[addr] = hook; }
-    void AddWriteHook(u32 addr, std::function<void(u32, u32)> hook) { writeHooks[addr] = hook; }
+    void AddReadHook(u32 addr, std::function<u32(u32)> hook) { readHooks[addr] = hook; RebuildDirectPages(); }
+    void AddWriteHook(u32 addr, std::function<void(u32, u32)> hook) { writeHooks[addr] = hook; RebuildDirectPages(); }
+
+    // The guest pages generated code may load from and store to directly
+    // (bcore's Memory::page_table()): one entry per page, the host address of
+    // its first byte, or null where an access must come through the device
+    // map. A page qualifies when one plain MemoryDevice (not a subclass, which
+    // may give its accesses side effects) maps all of it, it lies below the
+    // MMR space at 0xFFC00000 (every MMR access stays a call, and is counted
+    // as one) and no read or write hook sits in it. The table's address never
+    // changes; binding a device or adding a hook rebuilds it in place.
+    u8* const* DirectPages() const { return directPages.data(); }
 
     void PatchSoftwareBreak(u32 addr, u8 num);
     void RemoveSoftwareBreak(u32 addr);
 
     bool IsMemoryValid(u32 addr);
+    void RebuildDirectPages();
 
     const std::vector<Device*>& Devices() const { return devices; }
 
@@ -79,4 +91,5 @@ protected:
     std::vector<Device*> devices;
     std::map<u32, std::function<u32(u32)>> readHooks;
     std::map<u32, std::function<void(u32, u32)>> writeHooks;
+    std::vector<u8*> directPages;
 };
