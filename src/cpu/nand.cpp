@@ -86,6 +86,8 @@ NFC::NFC(u32 baseAddr) : RegisterDevice("NFC", baseAddr, 0x50) {
     NFC_CMD.writeCallback = [this](u32 v) {
         command = v;
         nandFlash->SendCommand(command);
+        // A command that starts an operation makes the flash busy now.
+        SetNotBusy(!nandFlash->IsBusy());
     };
 
     REG32(NFC_DATA_WR, 0x48);
@@ -99,6 +101,14 @@ NFC::NFC(u32 baseAddr) : RegisterDevice("NFC", baseAddr, 0x50) {
         readDataReady = nandFlash->IsDataReady();
         UpdateInterrupts();
     };
+}
+
+void NFC::AttachNandFlash(const std::shared_ptr<NandFlash>& flash) {
+    nandFlash = flash;
+    nandFlash->SetReadyCallback([this] {
+        SetNotBusy(true);
+        UpdateInterrupts();
+    });
 }
 
 void NFC::ResetECC()

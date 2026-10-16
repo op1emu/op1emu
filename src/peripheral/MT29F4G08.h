@@ -1,6 +1,8 @@
 #pragma once
 
 #include "cpu/nand.h"
+#include <chrono>
+#include <functional>
 #include <vector>
 #include <fstream>
 #include <unordered_map>
@@ -29,11 +31,18 @@ public:
     u32 PageWrite(const u8* data, u32 length) override;
     u32 PageRead(u8* data, u32 length) override;
     void SetReadCallback(ReadCallback callback) override;
+    void SetReadyCallback(std::function<void()> callback) override { readyCallback = std::move(callback); }
+
+    // How long a reset, read, program or erase keeps the flash busy, in guest
+    // time. Far below the part's tR/tPROG/tBERS: the model has always been an
+    // instant flash, and a realistic time would lengthen the boot.
+    static constexpr std::chrono::nanoseconds kBusyTime{1};
     bool IsDataReady() const override;
     bool IsBusy() const override;
 
 protected:
     ReadCallback readCallback;
+    std::function<void()> readyCallback;
 
     void SetBusy();
     void HandleCommand(u8 command);

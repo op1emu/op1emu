@@ -25,15 +25,15 @@ public:
     virtual u32 PageRead(u8* data, u32 length) = 0;
     virtual u32 PageWrite(const u8* data, u32 length) = 0;
     virtual void SetReadCallback(ReadCallback callback) = 0;
+    // Called when the flash finishes an operation and stops being busy.
+    virtual void SetReadyCallback(std::function<void()> callback) {}
 };
 
 class NFC : public RegisterDevice, public DMABus {
 public:
     NFC(u32 baseAddr);
 
-    void AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash) {
-        this->nandFlash = nandFlash;
-    }
+    void AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash);
 
     // DMABus interface
     u32 DMARead(int x, int y, void* dest, u32 length) override;
@@ -42,9 +42,10 @@ public:
     void ProcessWithInterrupt(int ivg) override;
 
     // ProcessWithInterrupt() has work: a register access or a DMA transfer
-    // since the last call, or a flash still busy at it. Otherwise it would
-    // only publish the level it last published.
-    bool NeedsService() const { return touched_ || !notBusy; }
+    // since the last call. Otherwise it would only publish the level it last
+    // published: the flash's busy and ready edges reach NBUSY when they
+    // happen (SendCommand, the ready callback).
+    bool NeedsService() const { return touched_; }
 
     void Read(u32 offset, void* buffer, u32 length) override {
         touched_ = true;

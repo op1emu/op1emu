@@ -84,8 +84,8 @@ static void RtcMatchesPolling(uint32_t seed) {
 }
 
 
-// A flash with the timing the CPU gives MT29F4G08: a command that makes it
-// busy is answered by an event that runs at the end of the next block.
+// A flash that, like MT29F4G08, stays busy after a command until an event
+// (here: at the end of the next block) makes it ready again.
 class StepFlash : public NandFlash {
 public:
     void SendCommand(u8 command) override {
@@ -112,12 +112,17 @@ public:
     }
     u32 PageWrite(const u8*, u32 length) override { return length; }
     void SetReadCallback(ReadCallback) override {}
+    void SetReadyCallback(std::function<void()> callback) override { onReady_ = std::move(callback); }
     // The end of a block, after the devices: the CPU's event queue.
     void EndOfBlock() {
-        if (clearIn_ > 0 && --clearIn_ == 0) busy_ = false;
+        if (clearIn_ > 0 && --clearIn_ == 0) {
+            busy_ = false;
+            if (onReady_) onReady_();
+        }
     }
 
 private:
+    std::function<void()> onReady_;
     bool busy_ = false, ready_ = false;
     int clearIn_ = 0, remaining_ = 0;
 };
