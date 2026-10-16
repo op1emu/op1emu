@@ -367,7 +367,6 @@ HaltReason BlackFinCpu::Run() {
     // mode the packets every earlier block executed (see TimeSource).
     const uint64_t cyclesElapsed = time_.Cycles();
     SetBfinCycles(*cpuState_, cyclesElapsed);
-    coreTimer->UpdateCycles(cyclesElapsed);
 
 #ifdef ENABLE_PROFILING
     const uint32_t blockPc = cpuState_->pc;
@@ -404,8 +403,11 @@ HaltReason BlackFinCpu::Run() {
     if (auto* stats = Service()) stats->current = stats->other;
 #endif
     ServiceDevices(ivg);
-    // Drive the GP timers off the *delta* in cyclesElapsed, not off it landing
-    // on a multiple. `cyclesElapsed % 10000 == 0` only fires when the sampled
+    // The guest time at the end of the block: timers count to it.
+    const uint64_t blockEnd = time_.Cycles();
+    coreTimer->Advance(blockEnd);
+    // Drive the GP timers off the *delta* in guest cycles, not off it landing
+    // on a multiple. `cycles % 10000 == 0` only fires when the sampled
     // value happens to be an exact multiple of 10000, which is essentially
     // never true for a value derived from wall-clock microseconds -- most
     // ticks were silently dropped, and occasionally the value sat on a
@@ -422,7 +424,7 @@ HaltReason BlackFinCpu::Run() {
     // how SCLK/TACLK/TMRCLK relate on real hardware.
     constexpr uint64_t kCyclesPerTimerTick = 10000;
     constexpr uint64_t kMaxCatchupTicks = 64;
-    uint64_t ticks = ((uint64_t)cyclesElapsed - lastTimerCycles_) / kCyclesPerTimerTick;
+    uint64_t ticks = (blockEnd - lastTimerCycles_) / kCyclesPerTimerTick;
     if (ticks) {
         lastTimerCycles_ += ticks * kCyclesPerTimerTick;
         if (ticks > kMaxCatchupTicks) {

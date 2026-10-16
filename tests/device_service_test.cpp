@@ -4,6 +4,7 @@
 // through its service contract, and compares what the guest can observe. An
 // interrupt is a level, so what counts is the level last published, not how
 // often it was published again.
+#include "cpu/coretimer.h"
 #include "cpu/dma.h"
 #include "cpu/nand.h"
 #include "cpu/sic.h"
@@ -312,7 +313,52 @@ static void SicLines() {
     Require(sic.Lines() == 0, "deasserting the pin drops the line");
 }
 
+// The core timer counts guest cycles: it expires exactly TPERIOD * (TSCALE + 1)
+// cycles after it starts, and auto-reload keeps that period exactly.
+static void CoreTimerCountsGuestCycles() {
+    TimeSource time(true);
+    CoreTimer timer(0xFFE03000, time);
+    int level = 0, rises = 0;
+    timer.BindInterrupt(6, [&](int, int value) {
+        rises += value && !level;
+        level = value;
+    });
+    auto at = [&](uint64_t cycles) { time.Retire(cycles - time.Cycles()); };
+    at(1000);
+    timer.Write32(0x08, 1);   // TSCALE: every 2 cycles
+    timer.Write32(0x04, 50);  // TPERIOD (and TCOUNT) 50: 100 cycles
+    timer.Write32(0x00, 7);   // TMPWR | TMREN | TAUTORLD
+    Require(timer.NextExpiry() == 1100u, "first expiry 100 cycles after the start");
+    at(1099);
+    timer.Advance(time.Cycles());
+    Require(level == 0 && timer.Read32(0x0C) == 1, "one tick left at 1099");
+    at(1100);
+    timer.Advance(time.Cycles());
+    Require(level == 1 && rises == 1, "expires at 1100");
+    Require(timer.NextExpiry() == 1200u, "reloads at the expiry, not when it was noticed");
+    timer.ProcessWithInterrupt(6);  // the ISR is entered
+    Require(level == 0, "TINT clears in IVG6");
+    at(1150);
+    timer.Write32(0x00, 7);  // the ISR rewrites TCNTL while counting
+    Require(timer.NextExpiry() == 1200u, "a TCNTL write does not restart a running count");
+    at(1450);
+    timer.Advance(time.Cycles());
+    Require(rises == 2 && timer.NextExpiry() == 1500u, "a late look sees one interrupt and the period kept");
+    timer.ProcessWithInterrupt(6);
+    timer.Write32(0x00, 3);  // one-shot
+    at(1500);
+    timer.Advance(time.Cycles());
+    Require(rises == 3 && level == 1, "the one-shot expires");
+    Require(!timer.NextExpiry() && (timer.Read32(0x00) & 2) == 0, "and stops, clearing TMREN");
+    timer.Write32(0x04, 10);
+    timer.Write32(0x00, 3);
+    at(1600);
+    Require(timer.Read32(0x0C) == 0 && rises == 4, "reading TCOUNT brings the count up to date (TCNTL cleared TINT)");
+    Require(timer.NextExpiry() == std::nullopt, "and expires it");
+}
+
 int main() {
+    CoreTimerCountsGuestCycles();
     SicLines();
     for (uint32_t seed = 1; seed <= 20; ++seed) RtcMatchesPolling(seed);
     for (uint32_t seed = 1; seed <= 20; ++seed) NfcMatchesPolling(seed);

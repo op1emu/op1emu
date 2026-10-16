@@ -11,9 +11,8 @@ CoreTimer::CoreTimer(u32 baseAddr, const TimeSource& time)
     FIELD(TCNTL, TAUTORLD, 2, 1, R(autoReload), W(autoReload));
     FIELD(TCNTL, TINT, 3, 1, R(interrupt), W(interrupt));
     TCNTL.writeCallback = [this](u32 v) {
-        if (enabled) {
-            startCycles = 0; // This will be set to actual cycle count on next UpdateCycles call
-        }
+        UpdateCounting(time_.Cycles());
+        UpdateInterrups();
     };
 
     REG32(TPERIOD, 0x04);
@@ -21,53 +20,75 @@ CoreTimer::CoreTimer(u32 baseAddr, const TimeSource& time)
     TPERIOD.writeCallback = [this](u32 v) {
         // Writes to TPERIOD are mirrored into TCOUNT
         tcount = v;
+        if (origin_) origin_ = time_.Cycles();
     };
 
     REG32(TSCALE, 0x08);
     FIELD(TSCALE, VAL, 0, 8, R(tscale), W(tscale));
 
     REG32(TCOUNT, 0x0C);
-    FIELD(TCOUNT, VAL, 0, 32, R(tcount), W(tcount));
+    FIELD(TCOUNT, VAL, 0, 32, R(origin_ ? CountAt(time_.Cycles()) : tcount), W(tcount));
+    TCOUNT.writeCallback = [this](u32 v) {
+        if (origin_) origin_ = time_.Cycles();
+    };
 }
 
-void CoreTimer::UpdateCycles(u64 cycles)
-{
-    if (!IsEnabled() || tcount == 0) {
-        return;
-    }
-
-    if (startCycles == 0) {
-        startCycles = cycles;
-    }
-
-    u64 elapsed = cycles - startCycles;
-    u64 scale = tscale + 1; // Scale is 0-based (0 means divide by 1)
-    u64 ticks = elapsed / scale;
+u64 CoreTimer::CyclesPerTick() const {
     // FIXME: wall time runs the emulator slower than real time, so it divides
-    // ticks by TimeSource::kWallSlowdown; deterministic guest time does not.
-    ticks /= time_.Slowdown();
+    // the rate by TimeSource::kWallSlowdown; deterministic guest time does not.
+    return u64(tscale + 1) * time_.Slowdown();
+}
 
-    if (ticks >= tperiod) {
-        tcount = 0;
-    } else {
-        tcount = tperiod - ticks;
-    }
+u32 CoreTimer::CountAt(u64 cycles) const {
+    const u64 ticks = (cycles - *origin_) / CyclesPerTick();
+    return ticks >= tcount ? 0 : u32(tcount - ticks);
+}
 
-    if (tcount == 0) {
-        OnExpire();
+std::optional<u64> CoreTimer::NextExpiry() const {
+    if (!origin_) return std::nullopt;
+    return *origin_ + u64(tcount) * CyclesPerTick();
+}
+
+void CoreTimer::UpdateCounting(u64 cycles) {
+    if (IsEnabled() && !origin_ && tcount != 0) {
+        origin_ = cycles;
+    } else if (!IsEnabled() && origin_) {
+        tcount = CountAt(cycles);
+        origin_.reset();
     }
 }
 
-void CoreTimer::OnExpire() {
+void CoreTimer::Advance(u64 cycles) {
+    if (!origin_) return;
+    const u64 expiry = *NextExpiry();
+    if (cycles < expiry) return;
     interrupt = true;
     UpdateInterrups();
-
-    if (autoReload) {
+    if (autoReload && tperiod != 0) {
+        // Every period that ended by `cycles` expired; the interrupt counts once.
+        const u64 period = u64(tperiod) * CyclesPerTick();
         tcount = tperiod;
-        startCycles = 0;
+        origin_ = expiry + (cycles - expiry) / period * period;
     } else {
+        // The level stays published until TINT is cleared.
+        tcount = 0;
+        origin_.reset();
         enabled = false;
     }
+}
+
+u32 CoreTimer::Read32(u32 offset) {
+    Advance(time_.Cycles());
+    return RegisterDevice::Read32(offset);
+}
+
+void CoreTimer::Write32(u32 offset, u32 value) {
+    const u64 now = time_.Cycles();
+    Advance(now);
+    // TCOUNT and TPERIOD writes restart the count from now: settle the count
+    // so far into tcount first.
+    if (origin_ && (offset == 0x04 || offset == 0x0C)) tcount = CountAt(now);
+    RegisterDevice::Write32(offset, value);
 }
 
 void CoreTimer::UpdateInterrups() {
