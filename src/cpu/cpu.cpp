@@ -322,6 +322,7 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     cpuState_->ksp = 0x7000000;
     cpuState_->usp = 0x7000000;
     cpuState_->syscfg = 0x30;
+    time_.SetBlockPackets(&cpuState_->packets);
 
     time_.StartWallClock();
 }
@@ -389,9 +390,13 @@ HaltReason BlackFinCpu::Run() {
         failed_.store(true, std::memory_order_release);
         return HaltReason::Break;
     }
-    time_.Retire(cpuState_->packets);
+    // Retired, and cleared so the guest time stops counting them twice
+    // (TimeSource::SetBlockPackets).
+    const uint32_t packets = cpuState_->packets;
+    cpuState_->packets = 0;
+    time_.Retire(packets);
 #ifdef ENABLE_PROFILING
-    if (profiler_) profiler_->AfterRun(blockPc, cpuState_->packets);
+    if (profiler_) profiler_->AfterRun(blockPc, packets);
 #endif
     cpuState_->did_jump = false; // Clear jump flag set by bcore, since we handle it in the emulator loop
     cec_check_pending(cpuState_.get());

@@ -863,7 +863,7 @@ void Profiler::OnMmio(uint32_t addr, bool write) {
     if (impl.census) {
         impl.blockMmio = true;
         auto& count = impl.mmioCensus[addr];
-        // Guest time: in deterministic mode the packets before this block.
+        // Guest time: in deterministic mode that of the accessing packet.
         const uint64_t cycles = impl.cpu.Time().Cycles();
         if (count.reads + count.writes == 0) {
             count.firstCycles = cycles;

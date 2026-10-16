@@ -45,13 +45,19 @@ public:
     void Retire(uint64_t packets) { packets_ += packets; }
     uint64_t Packets() const { return packets_; }
 
+    // While a block runs, the 1-based index of the packet executing in it
+    // (bcore's CpuState::packets), 0 between blocks: in deterministic mode a
+    // device the block accesses then sees the time of the packet accessing
+    // it, not of the block's start.
+    void SetBlockPackets(const uint32_t* index) { blockIndex_ = index; }
+
     uint64_t Cycles() const {
-        if (deterministic_) return packets_;
+        if (deterministic_) return packets_ + InBlock();
         return std::chrono::duration_cast<std::chrono::microseconds>(SteadyClock::now() - start_).count() * 400;
     }
     uint64_t Nanoseconds() const {
         // 2.5 ns per cycle; overflows only past ~9e9 s of guest time.
-        if (deterministic_) return packets_ * 5 / 2;
+        if (deterministic_) return (packets_ + InBlock()) * 5 / 2;
         return std::chrono::duration_cast<std::chrono::nanoseconds>(SteadyClock::now() - start_).count();
     }
     // Divisor for device rates tuned against wall time; 1 in deterministic mode.
@@ -66,10 +72,13 @@ public:
     void SetEpoch(SystemClock::time_point epoch) { epoch_ = epoch; }
 
 private:
+    uint64_t InBlock() const { return blockIndex_ && *blockIndex_ ? *blockIndex_ - 1 : 0; }
+
     bool deterministic_;
     SteadyClock::time_point start_;
     SystemClock::time_point epoch_;
     uint64_t packets_ = 0;
+    const uint32_t* blockIndex_ = nullptr;
 };
 
 // The panel's TE output as a board oscillator on guest time: a 1 us low pulse

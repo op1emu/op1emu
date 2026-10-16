@@ -22,6 +22,17 @@ int main() {
         const auto epoch = TimeSource::SystemClock::time_point(std::chrono::seconds(1000));
         time.SetEpoch(epoch);
         Require(time.SystemNow() == epoch + std::chrono::microseconds(1), "RTC time is epoch plus guest time");
+        // Inside a block, a device sees the time of the packet accessing it.
+        uint32_t index = 0;
+        time.SetBlockPackets(&index);
+        Require(time.Cycles() == 400, "between blocks: the packets retired");
+        index = 1;
+        Require(time.Cycles() == 400 && time.Packets() == 400, "the block's first packet runs at its start");
+        index = 5;
+        Require(time.Cycles() == 404 && time.Nanoseconds() == 1010, "the fifth packet runs four cycles later");
+        Require(time.Packets() == 400, "Packets() counts retired packets only");
+        index = 0;
+        time.SetBlockPackets(nullptr);
         TimeSource other(true);
         Require(other.SystemNow() == TimeSource::SystemClock::time_point(
                                          std::chrono::seconds(TimeSource::kDefaultEpochSeconds)),
