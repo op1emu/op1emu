@@ -35,9 +35,10 @@ public:
     // back here; null while the memory census counts every access.
     uint8_t* const* page_table() const override;
 
-    // Device callbacks reach CEC state (cec_mmr_*, cec_raise) and peripheral
-    // state, never a guest register, so generated code may keep registers in
-    // host registers across an access that calls back here.
+    // Device callbacks, data_alignment_fault() and the Emulator's read and
+    // write hooks reach CEC state (cec_mmr_*, cec_raise) and peripheral state,
+    // never a guest register, so generated code may keep registers in host
+    // registers across an access that calls back here.
     bool callbacks_preserve_registers() const override { return true; }
 
 #ifdef ENABLE_PROFILING

@@ -63,8 +63,9 @@ static_assert(NUM_PAGE_TABLE_ENTRIES == Memory::kPageTableEntries, "one entry pe
 
 uint8_t* const* EmulatorMemory::page_table() const {
 #ifdef ENABLE_PROFILING
-    // The census counts in read*/write*. It is switched on before the first
-    // translation, so no block that bypasses it is ever compiled.
+    // The census counts in read*/write*. Switching it on drops every block
+    // compiled before (BlackFinCpu::EnableMemoryCensus()), so no block that
+    // bypasses it runs while it counts.
     if (census_) return nullptr;
 #endif
     return emulator_.DirectPages();

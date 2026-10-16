@@ -59,6 +59,11 @@ public:
     std::array<u8*, NUM_PAGE_TABLE_ENTRIES>& PageTable() { return *pageTable; }
     FastMem& GetFastMem() { return *fastmem; }
 
+    // A hook runs inside a guest load or store that generated code makes
+    // through EmulatorMemory, which tells bcore its callbacks leave the guest
+    // registers alone (Memory::callbacks_preserve_registers()): a hook must
+    // not write a guest register. The page it sits in stops being direct
+    // (DirectPages()) at once, also for blocks already compiled.
     void AddReadHook(u32 addr, std::function<u32(u32)> hook) { readHooks[addr] = hook; RebuildDirectPages(); }
     void AddWriteHook(u32 addr, std::function<void(u32, u32)> hook) { writeHooks[addr] = hook; RebuildDirectPages(); }
 
@@ -66,9 +71,9 @@ public:
     // (bcore's Memory::page_table()): one entry per page, the host address of
     // its first byte, or null where an access must come through the device
     // map. A page qualifies when one plain MemoryDevice (not a subclass, which
-    // may give its accesses side effects) maps all of it, it lies below the
-    // MMR space at 0xFFC00000 (every MMR access stays a call, and is counted
-    // as one) and no read or write hook sits in it. The table's address never
+    // may give its accesses side effects) maps every byte of it, it lies below
+    // the MMR space at 0xFFC00000 (every MMR access stays a call, and is
+    // counted as one) and no read or write hook sits in it. The table's address never
     // changes; binding a device or adding a hook rebuilds it in place.
     u8* const* DirectPages() const { return directPages.data(); }
 

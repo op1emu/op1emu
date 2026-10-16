@@ -63,14 +63,14 @@ jobs:
           CCACHE_BASEDIR: ${{ github.workspace }}
           CCACHE_MAXSIZE: 500M
         run: |
-          cmake --build build --target op1emu ldrdump op1-headless-test op1-time-source-test op1-data-fault-test \
+          cmake --build build --target op1emu ldrdump op1-headless-test op1-time-source-test op1-data-fault-test op1-direct-pages-test \
             ${{ matrix.profiling == 'ON' && 'op1-mark-set-test op1-service-stats-test' || '' }}
           ccache --show-stats
 
       - name: Test (synthetic inputs only, no NAND or firmware)
         # The -R filter keeps out bcore's comparison_test, which is registered
         # whenever a bfin toolchain is on PATH.
-        run: ctest --test-dir build -R "headless-test|time-source-test|data-fault-test|ldr-smoke|mark-set-test|service-stats-test|profile-smoke" --output-on-failure
+        run: ctest --test-dir build -R "headless-test|time-source-test|data-fault-test|direct-pages-test|ldr-smoke|mark-set-test|service-stats-test|profile-smoke" --output-on-failure
 
       - name: CLI sanity
         run: ./build/op1emu --help

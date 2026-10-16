@@ -109,6 +109,8 @@ protected:
     void RaiseInterrupt(int ivg);
     void QueueRaise(int ivg);
     void ServiceDevicesCounted(int ivg);
+    // Drop every compiled block (bcore's cache), timed by the profiler.
+    void InvalidateTranslations();
 
     // Declared before the devices, which keep a reference to it.
     TimeSource time_;

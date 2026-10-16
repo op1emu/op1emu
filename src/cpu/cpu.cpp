@@ -335,6 +335,16 @@ static void SetBfinCycles(CpuState& cpu_state, u64 cycles) {
     cpu_state.cycles[2] = cpu_state.cycles[1];
 }
 
+void BlackFinCpu::InvalidateTranslations() {
+#ifdef ENABLE_PROFILING
+    if (profiler_) profiler_->BeforeInvalidate();
+#endif
+    core_->invalidate();
+#ifdef ENABLE_PROFILING
+    if (profiler_) profiler_->AfterInvalidate();
+#endif
+}
+
 HaltReason BlackFinCpu::Run() {
     // Guest time at the start of this block: host time, or in deterministic
     // mode the packets every earlier block executed (see TimeSource).
@@ -347,15 +357,7 @@ HaltReason BlackFinCpu::Run() {
     if (profiler_) profiler_->BeforeRun(blockPc);
 #endif
     // Hit entry point, invalidating core to reset cached translations
-    if (cpuState_->pc == 0xFFA00000) {
-#ifdef ENABLE_PROFILING
-        if (profiler_) profiler_->BeforeInvalidate();
-#endif
-        core_->invalidate();
-#ifdef ENABLE_PROFILING
-        if (profiler_) profiler_->AfterInvalidate();
-#endif
-    }
+    if (cpuState_->pc == 0xFFA00000) InvalidateTranslations();
 #ifdef ENABLE_PROFILING
     if (auto* stats = Service()) stats->current = stats->block;
 #endif
@@ -563,6 +565,10 @@ profiling::MemoryCensus& BlackFinCpu::EnableMemoryCensus() {
     memoryCensus_ = std::make_unique<profiling::MemoryCensus>();
     memoryCensus_->SetDevices(ranges);
     bcoreMemory_->SetMemoryCensus(memoryCensus_.get());
+    // A block compiled before now loads and stores RAM without calling
+    // EmulatorMemory (see its page_table()): drop them all, so the census
+    // sees every access. Nothing to drop before the first translation.
+    if (core_->stats().blocks_translated) InvalidateTranslations();
     return *memoryCensus_;
 }
 

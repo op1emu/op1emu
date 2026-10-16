@@ -116,5 +116,27 @@ int main() {
         Require(!memory.paused, "counting resumes after every translation");
         cpu.SetProfiler(nullptr);
     }
+    {
+        // A block compiled before the census is switched on loads RAM through
+        // the page table, past EmulatorMemory: switching it on must drop the
+        // block, so its next run is recompiled and counts the load.
+        BlackFinCpu cpu(true);
+        cpu.AttachNandFlash(std::make_shared<MT29F4G08>(cpu, "service-stats-test.nand", true));
+        auto& emulator = cpu.GetEmulator();
+        emulator.MemoryWrite16(0xFFA00200, 0x9100);  // R0 = [P0]
+        emulator.MemoryWrite16(0xFFA00202, 0x2FFF);  // JUMP.S back
+        auto run = [&] { cpu.SetPC(0xFFA00200); cpu.Run(); };
+        run();
+        const uint64_t translated = cpu.CoreStats().blocks_translated;
+        ProfilerOptions options;
+        options.censusPrefix = "service-stats-test";
+        Profiler profiler(options, cpu, [] {});  // switches the census on
+        cpu.SetProfiler(&profiler);
+        auto& memory = cpu.EnableMemoryCensus();
+        run();
+        Require(cpu.CoreStats().blocks_translated == translated + 1 && memory.accesses == 1,
+                "a block compiled before the census is recompiled and counts its load");
+        cpu.SetProfiler(nullptr);
+    }
     std::puts("ServiceStats tests passed");
 }

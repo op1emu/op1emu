@@ -175,9 +175,16 @@ void Emulator::RebuildDirectPages()
         for (u64 page = dev->BaseAddress(); page < u64(dev->EndAddress()) + 1 && page < kMmrBase;
              page += kPageSize) {
             const u32 first = u32(page), last = u32(page + kPageSize - 1);
-            // The device map must send every byte of the page to this device.
-            if (get_device(first, deviceSegments) != dev || get_device(last, deviceSegments) != dev)
-                continue;
+            // The device map must send every byte of the page to this device:
+            // get_device() picks the first segment end at or above an
+            // address, so the last byte must find this device and no other
+            // device may end or begin inside the page, as one nested in the
+            // RAM does.
+            if (get_device(last, deviceSegments) != dev) continue;
+            bool other = false;
+            for (auto it = deviceSegments.lower_bound(first); it != deviceSegments.end() && it->first <= last; ++it)
+                other |= it->second != dev;
+            if (other) continue;
             if (readHooks.lower_bound(first) != readHooks.upper_bound(last)) continue;
             if (writeHooks.lower_bound(first) != writeHooks.upper_bound(last)) continue;
             directPages[page >> PAGE_BITS] = static_cast<u8*>(dev->Map(first - dev->BaseAddress()));
