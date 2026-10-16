@@ -101,7 +101,8 @@ first block), so any two marks can be differenced:
   `process_cpu_ms` covers every thread of the emulator: the excess over
   `cpu_ms` is the frontend, the USB/IP loop and the rest, which can compete
   with the CPU thread for its core.
-- `runs` is blocks executed, `packets` instruction packets (bcore's
+- `runs` is blocks executed, those a run chained included (see
+  [Chaining](#chaining)), `packets` instruction packets (bcore's
   `CpuState::packets`), `cycles` guest cycles (equal to packets in
   deterministic mode), `translated` blocks compiled.
 - `mmio_r`/`mmio_w` count guest accesses at or above 0xFFC00000; `irq`
@@ -182,6 +183,59 @@ makes the emulator exit nonzero. Do not use it. A trace recorded without
 `--deterministic` is refused by every op1prof command that reads one. The header also records
 `cpu_thread_tid`, the CPU thread's id, to select its perf samples.
 
+## Chaining
+
+A block that ends runs the next one itself, in generated code, while the
+host would have nothing to do after it; only then does it return to
+`BlackFinCpu::Run()`. At every return of a block, bcore's `cpu->pc` is where
+the host would continue, so a chained block is a host round trip without the
+host. Before each run the host computes the run's budget in packets
+(`BlackFinCpu::ChainBudget`), the earliest guest time at which it would act
+after a block: an event, the panel's TE edge, a DMA channel's next element,
+the next TWI byte, the RTC's next calendar change, the core timer's expiry or
+the next GP timer tick. It is 0 when a device it services already has work, and
+at PCs where the host must see the block start: 0xFFA00000 (which drops every
+translation) and, in profiling builds, the range of every mark not yet fired.
+During the run the budget drops to 0 when the host gets work: an access that
+reaches a device (anything but plain RAM), anything another thread hands the
+CPU thread, and in bcore every interrupt entry, return, exception and halt.
+A block that ends at or past the budget, with an interrupt pending, or whose
+successor is not compiled returns. Chaining runs the guest's work block for
+block as before: every mark's counters, `runs` and `translated` included, are
+identical with `--no-chain`, which turns it off.
+
+Census, probe and checksum runs count every block start, so they never
+chain; `--profile-until` stops chaining once its mark fires. Every other
+profiling option works on chained runs.
+
+`--profile-chain-dry` compiles blocks to say they would chain
+(`CpuState::chain_would`) and return instead, and the CPU then checks that
+it does nothing after them: no device service, timer tick or expiry, TE
+edge, event, latch or interrupt check. A `[chain]` line after every mark
+counts the returns to the host by reason, cumulative:
+
+```
+[chain] main-frame returns=11449265 chained=353807065 host_only=2 service=149007 deadline=238170 access=10926629 cec=31003 pending=0 miss=104454 would=0 violations=0
+```
+
+`returns` are runs, `chained` the blocks they ran after their first;
+`host_only` and `service` runs had a budget of 0 (a host-only PC; a device
+with work), `deadline` ended at the budget, `access` after a device access,
+`cec` after an interrupt entry or return, an exception, a halt or another
+thread, `pending` with an interrupt to check, `miss` at a block not in the
+chain table. With the dry run, `would` counts the blocks that would have
+chained and `violations` those after which the host did something anyway,
+by kind (`violation_service=...`). On a stock boot to `main-frame` (the
+ECC-repaired image), 353,807,065 of 365,256,330 block ends would have
+chained, with no violation; chained, the boot returns to the host 11,449,265
+times, 95% of them after an NFC or other device access.
+
+`--profile-mark-digest` prints a `[digest]` line at every mark: hashes of the
+guest registers (by group), the CEC's IPEND, ILAT and IMASK, and every RAM
+device. Two runs that did the same work print the same lines, whatever the
+host did between blocks, so it compares a chained run with `--no-chain`
+where a checksum run cannot.
+
 ## Census
 
 `--profile-census PREFIX` writes `PREFIX.pc.MARK`, `PREFIX.mmio.MARK`,
@@ -205,7 +259,8 @@ timing measurement. The counts themselves do not depend on it.
 
 ### Exit and memory census
 
-op1emu returns to the host after every block. `PREFIX.exit.MARK` says after
+A census run returns to the host after every block (it does not chain).
+`PREFIX.exit.MARK` says after
 which of those runs the host was needed, per block, as little-endian
 records (`u32 block, u32 0, u64 mmio, u64 host, u64 both, u64 accesses`):
 runs in which the block accessed an MMR (it called into a device), runs
@@ -240,7 +295,8 @@ made 831,806,301 loads and stores: 67.9% to SDRAM, 31.0% to L1 data bank A
 
 ### Service census
 
-Between blocks the CPU loop services the devices that have work: one the
+Between blocks (between runs, when blocks chain) the CPU loop services the
+devices that have work: one the
 block accessed or a transfer touched, one whose guest-time deadline came (an
 RTC second, a SPORT sample, a paced DMA row, a TWI byte), and its events that
 are due. Interrupt lines are levels: the CPU latches a line that is high and
@@ -358,7 +414,8 @@ python3 -m op1prof annotate op1prof-perf-*/capture --pc 1a5e27e
 
 ## Checksums
 
-`--profile-checksum FILE` appends one 64-byte record every N blocks: the
+`--profile-checksum FILE` appends one 64-byte record every N blocks (a
+checksum run returns to the host after every block): the
 blocks run so far, packets and guest cycles, the entry PC, the CEC's IPEND,
 ILAT and IMASK, and three hashes of the guest registers (data and pointer
 registers; accumulators, DAG and loop registers; system registers and ASTAT).
