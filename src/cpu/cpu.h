@@ -7,6 +7,10 @@
 #include <memory>
 #include <vector>
 #include <chrono>
+#include <functional>
+#include <mutex>
+#include <thread>
+#include <tuple>
 
 // Forward declarations for bcore types (headers included in cpu.cpp only)
 struct CpuState;
@@ -148,12 +152,27 @@ protected:
         std::shared_ptr<TWI> twi;
         size_t usbIndex = 0, nfcIndex = 0, rtcIndex = 0, dmaIndex = 0, coreTimerIndex = 0, twiIndex = 0;
     } serviced_;
-    std::vector<std::tuple<std::chrono::nanoseconds, std::function<void()>>> eventQueue;
-    std::recursive_mutex eventQueueMutex;
-    // eventQueue.size(), readable without the lock: ProcessEvents() leaves an
-    // empty queue alone. Another thread's event is seen a block later at worst.
-    std::atomic<size_t> eventCount_{0};
-    std::chrono::nanoseconds elapsedTime{0};
+    // Events in guest time (TimeSource::Nanoseconds()), owned by the CPU
+    // thread: a min-heap on (due, sequence), so events due together run in
+    // the order they were queued.
+    struct TimedEvent {
+        uint64_t dueNs;
+        uint64_t sequence;
+        std::function<void()> run;
+        bool operator>(const TimedEvent& other) const {
+            return dueNs != other.dueNs ? dueNs > other.dueNs : sequence > other.sequence;
+        }
+    };
+    std::vector<TimedEvent> events_;
+    uint64_t nextEventNs_ = UINT64_MAX;  // events_.front().dueNs, or none
+    uint64_t eventSequence_ = 0;
+    // What other threads queue: timed from when the CPU thread takes it.
+    std::mutex inboxMutex_;
+    std::vector<std::tuple<std::chrono::nanoseconds, std::function<void()>>> inbox_;
+    std::atomic<bool> inboxPending_{false};
+    // Set by the first Run(); until then every caller counts as another thread.
+    std::atomic<std::thread::id> cpuThread_{};
+    void ScheduleEvent(std::function<void()> event, uint64_t dueNs);
 #ifdef ENABLE_PROFILING
     Profiler* profiler_ = nullptr;
     uint64_t eventsDelivered_ = 0;

@@ -37,6 +37,7 @@
 #include "cpu_state.h"
 #include "mmr.h"
 #include <cstring>
+#include <algorithm>
 #include <stdexcept>
 
 // bcore CEC functions (extern "C" in bcore's src/cec.h)
@@ -366,6 +367,9 @@ void BlackFinCpu::InvalidateTranslations() {
 }
 
 HaltReason BlackFinCpu::Run() {
+    // Events queued from this thread from now on are timed in guest time.
+    if (cpuThread_.load(std::memory_order_relaxed) != std::this_thread::get_id())
+        cpuThread_.store(std::this_thread::get_id(), std::memory_order_relaxed);
     // Guest time at the start of this block: host time, or in deterministic
     // mode the packets every earlier block executed (see TimeSource).
     const uint64_t cyclesElapsed = time_.Cycles();
@@ -516,13 +520,27 @@ u32 BlackFinCpu::PC() {
     return cpuState_->pc;
 }
 
+// Runs `event` once the guest time has passed `delay` from now: for the CPU
+// thread now is the time of the packet queuing it, for another thread the
+// CPU thread's next ProcessEvents().
 void BlackFinCpu::QueueEvent(const std::function<void()>& event, std::chrono::nanoseconds delay) {
-    std::unique_lock<std::recursive_mutex> lock(eventQueueMutex);
-    eventQueue.push_back({delay, event});
-    eventCount_.store(eventQueue.size(), std::memory_order_release);
+    if (std::this_thread::get_id() == cpuThread_.load(std::memory_order_relaxed)) {
+        const uint64_t ticks = delay.count() > 0 ? uint64_t(delay.count()) : 0;
+        ScheduleEvent(event, time_.Nanoseconds() + ticks);
+    } else {
+        std::lock_guard<std::mutex> lock(inboxMutex_);
+        inbox_.emplace_back(delay, event);
+        inboxPending_.store(true, std::memory_order_release);
+    }
 #ifdef ENABLE_PROFILING
     if (auto* stats = Service()) stats->Queued();
 #endif
+}
+
+void BlackFinCpu::ScheduleEvent(std::function<void()> event, uint64_t dueNs) {
+    events_.push_back({dueNs, eventSequence_++, std::move(event)});
+    std::push_heap(events_.begin(), events_.end(), std::greater<>());
+    nextEventNs_ = events_.front().dueNs;
 }
 
 void BlackFinCpu::QueueRaise(int ivg) {
@@ -681,47 +699,43 @@ void BlackFinCpu::RaiseInterrupt(int ivg) {
 #endif
 }
 
+// Runs the events due by now, in due order. One an event queues for now or
+// earlier runs in the same call.
 void BlackFinCpu::ProcessEvents() {
-    constexpr std::chrono::nanoseconds instructionTime(1); // Approximate instruction execution time
-    if (eventCount_.load(std::memory_order_acquire) == 0) {
-#ifdef ENABLE_PROFILING
-        if (auto* stats = Service()) ++stats->processCalls;
-#endif
-        elapsedTime += instructionTime;
-        return;
+    const uint64_t now = time_.Nanoseconds();
+    if (inboxPending_.load(std::memory_order_acquire)) {
+        std::vector<std::tuple<std::chrono::nanoseconds, std::function<void()>>> inbox;
+        {
+            std::lock_guard<std::mutex> lock(inboxMutex_);
+            inbox.swap(inbox_);
+            inboxPending_.store(false, std::memory_order_relaxed);
+        }
+        for (auto& [delay, event] : inbox)
+            ScheduleEvent(std::move(event), now + (delay.count() > 0 ? uint64_t(delay.count()) : 0));
     }
-    std::unique_lock<std::recursive_mutex> lock(eventQueueMutex);
 #ifdef ENABLE_PROFILING
     if (auto* stats = Service()) {
-        const uint64_t length = eventQueue.size();
+        const uint64_t length = events_.size();
         ++stats->processCalls;
         stats->nonEmptyCalls += length != 0;
         stats->lengthSum += length;
         if (length > stats->lengthMax) stats->lengthMax = length;
-        stats->current = stats->events;
     }
 #endif
-    auto events = eventQueue;
-    for (auto& [delay, event] : events) {
-        if (delay <= std::chrono::nanoseconds(0)) {
-            event();
+    if (now < nextEventNs_) return;
 #ifdef ENABLE_PROFILING
-            ++eventsDelivered_;
+    if (auto* stats = Service()) stats->current = stats->events;
 #endif
-        }
+    while (!events_.empty() && events_.front().dueNs <= now) {
+        std::pop_heap(events_.begin(), events_.end(), std::greater<>());
+        auto event = std::move(events_.back().run);
+        events_.pop_back();
+        event();
+#ifdef ENABLE_PROFILING
+        ++eventsDelivered_;
+#endif
     }
-    // Remove processed events
-    auto it = eventQueue.begin();
-    while (it != eventQueue.end()) {
-        if (std::get<0>(*it) <= std::chrono::nanoseconds(0)) {
-            it = eventQueue.erase(it);
-        } else {
-            std::get<0>(*it) -= instructionTime;
-            ++it;
-        }
-    }
-    eventCount_.store(eventQueue.size(), std::memory_order_release);
-    elapsedTime += instructionTime;
+    nextEventNs_ = events_.empty() ? UINT64_MAX : events_.front().dueNs;
 #ifdef ENABLE_PROFILING
     if (auto* stats = Service()) stats->current = stats->other;
 #endif
