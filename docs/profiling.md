@@ -240,9 +240,12 @@ made 831,806,301 loads and stores: 67.9% to SDRAM, 31.0% to L1 data bank A
 
 ### Service census
 
-After every block the CPU loop services every device, re-publishes the
-interrupt levels they hold, and drains its event queue. `PREFIX.service.MARK`
-(JSON, `op1.service.v1`, cumulative) counts that work:
+Between blocks the CPU loop services the devices that have work: one the
+block accessed or a transfer touched, one whose guest-time deadline came (an
+RTC second, a SPORT sample, a paced DMA row, a TWI byte), and its events that
+are due. Interrupt lines are levels: the CPU latches a line that is high and
+neither latched nor in service, when it rises and after every block.
+`PREFIX.service.MARK` (JSON, `op1.service.v1`, cumulative) counts that work:
 
 - **Sources**: each device in service order (its name, C++ class and base classes), then
   `block` (MMR accesses while a block runs), `events` (queue callbacks) and
@@ -259,37 +262,26 @@ interrupt levels they hold, and drains its event queue. `PREFIX.service.MARK`
   lower bound, not proof that a call was useless.
 - **Pins**: per SIC input, levels published and transitions, and the source
   that published first.
-- **IVG**: per level, the raises the SIC `forwarded` (it forwards every
-  pending, unmasked pin again whenever any level is published), the raises
+- **IVG**: per level, the `forwarded` latches of a high line, the raises
   delivered to the CEC, the new ILAT bits they `latched`, and the entries
   the guest took.
-- **Queue**: `ProcessEvents` calls, how many found events, the summed and
-  largest queue length.
-- **Other threads**: the USB/IP loop publishes levels and queues events
-  through the USB device. Those are counted apart (`other_threads`) and
-  never attributed to a source or pin, whose state the CPU thread owns. The
-  CPU owns the counts and frees them with itself, never earlier: that
-  thread can publish at any moment, through the same CPU.
+- **Queue**: `ProcessEvents` calls, how many found events waiting, the
+  summed and largest queue length.
+- **Other threads**: the frontend's keys and sensors queue events from their
+  own threads; the USB/IP loop hands its requests to the USB device, which
+  the CPU thread services. Events and levels from other threads are counted
+  apart (`other_threads`) and never attributed to a source or pin, whose
+  state the CPU thread owns. The CPU owns the counts and frees them with
+  itself, never earlier.
 - GP timer ticks dropped by the 64-tick catch-up limit (none should be, in
   deterministic mode), and bcore's cache hits, misses and blocks executed.
 
-In census runs the device loop is a counted copy, chosen once per block;
-other runs take the plain loop. On a stock boot, between `main-boot` and
-`main-display` (340,049,495 blocks):
-
-- The RTC publishes its interrupt level after every block, and the level
-  never changes; one call completed a register write. The NFC publishes
-  after every block too; 15,830 calls changed its level or saw the flash
-  turn ready. Of 31 devices, 25 never publish or do anything.
-- Priced by an LBR capture, the RTC's service calls take 24.9 s (73 ns
-  each), the DMA's 16.6 s (49 ns; 42,990 calls moved data) and the NFC's
-  8.3 s (25 ns): 49.8 s of 87.2 s of execution. The 25 devices that run
-  `Device`'s empty method add 2.6 s between them, the cost of calling it.
-- The SIC forwarded 602,100 raises for 59,107 new ILAT bits: it forwards
-  every pending pin again whenever any level is published, so the RTC's
-  unchanging level re-raises the NFC's.
-- `ProcessEvents` runs after every block and finds events in 0.11% of the
-  calls.
+Before the devices were serviced only when they had work, the loop called
+every device after every block; on a stock boot between `main-boot` and
+`main-display` (340,049,495 blocks) that cost 49.8 s of 87.2 s of execution
+(RTC 24.9 s, DMA 16.6 s, NFC 8.3 s), and the RTC's unchanging level, published
+after every block, made the SIC raise every pending line again: 602,100 raises
+for 59,107 new ILAT bits.
 
 ## Reads and probes
 
@@ -732,7 +724,7 @@ every table is in seconds of execution CPU:
   called from generated code is device time; a `memcpy` takes its caller's
   bucket). The buckets and `uncategorized` add up to all execution. A
   device's register map (`RegisterDevice::`) has no rule of its own: the RTC
-  reading its own registers after every block is RTC time, and a guest read
+  reading its own registers when it ticks is RTC time, and a guest read
   of them is a memory callback through the frames above. With the register
   map as a memory callback, and tail calls hiding frames, a stock boot had
   shown 15.8 s of memory callbacks against 7.9 s now, and the RTC 6.4 s of

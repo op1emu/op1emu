@@ -149,8 +149,9 @@ def report(data: dict, top: int) -> str:
              and (not priced or (s.get("implementation") not in (None, s["type"])))]
     devices = sorted((s for s in called if s not in quiet),
                      key=lambda s: -(s.get("seconds") or 0) if priced else -s["published"])
-    lines = [f"service {begin} -> {end}: devices serviced after every block; a call is productive when it "
-             "changed an interrupt level, queued an event other than an interrupt raise, or moved data",
+    lines = [f"service {begin} -> {end}: devices serviced between blocks when they have work (an access, a due "
+             "time, a transfer); a call is productive when it changed an interrupt level, queued an event other "
+             "than an interrupt raise, or moved data",
              "", f"{'device':18s} {'class':14s} {'calls':>12} {'productive':>10} {'':>8} {'published':>12} {'transitions':>11}"
              f" {'raises':>10} {'work':>12}" + (f" {'seconds':>8} {'ns/call':>8} {'ns/prod':>10}" if priced else "")]
     for s in devices[:top]:
@@ -191,8 +192,8 @@ def report(data: dict, top: int) -> str:
             lines.append(f"{p['pin']:>7} {p['source'][:18]:18s} {p['published']:>12,} {p['transitions']:>11,}"
                          f" {_pct(p['transitions'], p['published']):>8}")
     if data["ivg"]:
-        lines += ["", "interrupt chain per IVG: raises the SIC forwarded (every pending pin again whenever any level "
-                  "is published), raises delivered to the CEC, new ILAT bits, entries",
+        lines += ["", "interrupt chain per IVG: latches of a high line (one neither latched nor in service), raises "
+                  "delivered to the CEC, new ILAT bits, entries",
                   f"{'IVG':>4} {'forwarded':>12} {'raised':>12} {'latched':>9} {'entered':>9} {'latched/raised':>14}"]
         for r in data["ivg"]:
             lines.append(f"{r['level']:>4} {r['forwarded']:>12,} {r['raised']:>12,} {r['latched']:>9,}"
@@ -204,8 +205,8 @@ def report(data: dict, top: int) -> str:
               f"{q['length_max_so_far']} up to {end}; {q['queued_other_threads']:,} queued by other threads"]
     o = data.get("other_threads", {})
     if any(o.values()):
-        lines.append(f"other threads (the USB/IP loop): {o.get('published', 0):,} levels published, "
-                     f"{o.get('forwarded', 0):,} raises forwarded, {o.get('queued', 0):,} events queued; "
+        lines.append(f"other threads: {o.get('published', 0):,} levels published, "
+                     f"{o.get('forwarded', 0):,} latches, {o.get('queued', 0):,} events queued; "
                      "counted, not attributed to any source or pin")
     b = data["bcore"]
     lines.append(f"bcore: {b['blocks_executed']:,} blocks executed, {b['cache_hits']:,} cache hits, "
