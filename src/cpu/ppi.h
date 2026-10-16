@@ -12,6 +12,7 @@ public:
     // Only support Output mode
     u32 DMARead(int x, int y, void* dest, u32 length) override { return 0; }
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
+    u32 CyclesPerElement() const override { return kSclkCyclesPerElement; }
 
     void AttachDisplay(std::shared_ptr<Display> display) {
         this->display = display;

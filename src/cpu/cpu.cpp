@@ -170,7 +170,7 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
 
     ppi = std::make_shared<PPI>(0xFFC01000);
     devices.emplace_back(ppi);
-    std::shared_ptr<DMA> dma = std::make_shared<DMA>(0xFFC00C00, emulator);
+    std::shared_ptr<DMA> dma = std::make_shared<DMA>(0xFFC00C00, emulator, &time_);
     devices.emplace_back(dma);
     serviced_.dma = dma;
     dma->AttachDMABus(DMAPeripheralType::DMAPeripheralPPI, ppi);

@@ -357,7 +357,52 @@ static void CoreTimerCountsGuestCycles() {
     Require(timer.NextExpiry() == std::nullopt, "and expires it");
 }
 
+// An unpaced peripheral (the PPI, MDMA) moves a row once its elements' SCLK
+// cycles have passed: a 2D frame takes rows * columns * 4 core cycles.
+class PacedSink : public DMABus {
+public:
+    std::vector<uint64_t> rows;  // guest cycles at which each row arrived
+    const TimeSource& time;
+    explicit PacedSink(const TimeSource& t) : time(t) {}
+    u32 DMARead(int, int, void*, u32) override { return 0; }
+    u32 DMAWrite(int, int, const void*, u32 length) override {
+        rows.push_back(time.Cycles());
+        return length;
+    }
+    u32 CyclesPerElement() const override { return kSclkCyclesPerElement; }
+};
+
+static void DmaPacesUnpacedBuses() {
+    TimeSource time(true);
+    Emulator emulator;
+    MemoryDevice ram{"SDRAM", 0, 0x10000};
+    emulator.BindDevice(&ram);
+    DMA dma(0xFFC00C00, emulator, &time);
+    auto sink = std::make_shared<PacedSink>(time);
+    dma.AttachDMABus(DMAPeripheralPPI, sink);
+    time.Retire(1000);
+    dma.Write32(0x04, 0x100);  // START_ADDR
+    dma.Write32(0x10, 200);    // X_COUNT
+    dma.Write32(0x14, 2);      // X_MODIFY
+    dma.Write32(0x18, 3);      // Y_COUNT
+    dma.Write32(0x1C, 2);      // Y_MODIFY
+    dma.Write32(0x08, 0x35);   // DMAEN, 16-bit, 2D, sync: the OP-1's frame transfer
+    std::vector<uint64_t> serviced;
+    for (int step = 0; step < 4000; ++step) {
+        time.Retire(1);
+        if (dma.NeedsService(time.Nanoseconds())) {
+            dma.ProcessWithInterrupt(-1);
+            serviced.push_back(time.Cycles());
+        }
+    }
+    const std::vector<uint64_t> expected{1800, 2600, 3400};
+    Require(sink->rows == expected, "a row of 200 elements every 800 cycles");
+    Require((dma.Read32(0x28) & 1) != 0, "DMA_DONE after the last row");
+    Require(serviced.size() <= 8, "the DMA is not called between rows: " + std::to_string(serviced.size()));
+}
+
 int main() {
+    DmaPacesUnpacedBuses();
     CoreTimerCountsGuestCycles();
     SicLines();
     for (uint32_t seed = 1; seed <= 20; ++seed) RtcMatchesPolling(seed);

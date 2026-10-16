@@ -7,6 +7,12 @@
 #include <memory>
 
 class Bus;
+class TimeSource;
+
+// Core cycles per element of a DMA bus clocked by SCLK, one element per
+// SCLK cycle: an assumed 100 MHz SCLK (CCLK / 4). The PPI and MDMA are not
+// paced by their peripheral, so this is what paces them in guest time.
+constexpr u32 kSclkCyclesPerElement = 4;
 
 class DMABus {
 public:
@@ -24,6 +30,10 @@ public:
     // maximum says none will until the bus is told something new, which it
     // reports with NotifyDMA().
     virtual uint64_t DMAIdleUntil(bool toMemory, u32 length) const { return 0; }
+    // Core cycles of guest time the channel takes per element on this bus:
+    // it moves a row (or 4096 bytes) once that many cycles per element have
+    // passed since the last one. 0: as fast as the bus accepts.
+    virtual u32 CyclesPerElement() const { return 0; }
     // The DMA controller's flag NotifyDMA() raises.
     void SetDMANotify(bool* flag) { dmaNotify_ = flag; }
 
@@ -48,6 +58,7 @@ public:
     u32 DMARead(int x, int y, void* dest, u32 length) override;
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
     void DMAFlush() override { head = tail = 0; }
+    u32 CyclesPerElement() const override { return kSclkCyclesPerElement; }
 
 protected:
     static constexpr u32 CAPACITY = 4096; // matches ProcessTransfer's staging buffer
@@ -62,6 +73,7 @@ public:
     u32 DMARead(int x, int y, void* dest, u32 length) override;
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
     void DMAFlush() override { source.DMAFlush(); }
+    u32 CyclesPerElement() const override { return kSclkCyclesPerElement; }
 
 protected:
     MemorySrcDMABus& source;
@@ -89,7 +101,8 @@ enum DMAPeripheralType {
 class DMAChannel;
 class DMA : public RegisterDevice {
 public:
-    DMA(u32 baseAddr, Emulator& emu);
+    // Without a time source no bus is paced (CyclesPerElement is ignored).
+    DMA(u32 baseAddr, Emulator& emu, const TimeSource* time = nullptr);
 
     void AttachDMABus(DMAPeripheralType type, const std::shared_ptr<DMABus>& bus) {
         dmaBuses[type] = bus;
@@ -101,6 +114,7 @@ public:
 
     std::shared_ptr<DMABus> GetDMABus(DMAPeripheralType type) { return dmaBuses[type]; }
     Emulator& GetEmulator() { return emulator; }
+    const TimeSource* Time() const { return time_; }
 
     u32 Read32(u32 offset) override;
     void Write32(u32 offset, u32 value) override;
@@ -118,6 +132,7 @@ protected:
 
     bool touched_ = true;
     uint64_t idleUntil_ = 0;
+    const TimeSource* time_;
     Emulator& emulator;
     std::array<std::shared_ptr<DMAChannel>, 16> channels;
     std::map<DMAPeripheralType, std::shared_ptr<DMABus>> dmaBuses;

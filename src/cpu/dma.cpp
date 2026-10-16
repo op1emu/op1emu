@@ -1,4 +1,5 @@
 #include "dma.h"
+#include "time_source.h"
 #include "utils/log.h"
 #include <stdint.h>
 
@@ -26,6 +27,8 @@ public:
 
 protected:
     void ProcessDescriptor();
+    // The bus's pace, 0 when unpaced (see DMABus::CyclesPerElement).
+    u32 CyclesPerElement(const DMABus& bus) const;
 
     DMA& dma;
 
@@ -57,6 +60,8 @@ protected:
     u16 peripheralMap = 0;  // 0x2C
     u16 currXCount = 0;     // 0x30
     u16 currYCount = 0;     // 0x38
+    // A paced bus: the guest cycle from which the next element accrues.
+    u64 pacedFrom_ = 0;
 };
 
 DMAChannel::DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defaultPeripheralType)
@@ -83,6 +88,7 @@ DMAChannel::DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defa
     });
     CONFIG.writeCallback = [this](u32 value) {
         running = enabled;
+        if (enabled && this->dma.Time()) pacedFrom_ = this->dma.Time()->Cycles();
         if (enabled && IsMDMASource()) {
             // A new MDMA transfer starts from an empty FIFO.
             if (auto bus = this->dma.GetDMABus(peripheralType)) bus->DMAFlush();
@@ -185,14 +191,25 @@ void DMAChannel::ProcessDescriptor()
     currYCount = yCount ?: 0xFFFF;
 }
 
+u32 DMAChannel::CyclesPerElement(const DMABus& bus) const {
+    return dma.Time() ? bus.CyclesPerElement() : 0;
+}
+
 uint64_t DMAChannel::IdleUntil() const {
     if (!enabled || !running) return UINT64_MAX;
     // ProcessTransfer() logs a missing bus on every call.
     auto bus = dma.GetDMABus(peripheralType);
     if (!bus) return 0;
     // The length ProcessTransfer() offers the bus.
-    const u32 length = std::min(u32(currXCount) * (1u << wordSize), 4096u);
-    return bus->DMAIdleUntil(memoryWrite, length);
+    const u32 elementBytes = 1u << wordSize;
+    const u32 length = std::min(u32(currXCount) * elementBytes, 4096u);
+    const uint64_t idle = bus->DMAIdleUntil(memoryWrite, length);
+    const u32 pace = CyclesPerElement(*bus);
+    if (!pace) return idle;
+    // Guest nanoseconds are 2.5 per cycle, rounded down: cycles >= c exactly
+    // when nanoseconds >= c * 5 / 2.
+    const uint64_t dueCycles = pacedFrom_ + uint64_t(length / elementBytes) * pace;
+    return std::max(idle, dueCycles * 5 / 2);
 }
 
 bool DMAChannel::IsMDMA() const {
@@ -221,6 +238,9 @@ u32 DMAChannel::ProcessTransfer() {
 
     u8 buffer[4096];
     totalBytes = std::min(totalBytes, (u32)sizeof(buffer));
+    // A paced bus moves this chunk once its elements' time has passed.
+    const u32 pace = CyclesPerElement(*bus);
+    if (pace && dma.Time()->Cycles() < pacedFrom_ + uint64_t(totalBytes / elementBytes) * pace) return 0;
     dma.GetEmulator().Lock();
     if (memoryWrite) {
         totalBytes = bus->DMARead(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
@@ -251,6 +271,7 @@ u32 DMAChannel::ProcessTransfer() {
     dma.GetEmulator().Unlock();
 
     u32 count = totalBytes / elementBytes;
+    pacedFrom_ += uint64_t(count) * pace;
     currAddr += count * xModify;
     currXCount -= count;
 
@@ -315,8 +336,8 @@ u32 MemoryDestDMABus::DMAWrite(int x, int y, const void* src, u32 length) {
     return source.DMAWrite(x, y, src, length);
 }
 
-DMA::DMA(u32 baseAddr, Emulator& emu)
-    : RegisterDevice("DMA", baseAddr, 0x400), emulator(emu)
+DMA::DMA(u32 baseAddr, Emulator& emu, const TimeSource* time)
+    : RegisterDevice("DMA", baseAddr, 0x400), time_(time), emulator(emu)
 {
     for (size_t i = 0; i < channels.size(); i++) {
         channels[i] = std::make_shared<DMAChannel>("DMAChannel" + std::to_string(i), baseAddr + i * 0x40, *this, i);
