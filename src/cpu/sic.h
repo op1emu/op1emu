@@ -21,6 +21,13 @@ public:
     // SIC_IARx, or -1 if `pin` is out of range.
     int GetIVG(int pin) const;
 
+    // Counts register writes: GetIVG() can only change when it does.
+    const uint64_t* Version() const { return &version_; }
+    void Write32(u32 offset, u32 value) override {
+        ++version_;
+        RegisterDevice::Write32(offset, value);
+    }
+
 private:
     void InitRegisters();
     void ForwardInterrupts();
@@ -31,6 +38,7 @@ private:
     u32 iar[8] = {0};
     u32 isr[2] = {0};
     u32 iwr[2] = {0};
+    uint64_t version_ = 0;
 
     std::function<void(int ivg, int level)> forwardInterrupt;
 };

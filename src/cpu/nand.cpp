@@ -112,6 +112,7 @@ void NFC::ResetECC()
 
 u32 NFC::DMARead(int x, int y, void* dest, u32 length)
 {
+    touched_ = true;
     u32 len = nandFlash->PageRead(static_cast<u8*>(dest), length);
     CalculateECC(static_cast<const u8*>(dest), len);
     transferCount += len;
@@ -123,6 +124,7 @@ u32 NFC::DMARead(int x, int y, void* dest, u32 length)
 
 u32 NFC::DMAWrite(int x, int y, const void* source, u32 length)
 {
+    touched_ = true;
     u32 len = nandFlash->PageWrite(static_cast<const u8*>(source), length);
     CalculateECC(static_cast<const u8*>(source), len);
     transferCount += len;
@@ -194,10 +196,14 @@ void NFC::UpdateInterrupts() {
         // OP-1 moves it from the reset IVG7 to IVG9 during NAND setup).
         bool inNfcIsr = pageWriteDone && ivgResolver
                         && cec_current_ivg() == ivgResolver();
+        published_ = !inNfcIsr;
+        level_ = 1;
         if (!inNfcIsr) {
             TriggerInterrupt(1);
         }
     } else {
+        published_ = true;
+        level_ = 0;
         TriggerInterrupt(0);
     }
 }
@@ -221,7 +227,11 @@ void NFC::SetWriteBufferEmpty(bool value) {
 }
 
 void NFC::ProcessWithInterrupt(int ivg) {
+    serviceIvg_ = ivg;
+    if (routingVersion_) serviceRouting_ = *routingVersion_;
     SetNotBusy(!nandFlash->IsBusy());
     readDataReady = nandFlash->IsDataReady();
     UpdateInterrupts();
+    // Last: UpdateInterrupts() reads the registers through Read32().
+    touched_ = false;
 }

@@ -47,6 +47,40 @@ public:
 
     void ProcessWithInterrupt(int ivg) override;
 
+    // A count that changes whenever the SIC's routing may have (see
+    // SIC::Version()): the IVG the resolver returns is only re-read then.
+    void SetRoutingVersion(const uint64_t* version) { routingVersion_ = version; }
+
+    // ProcessWithInterrupt() has work: a register access or a DMA transfer
+    // since the last call, a flash still busy at it, or a change in what says
+    // whether the NFC's own ISR is running (the current IVG, the SIC's
+    // routing). Otherwise it would only publish its level again, if it
+    // published one, which ReplayInterrupt() does.
+    bool NeedsService(int ivg) const {
+        return touched_ || !notBusy || ivg != serviceIvg_ ||
+               (routingVersion_ && *routingVersion_ != serviceRouting_);
+    }
+    void ReplayInterrupt() const {
+        if (published_) TriggerInterrupt(level_);
+    }
+
+    void Read(u32 offset, void* buffer, u32 length) override {
+        touched_ = true;
+        RegisterDevice::Read(offset, buffer, length);
+    }
+    void Write(u32 offset, const void* buffer, u32 length) override {
+        touched_ = true;
+        RegisterDevice::Write(offset, buffer, length);
+    }
+    u32 Read32(u32 offset) override {
+        touched_ = true;
+        return RegisterDevice::Read32(offset);
+    }
+    void Write32(u32 offset, u32 value) override {
+        touched_ = true;
+        RegisterDevice::Write32(offset, value);
+    }
+
 protected:
     u32 PageSize() const { return (pageSize == 0) ? 256 : 512; }
     void ResetECC();
@@ -84,4 +118,12 @@ protected:
 
     std::shared_ptr<NandFlash> nandFlash;
     std::function<int()> ivgResolver;
+
+    // Since the last ProcessWithInterrupt(): accessed, and what it saw.
+    bool touched_ = true;
+    int serviceIvg_ = -2;
+    uint64_t serviceRouting_ = 0;
+    const uint64_t* routingVersion_ = nullptr;
+    bool published_ = false;  // UpdateInterrupts() published level_ (it may hold back)
+    int level_ = 0;
 };

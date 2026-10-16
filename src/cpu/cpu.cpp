@@ -214,6 +214,7 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     });
     devices.push_back(sic);
     nfc->SetIVGResolver([this]() { return sic->GetIVG(IRQ_NFC); });
+    nfc->SetRoutingVersion(sic->Version());
     coreTimer = std::make_shared<CoreTimer>(0xFFE03000, time_);
     coreTimer->BindInterrupt(IVG_IVTMR, [this](int ivg, int level) {
         if (level) QueueRaise(ivg);
@@ -621,7 +622,17 @@ void BlackFinCpu::ServiceDevices(int ivg) {
     auto& s = serviced_;
     // A disabled USB returns before moving data or publishing a level.
     if (s.usb->Enabled()) ServiceDevice(*s.usb, s.usbIndex, ivg);
-    ServiceDevice(*s.nfc, s.nfcIndex, ivg);
+    if (s.nfc->NeedsService(ivg)) {
+        ServiceDevice(*s.nfc, s.nfcIndex, ivg);
+    } else {
+#ifdef ENABLE_PROFILING
+        if (auto* stats = Service()) stats->current = static_cast<int>(s.nfcIndex);
+#endif
+        s.nfc->ReplayInterrupt();
+#ifdef ENABLE_PROFILING
+        if (auto* stats = Service()) stats->current = stats->other;
+#endif
+    }
     // The RTC publishes its level after every block, which the SIC answers by
     // raising every pending line again: between its ticks it still has to.
     if (s.rtc->NeedsTick()) {
