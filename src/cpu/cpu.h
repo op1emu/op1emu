@@ -24,6 +24,10 @@ enum RegIndex {
 };
 
 class SIC;
+class RTC;
+class DMA;
+class TWI;
+class USB;
 class CoreTimer;
 class GPIO;
 class PPI;
@@ -108,7 +112,9 @@ protected:
     void ProcessEvents();
     void RaiseInterrupt(int ivg);
     void QueueRaise(int ivg);
-    void ServiceDevicesCounted(int ivg);
+    // The devices with work between blocks, each called only when it has some.
+    void ServiceDevices(int ivg);
+    template <class D> void ServiceDevice(D& device, size_t index, int ivg);
     // Drop every compiled block (bcore's cache), timed by the profiler.
     void InvalidateTranslations();
 
@@ -131,8 +137,22 @@ protected:
     std::shared_ptr<GPIOPeripheral> gpioOrConnection;
     std::vector<std::shared_ptr<MCP230XX>> gpioExpanders;
     std::vector<std::shared_ptr<Device>> devices;
+    // The devices ServiceDevices() calls, in the order of `devices`, with
+    // their index there (the service census counts per device index).
+    struct Serviced {
+        std::shared_ptr<USB> usb;
+        std::shared_ptr<NFC> nfc;
+        std::shared_ptr<RTC> rtc;
+        std::shared_ptr<DMA> dma;
+        std::shared_ptr<CoreTimer> coreTimer;
+        std::shared_ptr<TWI> twi;
+        size_t usbIndex = 0, nfcIndex = 0, rtcIndex = 0, dmaIndex = 0, coreTimerIndex = 0, twiIndex = 0;
+    } serviced_;
     std::vector<std::tuple<std::chrono::nanoseconds, std::function<void()>>> eventQueue;
     std::recursive_mutex eventQueueMutex;
+    // eventQueue.size(), readable without the lock: ProcessEvents() leaves an
+    // empty queue alone. Another thread's event is seen a block later at worst.
+    std::atomic<size_t> eventCount_{0};
     std::chrono::nanoseconds elapsedTime{0};
 #ifdef ENABLE_PROFILING
     Profiler* profiler_ = nullptr;

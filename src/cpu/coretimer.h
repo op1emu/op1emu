@@ -12,6 +12,8 @@ public:
     void UpdateCycles(u64 cycles);
 
     void ProcessWithInterrupt(int ivg) override;
+    // TINT is set: ProcessWithInterrupt has work only then (and in IVG6).
+    bool InterruptPending() const { return interrupt; }
 
 protected:
     bool IsEnabled() const { return power && enabled; }

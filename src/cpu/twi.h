@@ -57,6 +57,9 @@ public:
     }
 
     void ProcessWithInterrupt(int ivg) override;
+    // A master transfer may move data; otherwise ProcessWithInterrupt does nothing.
+    bool MasterActive() const { return enabled && masterEnable; }
+    static constexpr int kIvg = 10;  // no master progress while the CPU is in this IVG
 
 protected:
     void ProcessMasterTransfer();

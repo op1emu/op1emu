@@ -102,6 +102,8 @@ public:
     void HandleDataRead(int ep, int interval, std::size_t limit, ReplyCallback callback) override;
 
     void ProcessWithInterrupt(int ivg) override;
+    // GLOBAL_ENA: a disabled USB neither moves data nor publishes levels.
+    bool Enabled() const { return enabled; }
 
 protected:
     void UpdateInterrupts();

@@ -7,7 +7,7 @@ static constexpr u16 FIFO_HALF  = 0x1;
 static constexpr u16 FIFO_FULL  = 0x3;
 
 static constexpr size_t FIFO_SIZE = 2;
-static constexpr int IVG_TWI = 10;
+static constexpr int IVG_TWI = TWI::kIvg;
 
 TWI::TWI(u32 baseAddr) : RegisterDevice("TWI", baseAddr, 0x90) {
     REG32(CLKDIV, 0x00);

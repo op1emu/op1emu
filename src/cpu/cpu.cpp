@@ -37,6 +37,7 @@
 #include "cpu_state.h"
 #include "mmr.h"
 #include <cstring>
+#include <stdexcept>
 
 // bcore CEC functions (extern "C" in bcore's src/cec.h)
 extern "C" void cec_raise(CpuState* cpu, uint32_t ivg);
@@ -144,6 +145,7 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     usb->BindInterrupt(IRQ_USB_INT0, IRQ_USB_INT1, IRQ_USB_INT2, IRQ_USB_DMAINT, irqHandler);
     devices.emplace_back(usb);
     this->usb = usb;
+    serviced_.usb = usb;
     sport0 = std::make_shared<SPORT>(0xFFC00800, 0, time_);
     devices.emplace_back(sport0);
     sport1 = std::make_shared<SPORT>(0xFFC00900, 1, time_);
@@ -163,11 +165,13 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     std::shared_ptr<RTC> rtc = std::make_shared<RTC>(0xFFC00300, time_);
     rtc->BindInterrupt(IRQ_RTC, irqHandler);
     devices.emplace_back(rtc);
+    serviced_.rtc = rtc;
 
     ppi = std::make_shared<PPI>(0xFFC01000);
     devices.emplace_back(ppi);
     std::shared_ptr<DMA> dma = std::make_shared<DMA>(0xFFC00C00, emulator);
     devices.emplace_back(dma);
+    serviced_.dma = dma;
     dma->AttachDMABus(DMAPeripheralType::DMAPeripheralPPI, ppi);
     dma->AttachDMABus(DMAPeripheralType::DMAPeripheralNFC, nfc);
     dma->AttachDMABus(DMAPeripheralType::DMAPeripheralSPORT0Rx, sport0);
@@ -218,6 +222,7 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
 
     std::shared_ptr<TWI> twi = std::make_shared<TWI>(0xFFC01400);
     devices.push_back(twi);
+    serviced_.twi = twi;
 
     for (int i = 0; i < 8; i++) {
         u32 addr = 0x20 + i;
@@ -258,6 +263,19 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     for (const auto& device : devices) {
         emulator.BindDevice(device.get());
     }
+    serviced_.nfc = nfc;
+    serviced_.coreTimer = coreTimer;
+    auto indexOf = [this](const Device* device) {
+        for (size_t i = 0; i < devices.size(); ++i)
+            if (devices[i].get() == device) return i;
+        throw std::logic_error("serviced device not in the device list");
+    };
+    serviced_.usbIndex = indexOf(serviced_.usb.get());
+    serviced_.nfcIndex = indexOf(serviced_.nfc.get());
+    serviced_.rtcIndex = indexOf(serviced_.rtc.get());
+    serviced_.dmaIndex = indexOf(serviced_.dma.get());
+    serviced_.coreTimerIndex = indexOf(serviced_.coreTimer.get());
+    serviced_.twiIndex = indexOf(serviced_.twi.get());
 
     std::array<GPIOPeripheral::GPIOConnection, OLED::DATA_PINS> oledDatabus{
         std::tuple<GPIOPeripheral&, int>{*portF, 0},
@@ -380,14 +398,9 @@ HaltReason BlackFinCpu::Run() {
     // Get active IVG from CEC
     int ivg = cec_current_ivg();
 #ifdef ENABLE_PROFILING
-    if (auto* stats = Service()) {
-        stats->current = stats->other;
-        ServiceDevicesCounted(ivg);
-    } else
+    if (auto* stats = Service()) stats->current = stats->other;
 #endif
-    for (const auto& device : devices) {
-        device->ProcessWithInterrupt(ivg);
-    }
+    ServiceDevices(ivg);
     // Drive the GP timers off the *delta* in cyclesElapsed, not off it landing
     // on a multiple. `cyclesElapsed % 10000 == 0` only fires when the sampled
     // value happens to be an exact multiple of 10000, which is essentially
@@ -500,6 +513,7 @@ u32 BlackFinCpu::PC() {
 void BlackFinCpu::QueueEvent(const std::function<void()>& event, std::chrono::nanoseconds delay) {
     std::unique_lock<std::recursive_mutex> lock(eventQueueMutex);
     eventQueue.push_back({delay, event});
+    eventCount_.store(eventQueue.size(), std::memory_order_release);
 #ifdef ENABLE_PROFILING
     if (auto* stats = Service()) stats->Queued();
 #endif
@@ -571,29 +585,52 @@ profiling::MemoryCensus& BlackFinCpu::EnableMemoryCensus() {
     if (core_->stats().blocks_translated) InvalidateTranslations();
     return *memoryCensus_;
 }
+#endif
 
-// The device loop of Run() with each call counted, and counted as productive
+// One service call. In census runs it is counted, and counted as productive
 // when it changed an interrupt level, queued an event other than a raise, or
-// moved data. Taken only in census runs.
-void BlackFinCpu::ServiceDevicesCounted(int ivg) {
-    auto& stats = *Service();
-    for (size_t i = 0; i < devices.size(); ++i) {
-        auto& source = stats.sources[i];
+// moved data. The call names D's method, so it is not a virtual call.
+template <class D>
+void BlackFinCpu::ServiceDevice(D& device, size_t index, int ivg) {
+#ifdef ENABLE_PROFILING
+    if (auto* stats = Service()) {
+        auto& source = stats->sources[index];
         const uint64_t before = source.transitions + source.queued;
-        const uint64_t work = devices[i]->ServiceWork();
-        stats.current = static_cast<int>(i);
-        devices[i]->ProcessWithInterrupt(ivg);
-        const uint64_t moved = devices[i]->ServiceWork() - work;
+        const uint64_t work = device.ServiceWork();
+        stats->current = static_cast<int>(index);
+        device.D::ProcessWithInterrupt(ivg);
+        const uint64_t moved = device.ServiceWork() - work;
         source.work += moved;
         ++source.calls;
         if (moved || source.transitions + source.queued != before) {
             ++source.productive;
-            ++stats.productiveTotal;
+            ++stats->productiveTotal;
         }
+        stats->current = stats->other;
+        return;
     }
-    stats.current = stats.other;
-}
 #endif
+    device.D::ProcessWithInterrupt(ivg);
+}
+
+// Between blocks, in the order of `devices`. Every other device has no
+// ProcessWithInterrupt of its own, and each of these is left out exactly when
+// its call would do nothing: the guest sees the same as if every device were
+// called after every block.
+void BlackFinCpu::ServiceDevices(int ivg) {
+    auto& s = serviced_;
+    // A disabled USB returns before moving data or publishing a level.
+    if (s.usb->Enabled()) ServiceDevice(*s.usb, s.usbIndex, ivg);
+    ServiceDevice(*s.nfc, s.nfcIndex, ivg);
+    ServiceDevice(*s.rtc, s.rtcIndex, ivg);
+    ServiceDevice(*s.dma, s.dmaIndex, ivg);
+    // The core timer only clears TINT, once the CPU is in its IVG.
+    if (ivg == IVG_IVTMR && s.coreTimer->InterruptPending())
+        ServiceDevice(*s.coreTimer, s.coreTimerIndex, ivg);
+    // Without an enabled master transfer, or inside the TWI's IVG, the TWI
+    // does nothing (MPROG is set and cleared within the call).
+    if (ivg != TWI::kIvg && s.twi->MasterActive()) ServiceDevice(*s.twi, s.twiIndex, ivg);
+}
 
 void BlackFinCpu::RaiseInterrupt(int ivg) {
 #ifdef ENABLE_PROFILING
@@ -617,8 +654,15 @@ void BlackFinCpu::RaiseInterrupt(int ivg) {
 }
 
 void BlackFinCpu::ProcessEvents() {
-    std::unique_lock<std::recursive_mutex> lock(eventQueueMutex);
     constexpr std::chrono::nanoseconds instructionTime(1); // Approximate instruction execution time
+    if (eventCount_.load(std::memory_order_acquire) == 0) {
+#ifdef ENABLE_PROFILING
+        if (auto* stats = Service()) ++stats->processCalls;
+#endif
+        elapsedTime += instructionTime;
+        return;
+    }
+    std::unique_lock<std::recursive_mutex> lock(eventQueueMutex);
 #ifdef ENABLE_PROFILING
     if (auto* stats = Service()) {
         const uint64_t length = eventQueue.size();
@@ -648,6 +692,7 @@ void BlackFinCpu::ProcessEvents() {
             ++it;
         }
     }
+    eventCount_.store(eventQueue.size(), std::memory_order_release);
     elapsedTime += instructionTime;
 #ifdef ENABLE_PROFILING
     if (auto* stats = Service()) stats->current = stats->other;
