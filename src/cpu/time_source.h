@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 
 // Where guest-visible time comes from. One of two models, fixed for the life
 // of the CPU:
@@ -50,6 +51,9 @@ public:
     // device the block accesses then sees the time of the packet accessing
     // it, not of the block's start.
     void SetBlockPackets(const uint32_t* index) { blockIndex_ = index; }
+    // While a run chains blocks (bcore's CpuState::chain_packets), the
+    // packets the blocks before the running one retired; 0 between runs.
+    void SetChainedPackets(const uint32_t* chained) { chained_ = chained; }
 
     uint64_t Cycles() const {
         if (deterministic_) return packets_ + InBlock();
@@ -70,15 +74,29 @@ public:
         return epoch_ + std::chrono::duration_cast<SystemClock::duration>(std::chrono::nanoseconds(Nanoseconds()));
     }
     void SetEpoch(SystemClock::time_point epoch) { epoch_ = epoch; }
+    // Deterministic mode: the first guest time at which SystemNow() reaches t.
+    uint64_t DueNs(SystemClock::time_point t) const {
+        static_assert(std::is_same_v<SystemClock::duration, std::chrono::nanoseconds>,
+                      "SystemNow() is epoch plus guest nanoseconds, exactly");
+        return t <= epoch_ ? 0 : uint64_t((t - epoch_).count());
+    }
+    // The first packet count at which Nanoseconds() reaches ns: the least p
+    // with p * 5 / 2 >= ns. UINT64_MAX for never.
+    static uint64_t PacketsAt(uint64_t ns) {
+        return ns >= UINT64_MAX / 2 ? UINT64_MAX : (ns * 2 + 4) / 5;
+    }
 
 private:
-    uint64_t InBlock() const { return blockIndex_ && *blockIndex_ ? *blockIndex_ - 1 : 0; }
+    uint64_t InBlock() const {
+        return (chained_ ? *chained_ : 0) + (blockIndex_ && *blockIndex_ ? *blockIndex_ - 1 : 0);
+    }
 
     bool deterministic_;
     SteadyClock::time_point start_;
     SystemClock::time_point epoch_;
     uint64_t packets_ = 0;
     const uint32_t* blockIndex_ = nullptr;
+    const uint32_t* chained_ = nullptr;
 };
 
 // The panel's TE output as a board oscillator on guest time: a 1 us low pulse
@@ -89,6 +107,8 @@ public:
     static constexpr uint64_t kPulseNs = 1000;
 
     // The level TE switches to at guest time nowNs (true = low), if any.
+    // Service() changes the level from this guest time on.
+    uint64_t DeadlineNs() const { return deadlineNs_; }
     std::optional<bool> Service(uint64_t nowNs) {
         if (nowNs < deadlineNs_) return std::nullopt;
         low_ = !low_;

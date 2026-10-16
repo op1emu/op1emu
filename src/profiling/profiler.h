@@ -69,9 +69,19 @@ public:
     Profiler(const Profiler&) = delete;
     Profiler& operator=(const Profiler&) = delete;
 
-    // Called by BlackFinCpu::Run around each block.
+    // A run from pc may run blocks after its first without the host seeing
+    // their starts (BlackFinCpu::SetChaining): not while the census, probes
+    // or checksums count blocks, not once --profile-until fired, and not
+    // from a host-only PC.
+    bool ChainingAllowed(uint32_t pc) const;
+    // Blocks at pc must start with the host: one may fire a mark.
+    bool HostOnly(uint32_t pc) const;
+
+    // Called by BlackFinCpu::Run around each run.
     void BeforeRun(uint32_t pc);
-    void AfterRun(uint32_t pc, uint32_t packets);
+    // A run from pc: packets retired and blocks run after the first (chained).
+    // In census runs a run is one block.
+    void AfterRun(uint32_t pc, uint32_t packets, uint32_t chained);
     // Called around bcore's cache flush at a boot ROM entry: it rebuilds the
     // JIT, which is compile-side cost, not execution.
     void BeforeInvalidate();

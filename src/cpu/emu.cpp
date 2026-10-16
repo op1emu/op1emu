@@ -192,6 +192,17 @@ void Emulator::RebuildDirectPages()
     }
 }
 
+bool Emulator::Quiet(u32 addr) const
+{
+    constexpr u32 kPageSize = 1u << PAGE_BITS;
+    if (addr >= 0xFFC00000) return false;
+    const Device* dev = get_device(addr, deviceSegments);
+    if (!dev || typeid(*dev) != typeid(MemoryDevice)) return false;
+    const u32 first = addr & ~(kPageSize - 1), last = first + (kPageSize - 1);
+    return readHooks.lower_bound(first) == readHooks.upper_bound(last) &&
+           writeHooks.lower_bound(first) == writeHooks.upper_bound(last);
+}
+
 bool Emulator::IsMemoryValid(u32 addr)
 {
     return get_device(addr, deviceSegments) != nullptr;

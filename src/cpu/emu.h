@@ -81,6 +81,10 @@ public:
     void RemoveSoftwareBreak(u32 addr);
 
     bool IsMemoryValid(u32 addr);
+    // An access at addr has no effect but on memory: a plain MemoryDevice
+    // (see DirectPages()) below the MMR space and no hook in its page.
+    // Anything else may give the host work between blocks.
+    bool Quiet(u32 addr) const;
     void RebuildDirectPages();
 
     const std::vector<Device*>& Devices() const { return devices; }

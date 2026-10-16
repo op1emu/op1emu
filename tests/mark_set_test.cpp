@@ -67,6 +67,17 @@ int main() {
         Require(set.OnBlock(0x0fffffff) == -1 && set.OnBlock(0x10000020) == 0, "wide range");
     }
     {
+        // The host runs every block in an unfired range (chaining skips the
+        // starts of the others): only those can fire a mark.
+        MarkSet set;
+        set.Add("a", 0x100, 0x1ff, -1);
+        set.Add("b", 0x01ab3000, 0x01ab301f, -1);
+        Require(set.InUnfired(0x100) && set.InUnfired(0x1ff) && set.InUnfired(0x01ab3010), "in unfired ranges");
+        Require(!set.InUnfired(0x200) && !set.InUnfired(0x01ab3000 + 4096 * 32), "outside, aliased chunk too");
+        Require(set.OnBlock(0x180) == 0 && !set.InUnfired(0x180) && set.InUnfired(0x01ab3000), "a fired range is free");
+        Require(set.OnBlock(0x01ab3000) == 1 && !set.InUnfired(0x01ab3000), "none left");
+    }
+    {
         MarkSet set;
         Require(Throws(set, "inverted", 0x200, 0x100, -1), "lo > hi is refused");
         Require(Throws(set, "early", 0x100, 0x200, 0), "after a mark that does not exist yet is refused");

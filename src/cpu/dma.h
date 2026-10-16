@@ -125,6 +125,8 @@ public:
     // or a bus notice since the last call, or a running channel whose bus may
     // move data. Otherwise every channel's transfer would return at once.
     bool NeedsService(uint64_t nowNs) const { return touched_ || nowNs >= idleUntil_; }
+    // Untouched, NeedsService() turns true at this guest time.
+    uint64_t IdleUntilNs() const { return idleUntil_; }
 
 protected:
     // Before when no running channel can move data (see DMABus::DMAIdleUntil).

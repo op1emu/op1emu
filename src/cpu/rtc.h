@@ -7,6 +7,7 @@ class TimeSource;
 
 class RTC : public RegisterDevice {
 public:
+    using TimePoint = std::chrono::system_clock::time_point;
     RTC(u32 baseAddr, const TimeSource& time);
 
     void Tick();  // Called periodically to update RTC state
@@ -16,6 +17,9 @@ public:
     // calendar has reached another second. Otherwise Tick() would only
     // publish the level it last published.
     bool NeedsTick() const;
+    // Deterministic mode: when NeedsTick() turns true without a write, the
+    // calendar's next change (a write makes it true at once).
+    TimePoint NextChange() const { return nextChange_; }
 
     void Write32(u32 offset, u32 value) override {
         written_ = true;
@@ -23,7 +27,6 @@ public:
     }
 
 private:
-    using TimePoint = std::chrono::system_clock::time_point;
     void UpdateInterrupts();
     u32 GetCurrentStat();
     u32 StatAt(TimePoint now) const;

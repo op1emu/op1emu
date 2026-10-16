@@ -41,7 +41,14 @@ public:
     // registers across an access that calls back here.
     bool callbacks_preserve_registers() const override { return true; }
 
+    // bcore's CpuState::chain_budget: an access that may give the host work
+    // (one that is not Emulator::Quiet) sets it to 0, so the run returns to
+    // the host after the block. Not owned.
+    void SetChainBudget(uint32_t* budget) { chainBudget_ = budget; }
 #ifdef ENABLE_PROFILING
+    // Accesses that stopped a run's chaining (BlackFinCpu's [chain] counts).
+    uint64_t ChainStops() const { return chainStops_; }
+
     // Counts guest accesses to the MMR space (0xFFC00000 and up). Not owned.
     void SetProfiler(Profiler* profiler) { profiler_ = profiler; }
     // Counts every access by device and width (census runs). Not owned.
@@ -49,10 +56,14 @@ public:
 #endif
 
 private:
+    void Attend(uint32_t addr) const;
+
     Emulator& emulator_;
+    uint32_t* chainBudget_ = nullptr;
 #ifdef ENABLE_PROFILING
     Profiler* profiler_ = nullptr;
     profiling::MemoryCensus* census_ = nullptr;
+    mutable uint64_t chainStops_ = 0;
     void Access(uint32_t addr, int widthIndex, bool write) const;
 #endif
 };

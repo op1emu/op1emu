@@ -33,6 +33,13 @@ void MarkSet::RebuildChunks() {
     }
 }
 
+bool MarkSet::InUnfired(uint32_t pc) const {
+    if (!left_ || !chunks_.test((pc >> 5) % chunks_.size())) return false;
+    for (const auto& mark : marks_)
+        if (!mark.fired && pc >= mark.lo && pc <= mark.hi) return true;
+    return false;
+}
+
 int MarkSet::OnBlock(uint32_t pc) {
     if (!left_) return -1;
     if (!chunks_.test((pc >> 5) % chunks_.size())) {

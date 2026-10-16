@@ -70,6 +70,8 @@ public:
     // ProcessWithInterrupt() has work at guest time nowNs: the next byte of
     // an enabled master transfer is due.
     bool NeedsService(uint64_t nowNs) const { return MasterActive() && nowNs >= nextByteNs_; }
+    // NeedsService() turns true at this guest time (UINT64_MAX: never).
+    uint64_t NextByteNs() const { return MasterActive() ? nextByteNs_ : UINT64_MAX; }
     static constexpr int kIvg = 10;  // no master progress while the CPU is in this IVG
 
     // How many times faster than the programmed SCL the bus runs. At the

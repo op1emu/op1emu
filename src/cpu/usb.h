@@ -106,6 +106,9 @@ public:
     void ProcessWithInterrupt(int ivg) override;
     // ProcessWithInterrupt() has work: the USB is enabled (GLOBAL_ENA), and
     // the guest accessed it or the host sent a request since the last call.
+    // Called on the thread that hands the USB a host request (the USB/IP
+    // loop), after the request is visible to NeedsService().
+    void SetHostRequestCallback(std::function<void()> callback) { onHostRequest_ = std::move(callback); }
     bool NeedsService() const {
         return enabled && (touched_ || hostRequest_.load(std::memory_order_acquire));
     }
@@ -133,6 +136,11 @@ protected:
     // Since the last ProcessWithInterrupt(): a guest access, a host request.
     bool touched_ = true;
     std::atomic<bool> hostRequest_{false};
+    std::function<void()> onHostRequest_;
+    void HostRequested() {
+        hostRequest_.store(true);
+        if (onHostRequest_) onHostRequest_();
+    }
 
     // Connection state
     bool connected = false;

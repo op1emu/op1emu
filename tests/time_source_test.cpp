@@ -69,6 +69,23 @@ int main() {
         Require(level && !*level, "second pulse ends 1 us later");
         level = panel.Service(33333334);
         Require(level && *level, "third frame at 2/60 s");
+        Require(panel.DeadlineNs() == 33334334, "the deadline is when Service() acts next");
+        Require(!panel.Service(panel.DeadlineNs() - 1) && panel.Service(panel.DeadlineNs()), "and not before");
+    }
+    {
+        // A chain budget in packets: the first packet count whose guest time
+        // reaches a due time, for every rounding of 2.5 ns per packet.
+        TimeSource time(true);
+        for (uint64_t ns = 0; ns < 2000; ++ns) {
+            const uint64_t p = TimeSource::PacketsAt(ns);
+            Require(p * 5 / 2 >= ns && (p == 0 || (p - 1) * 5 / 2 < ns), "PacketsAt is the least packet count reaching ns");
+        }
+        Require(TimeSource::PacketsAt(UINT64_MAX) == UINT64_MAX, "never stays never");
+        const auto epoch = time.SystemNow();
+        Require(time.DueNs(epoch) == 0 && time.DueNs(epoch - std::chrono::seconds(1)) == 0, "due now");
+        time.Retire(TimeSource::PacketsAt(time.DueNs(epoch + std::chrono::nanoseconds(1000000001))));
+        Require(time.SystemNow() >= epoch + std::chrono::nanoseconds(1000000001), "SystemNow reaches the due time");
+        Require((time.Packets() - 1) * 5 / 2 < 1000000001, "at the first packet that does");
     }
     std::puts("TimeSource and PanelOscillator tests passed");
 }

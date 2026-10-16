@@ -142,6 +142,7 @@ struct Profiler::Impl : BcoreEventSink {
     uint64_t endWall = 0;
 
     bool census = false;
+    bool stopping = false;  // --profile-until fired
     profiling::ServiceStats* service = nullptr;  // owned by the CPU (census runs)
     profiling::MemoryCensus* memory = nullptr;   // owned by the CPU (census runs)
     // Exit census: per block, the runs after which the host was needed
@@ -509,12 +510,26 @@ struct Profiler::Impl : BcoreEventSink {
         if (hw.IsOpen() && !countersFailed)
             std::printf(" host_insns=%" PRIu64 " host_cycles=%" PRIu64, c.hostInsns, c.hostCycles);
         std::printf(" deterministic=%d\n", cpu.Time().Deterministic() ? 1 : 0);
+        const auto& chains = cpu.Chains();
+        // Returns to the host by reason (BlackFinCpu::ChainCounts), cumulative.
+        std::printf("[chain] %s returns=%" PRIu64 " chained=%" PRIu64 " host_only=%" PRIu64 " service=%" PRIu64
+                    " deadline=%" PRIu64 " access=%" PRIu64 " cec=%" PRIu64 " pending=%" PRIu64 " miss=%" PRIu64
+                    " would=%" PRIu64 " violations=%" PRIu64,
+                    name, chains.runs, chains.chained, chains.hostOnly, chains.service, chains.deadline,
+                    chains.access, chains.cec, chains.pending, chains.miss, chains.would, chains.violations);
+        static const char* const kWork[] = {"service", "tick", "expiry", "panel", "event", "latch", "cec"};
+        for (size_t kind = 0; kind < sizeof(kWork) / sizeof(kWork[0]); ++kind)
+            if (chains.violation[kind]) std::printf(" violation_%s=%" PRIu64, kWork[kind], chains.violation[kind]);
+        std::printf("\n");
         std::fflush(stdout);
         if (census) DumpCensus(name);
         if (perfBegin == name) PerfWrite("enable\n");
         if (perfEnd == name) PerfWrite("disable\n");
         ReadAtMark(name);
-        if (options.until == name) requestStop();
+        if (options.until == name) {
+            stopping = true;
+            requestStop();
+        }
     }
 
     void ReadAtMark(const char* mark) {
@@ -805,6 +820,13 @@ Profiler::Profiler(const ProfilerOptions& options, BlackFinCpu& cpu, std::functi
 
 Profiler::~Profiler() = default;
 
+bool Profiler::ChainingAllowed(uint32_t pc) const {
+    const auto& impl = *impl_;
+    return !impl.census && !impl.probesOn && !impl.checksums && !impl.stopping && !HostOnly(pc);
+}
+
+bool Profiler::HostOnly(uint32_t pc) const { return impl_->marks.InUnfired(pc); }
+
 void Profiler::BeforeRun(uint32_t pc) {
     auto& impl = *impl_;
     if (!impl.started) impl.Start(pc);
@@ -841,9 +863,11 @@ void Profiler::BeforeInvalidate() { impl_->BeforeInvalidate(); }
 
 void Profiler::AfterInvalidate() { impl_->AfterInvalidate(); }
 
-void Profiler::AfterRun(uint32_t pc, uint32_t packets) {
+void Profiler::AfterRun(uint32_t pc, uint32_t packets, uint32_t chained) {
     auto& impl = *impl_;
-    ++impl.runs;
+    // Runs count blocks: those a run chained too (never in census runs, so
+    // the PC census below stays per block).
+    impl.runs += 1 + chained;
     if (impl.census) {
         auto& count = impl.pcCensus[pc];
         ++count.runs;

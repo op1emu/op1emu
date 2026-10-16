@@ -211,6 +211,9 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     // Every core timer expiry latches IVG6, once: TINT is its status, not a
     // line the core keeps latching while it is set.
     coreTimer->BindExpiry([this] {
+#ifdef ENABLE_PROFILING
+        ++hostWork_[kWorkExpiry];
+#endif
         coreTimerExpired_ = true;
         LatchLines();
     });
@@ -299,6 +302,10 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
 
     // Initialize bcore after all devices are bound
     bcoreMemory_ = std::make_unique<EmulatorMemory>(emulator);
+    bcoreMemory_->SetChainBudget(&cpuState_->chain_budget);
+    // A host request reaches the USB on the USB/IP thread; the CPU thread
+    // services it after its next block.
+    usb->SetHostRequestCallback([this] { StopChaining(); });
     core_ = std::make_shared<Core>(cpuState_.get(), bcoreMemory_.get());
     // IR pipeline at O1, backend at CodeGenOpt::Default. Until bcore wired
     // optimize_module into compilation, the IR level only ever affected the
@@ -318,6 +325,23 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     cpuState_->usp = 0x7000000;
     cpuState_->syscfg = 0x30;
     time_.SetBlockPackets(&cpuState_->packets);
+    time_.SetChainedPackets(&cpuState_->chain_packets);
+
+    // Every block the host would not do anything after runs the next itself
+    // (SetChaining); the host runs every block at a PC it rejects here.
+    core_->set_chain_filter([this](uint32_t pc) {
+        if (pc == 0xFFA00000) return false;
+#ifdef ENABLE_PROFILING
+        if (profiler_ && profiler_->HostOnly(pc)) return false;
+#endif
+        return true;
+    });
+    // A chained block that accesses CYCLES sees it advance as this host's
+    // Run() writes it: from the packets in deterministic mode. In wall mode
+    // the next run would write a host clock that may lag behind, so CYCLES
+    // keeps the run's first value instead.
+    core_->set_host_cycles(deterministic);
+    SetChaining(false);
 
     time_.StartWallClock();
 }
@@ -378,6 +402,16 @@ HaltReason BlackFinCpu::Run() {
 #ifdef ENABLE_PROFILING
     if (auto* stats = Service()) stats->current = stats->block;
 #endif
+    // How far the run may chain blocks before the host has work. Another
+    // thread stops it by setting the budget to 0 after what it hands the CPU
+    // thread (StopChaining()), so look at that after setting it.
+    const uint32_t budget = ChainBudget(cpuState_->pc);
+    __atomic_store_n(&cpuState_->chain_budget, budget, __ATOMIC_SEQ_CST);
+    if (budget && (inboxPending_.load() || serviced_.usb->NeedsService() || offThreadLatch_.exchange(false)))
+        StopChaining();
+#ifdef ENABLE_PROFILING
+    const uint64_t accessStops = bcoreMemory_->ChainStops();
+#endif
     // Execute one basic block — bcore updates cpuState_->pc internally.
     // Hardware loops, PC advance, and hwloop counters are all handled by bcore.
     if (!core_->run(cpuState_->pc)) {
@@ -387,15 +421,29 @@ HaltReason BlackFinCpu::Run() {
         failed_.store(true, std::memory_order_release);
         return HaltReason::Break;
     }
-    // Retired, and cleared so the guest time stops counting them twice
-    // (TimeSource::SetBlockPackets).
-    const uint32_t packets = cpuState_->packets;
+    // Retired, the run's blocks chained after the first included, and
+    // cleared so the guest time stops counting them twice
+    // (TimeSource::SetBlockPackets, SetChainedPackets).
+    const uint32_t packets = cpuState_->chain_packets + cpuState_->packets;
+    const uint32_t chained = cpuState_->chain_blocks;
     cpuState_->packets = 0;
+    cpuState_->chain_packets = 0;
+    cpuState_->chain_blocks = 0;
     time_.Retire(packets);
 #ifdef ENABLE_PROFILING
-    if (profiler_) profiler_->AfterRun(blockPc, packets);
+    if (profiler_) profiler_->AfterRun(blockPc, packets, chained);
+    CountChain(budget, packets, chained, accessStops);
+    // Dry run: the block would have run the next one itself, so the host
+    // must have nothing to do now.
+    const bool would = cpuState_->chain_would;
+    const auto workBefore = hostWork_;
+#else
+    (void)chained;
 #endif
     cpuState_->did_jump = false; // Clear jump flag set by bcore, since we handle it in the emulator loop
+#ifdef ENABLE_PROFILING
+    if (*cpuState_->cec_pending) ++hostWork_[kWorkCec];
+#endif
     cec_check_pending(cpuState_.get());
 
     // Get active IVG from CEC
@@ -423,8 +471,6 @@ HaltReason BlackFinCpu::Run() {
     // interrupts for as long as the gap was.
     // FIXME: still one shared rate for all three clock domains, which is not
     // how SCLK/TACLK/TMRCLK relate on real hardware.
-    constexpr uint64_t kCyclesPerTimerTick = 10000;
-    constexpr uint64_t kMaxCatchupTicks = 64;
     uint64_t ticks = (blockEnd - lastTimerCycles_) / kCyclesPerTimerTick;
     if (ticks) {
         lastTimerCycles_ += ticks * kCyclesPerTimerTick;
@@ -436,6 +482,7 @@ HaltReason BlackFinCpu::Run() {
         }
 #ifdef ENABLE_PROFILING
         if (auto* stats = Service()) stats->timerTicks += ticks;
+        ++hostWork_[kWorkTimerTick];
 #endif
         for (uint64_t i = 0; i < ticks; ++i) {
             gptimer->Tick(GPTimerClockTypeSCLK);
@@ -449,8 +496,69 @@ HaltReason BlackFinCpu::Run() {
     // Lines still high get latched again, and a latched interrupt is taken
     // before the next block.
     LatchLines();
+#ifdef ENABLE_PROFILING
+    if (*cpuState_->cec_pending) ++hostWork_[kWorkCec];
+#endif
     cec_check_pending(cpuState_.get());
+#ifdef ENABLE_PROFILING
+    if (would) {
+        bool violated = false;
+        for (size_t kind = 0; kind < kWorkKinds; ++kind) {
+            if (hostWork_[kind] == workBefore[kind]) continue;
+            ++chainCounts_.violation[kind];
+            violated = true;
+        }
+        chainCounts_.violations += violated;
+    }
+#endif
     return HaltReason::Break;
+}
+
+// Before a run: how many packets it may retire before the host has work
+// between blocks. The host acts after a block when a device it services has
+// work (an access, a transfer, a due time), when an event, the panel's TE,
+// the core timer or a GP timer tick is due, or when the CEC changed: the
+// accesses and the CEC set the budget to 0 as they happen (EmulatorMemory,
+// bcore), and the rest are guest times known now. A block that ends at or
+// past the earliest of them returns, so the host does all of it after the
+// same block as it would after every block.
+uint32_t BlackFinCpu::ChainBudget(uint32_t pc) {
+    if (!chaining_) return 0;
+#ifdef ENABLE_PROFILING
+    chainReason_ = kChainHostOnly;
+    if (profiler_ && !profiler_->ChainingAllowed(pc)) return 0;
+#endif
+    // The host drops every translation there (Run()).
+    if (pc == 0xFFA00000) return 0;
+#ifdef ENABLE_PROFILING
+    chainReason_ = kChainService;
+#endif
+    auto& s = serviced_;
+    const uint64_t nowNs = time_.Nanoseconds();
+    // Constant while the run chains: an IVG change returns.
+    const int ivg = cec_current_ivg();
+    if (inboxPending_.load(std::memory_order_relaxed) || s.usb->NeedsService() || s.nfc->NeedsService() ||
+        s.rtc->NeedsTick() || s.dma->NeedsService(nowNs) ||
+        (ivg == IVG_IVTMR && s.coreTimer->InterruptPending()) ||
+        (ivg != TWI::kIvg && s.twi->NeedsService(nowNs)))
+        return 0;
+#ifdef ENABLE_PROFILING
+    chainReason_ = kChainDue;
+#endif
+    if (!time_.Deterministic()) return kWallChainPackets;
+    uint64_t dueNs = std::min({nextEventNs_, panel_.DeadlineNs(), s.dma->IdleUntilNs(),
+                               time_.DueNs(s.rtc->NextChange())});
+    if (ivg != TWI::kIvg) dueNs = std::min(dueNs, s.twi->NextByteNs());
+    // In packets (= cycles in deterministic mode).
+    uint64_t due = std::min(TimeSource::PacketsAt(dueNs), lastTimerCycles_ + kCyclesPerTimerTick);
+    if (auto expiry = s.coreTimer->NextExpiry()) due = std::min(due, *expiry);
+    const uint64_t now = time_.Packets();
+    return due <= now ? 0 : uint32_t(std::min<uint64_t>(due - now, kMaxChainPackets));
+}
+
+void BlackFinCpu::SetChaining(bool chaining, bool dry) {
+    chaining_ = chaining;
+    core_->set_chaining(chaining, dry);
 }
 
 #ifdef ENABLE_PROFILING
@@ -464,11 +572,29 @@ BcoreStats BlackFinCpu::CoreStats() const { return core_->stats(); }
 void BlackFinCpu::SetCoreEventSink(BcoreEventSink* sink) { core_->setEventSink(sink); }
 
 void BlackFinCpu::SetPerfJitdump(bool enable) { core_->set_perf_jitdump(enable); }
+
+// Why the run returned to the host.
+void BlackFinCpu::CountChain(uint32_t budget, uint32_t retired, uint32_t chained, uint64_t accessStops) {
+    auto& c = chainCounts_;
+    ++c.runs;
+    c.chained += chained;
+    if (cpuState_->chain_would) ++c.would;
+    else if (!budget) ++(chainReason_ == kChainHostOnly ? c.hostOnly : c.service);
+    else if (retired >= budget) ++c.deadline;
+    else if (bcoreMemory_->ChainStops() != accessStops) ++c.access;
+    else if (!cpuState_->chain_budget) ++c.cec;
+    else if (*cpuState_->cec_pending) ++c.pending;
+    else ++c.miss;
+}
 #endif
 
 void BlackFinCpu::ServicePanel() {
-    if (auto low = panel_.Service(time_.Nanoseconds()))
+    if (auto low = panel_.Service(time_.Nanoseconds())) {
+#ifdef ENABLE_PROFILING
+        ++hostWork_[kWorkPanel];
+#endif
         portG->SetPinInput(3, *low ? GPIOPinLevel::Low : GPIOPinLevel::High);
+    }
 }
 
 void BlackFinCpu::SetRegister(int index, u32 value) {
@@ -528,13 +654,24 @@ void BlackFinCpu::QueueEvent(const std::function<void()>& event, std::chrono::na
         const uint64_t ticks = delay.count() > 0 ? uint64_t(delay.count()) : 0;
         ScheduleEvent(event, time_.Nanoseconds() + ticks);
     } else {
-        std::lock_guard<std::mutex> lock(inboxMutex_);
-        inbox_.emplace_back(delay, event);
-        inboxPending_.store(true, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(inboxMutex_);
+            inbox_.emplace_back(delay, event);
+            inboxPending_.store(true);
+        }
+        StopChaining();
     }
 #ifdef ENABLE_PROFILING
     if (auto* stats = Service()) stats->Queued();
 #endif
+}
+
+// From any thread: the CPU's current run returns to the host after its block.
+// Another thread sets what the host is to do first, then calls this; the CPU
+// thread sets the budget, then looks at what other threads set (sequentially
+// consistent both ways, so one of them sees the other).
+void BlackFinCpu::StopChaining() {
+    __atomic_store_n(&cpuState_->chain_budget, 0, __ATOMIC_SEQ_CST);
 }
 
 void BlackFinCpu::ScheduleEvent(std::function<void()> event, uint64_t dueNs) {
@@ -553,7 +690,11 @@ void BlackFinCpu::LatchLines() {
     if (!lines && !coreTimerExpired_) return;
     // Another thread (the USB/IP loop) must not touch the CEC; the CPU thread
     // latches the line after its next block.
-    if (std::this_thread::get_id() != cpuThread_.load(std::memory_order_relaxed)) return;
+    if (std::this_thread::get_id() != cpuThread_.load(std::memory_order_relaxed)) {
+        offThreadLatch_.store(true);
+        StopChaining();
+        return;
+    }
     const uint32_t ilat = cec_mmr_read(cpuState_.get(), CEC_MMR_BASE + 4 * CEC_IDX_ILAT);
     const uint32_t ipend = cec_mmr_read(cpuState_.get(), CEC_MMR_BASE + 4 * CEC_IDX_IPEND);
     u16 latch = lines & ~(ilat | ipend);
@@ -646,6 +787,7 @@ profiling::MemoryCensus& BlackFinCpu::EnableMemoryCensus() {
 template <class D>
 void BlackFinCpu::ServiceDevice(D& device, size_t index, int ivg) {
 #ifdef ENABLE_PROFILING
+    ++hostWork_[kWorkService];
     if (auto* stats = Service()) {
         auto& source = stats->sources[index];
         const uint64_t before = source.transitions + source.queued;
@@ -686,6 +828,7 @@ void BlackFinCpu::ServiceDevices(int ivg) {
 
 void BlackFinCpu::RaiseInterrupt(int ivg) {
 #ifdef ENABLE_PROFILING
+    ++hostWork_[kWorkLatch];
     // Only a raise that sets a new ILAT bit is something the guest can see;
     // LatchLines() raises only those.
     const uint32_t ilatAddr = CEC_MMR_BASE + 4 * CEC_IDX_ILAT;
@@ -716,6 +859,9 @@ void BlackFinCpu::ProcessEvents() {
             inbox.swap(inbox_);
             inboxPending_.store(false, std::memory_order_relaxed);
         }
+#ifdef ENABLE_PROFILING
+        ++hostWork_[kWorkEvent];
+#endif
         for (auto& [delay, event] : inbox)
             ScheduleEvent(std::move(event), now + (delay.count() > 0 ? uint64_t(delay.count()) : 0));
     }
@@ -736,6 +882,9 @@ void BlackFinCpu::ProcessEvents() {
         std::pop_heap(events_.begin(), events_.end(), std::greater<>());
         auto event = std::move(events_.back().run);
         events_.pop_back();
+#ifdef ENABLE_PROFILING
+        ++hostWork_[kWorkEvent];
+#endif
         event();
 #ifdef ENABLE_PROFILING
         ++eventsDelivered_;

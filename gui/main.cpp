@@ -110,6 +110,8 @@ static int RunEmulator(int argc, char* argv[]) {
     std::string profileTraceEvents;
     bool perfJitdump = false;
     bool profileCounters = false;
+    bool noChain = false;
+    bool chainDry = false;
     bool profileProbes = false;
     const std::pair<const char*, std::string*> valueOptions[] = {
         {"--profile-marks", &profileMarks}, {"--profile-trace", &profileTrace},
@@ -128,6 +130,8 @@ static int RunEmulator(int argc, char* argv[]) {
         else if (options && arg == "--nand-snapshot") nandSnapshot = true;
         else if (options && arg == "--headless") headless = true;
         else if (options && arg == "--deterministic") deterministic = true;
+        else if (options && arg == "--no-chain") noChain = true;
+        else if (options && arg == "--profile-chain-dry") chainDry = anyProfiling = true;
         else if (options && arg == "--rtc-epoch") {
             if (++i == argc) throw std::runtime_error("--rtc-epoch requires seconds since 1970");
             size_t used = 0;
@@ -181,6 +185,7 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --deterministic       Guest time from executed instructions, not host time:\n"
                      "                        repeatable runs, as fast as the host allows\n"
                      "  --rtc-epoch SECONDS   RTC time at boot with --deterministic (default 2024-01-01)\n"
+                     "  --no-chain            Return to the host after every guest block\n"
                      "  --twi-speedup N       Run the I2C bus N times faster than programmed\n"
                      "                        (default 10; 1 is the hardware's rate)\n"
                      "  --build-info          Print what this binary was built from (JSON) and exit\n"
@@ -195,6 +200,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --profile-counters    CPU thread's user-space instructions and cycles at every mark\n"
                      "  --profile-checksum F  Guest-state checksum every N blocks (diagnostic)\n"
                      "  --profile-probes      Capture the marks file's probes (diagnostic)\n"
+                     "  --profile-chain-dry   Blocks only report that they would chain; check that\n"
+                     "                        the host then has nothing to do ([chain] violations)\n"
                      "  --profile-dump-ir PCS Write the LLVM IR of blocks at these PCs (comma-separated hex)\n"
                      "  --profile-dump-dir D  Directory for those files (default ir)\n"
                      "  --profile-checksum-every N  Blocks between checksums (default 65536)\n"
@@ -247,6 +254,10 @@ static int RunEmulator(int argc, char* argv[]) {
     // Create BlackFin CPU
     BlackFinCpu cpu(deterministic);
     cpu.SetTwiSpeedup(twiSpeedup);
+    // An LDR runs with the host looking at the PC after every block
+    // (LdrExecutionThread).
+    if (chainDry && noChain) throw std::runtime_error("--profile-chain-dry checks chaining: not with --no-chain");
+    cpu.SetChaining(chainDry && positional.size() < 2, chainDry);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
 #ifdef ENABLE_PROFILING
     std::unique_ptr<Profiler> profiler;

@@ -74,6 +74,30 @@ public:
     USBDevice& GetUSB() { return *usb; }
 
     void SetBootMode(int mode);
+    // Whether a run may go on from one block to the next without returning
+    // here (bcore's CpuState::chain_budget), until the host has work. With
+    // dry, blocks only report that they would have (profiling builds check
+    // that the host then had nothing to do). Before the first Run().
+    void SetChaining(bool chaining, bool dry = false);
+#ifdef ENABLE_PROFILING
+    // Returns to the host by why the run ended (cumulative), and the dry
+    // run's checks: profiling's [chain] lines.
+    struct ChainCounts {
+        uint64_t runs = 0;        // returns to the host
+        uint64_t chained = 0;     // blocks run without a return before them
+        uint64_t hostOnly = 0;    // the run started where it may not chain
+        uint64_t service = 0;     // a device had work before the run
+        uint64_t deadline = 0;    // the budget ran out: a device or event came due
+        uint64_t access = 0;      // a device access
+        uint64_t cec = 0;         // an interrupt entry or return, an exception or a halt
+        uint64_t pending = 0;     // an interrupt may be pending
+        uint64_t miss = 0;        // the next block was not in the chain table
+        uint64_t would = 0;       // dry: the block would have chained
+        uint64_t violations = 0;  // dry: ... but the host had work after it
+        std::array<uint64_t, 8> violation{};  // by HostWork kind
+    };
+    const ChainCounts& Chains() const { return chainCounts_; }
+#endif
     // See TWI::SetSpeedup.
     void SetTwiSpeedup(unsigned speedup);
 
@@ -175,6 +199,26 @@ protected:
     // Set by the first Run(); until then every caller counts as another thread.
     std::atomic<std::thread::id> cpuThread_{};
     void ScheduleEvent(std::function<void()> event, uint64_t dueNs);
+    void StopChaining();
+    // Packets the run starting at pc may retire before the host has work.
+    uint32_t ChainBudget(uint32_t pc);
+    bool chaining_ = false;
+    static constexpr uint32_t kMaxChainPackets = 1u << 24;
+    // Wall mode: no packet count says when a device is due.
+    static constexpr uint32_t kWallChainPackets = 4096;
+    // The GP timers tick every kCyclesPerTimerTick guest cycles (see Run()).
+    static constexpr uint64_t kCyclesPerTimerTick = 10000;
+    static constexpr uint64_t kMaxCatchupTicks = 64;
+#ifdef ENABLE_PROFILING
+    // The host's work between blocks, by kind, for the dry run's check.
+    enum HostWork { kWorkService, kWorkTimerTick, kWorkExpiry, kWorkPanel, kWorkEvent, kWorkLatch, kWorkCec, kWorkKinds };
+    std::array<uint64_t, kWorkKinds> hostWork_{};
+    ChainCounts chainCounts_;
+    void CountChain(uint32_t budget, uint32_t retired, uint32_t chained, uint64_t accessStops);
+    enum ChainReason { kChainHostOnly, kChainService, kChainDue } chainReason_ = kChainDue;
+#endif
+    // A line rose on another thread (LatchLines() left it to the CPU thread).
+    std::atomic<bool> offThreadLatch_{false};
 #ifdef ENABLE_PROFILING
     Profiler* profiler_ = nullptr;
     uint64_t eventsDelivered_ = 0;

@@ -33,6 +33,10 @@ public:
 
     // A block starts at pc: returns the index of the mark that fires, or -1.
     int OnBlock(uint32_t pc);
+    // Whether pc is in the range of a mark that has not fired. Only a block
+    // that starts in one can fire a mark, and only a block whose start the
+    // host sees (OnBlock) can.
+    bool InUnfired(uint32_t pc) const;
 
 private:
     void RebuildChunks();

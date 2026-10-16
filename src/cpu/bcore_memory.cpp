@@ -16,6 +16,17 @@ void EmulatorMemory::Access(uint32_t addr, int widthIndex, bool write) const {
 EmulatorMemory::EmulatorMemory(Emulator& emulator)
     : emulator_(emulator) {}
 
+// Generated code calls here only for what is not in DirectPages(): the MMRs,
+// mostly. The CPU thread is the only one running guest code, but other
+// threads set the budget to 0 too.
+void EmulatorMemory::Attend(uint32_t addr) const {
+    if (!chainBudget_ || emulator_.Quiet(addr)) return;
+#ifdef ENABLE_PROFILING
+    if (__atomic_load_n(chainBudget_, __ATOMIC_RELAXED)) ++chainStops_;
+#endif
+    __atomic_store_n(chainBudget_, 0, __ATOMIC_RELAXED);
+}
+
 uint32_t EmulatorMemory::base() const {
     return 0;
 }
@@ -30,31 +41,37 @@ uintptr_t EmulatorMemory::fast_base() const {
 
 uint8_t EmulatorMemory::read8(uint32_t addr) const {
     PROFILE_ACCESS(addr, 0, false);
+    Attend(addr);
     return emulator_.MemoryRead8(addr);
 }
 
 uint16_t EmulatorMemory::read16(uint32_t addr) const {
     PROFILE_ACCESS(addr, 1, false);
+    Attend(addr);
     return emulator_.MemoryRead16(addr);
 }
 
 uint32_t EmulatorMemory::read32(uint32_t addr) const {
     PROFILE_ACCESS(addr, 2, false);
+    Attend(addr);
     return emulator_.MemoryRead32(addr);
 }
 
 void EmulatorMemory::write8(uint32_t addr, uint8_t val) {
     PROFILE_ACCESS(addr, 0, true);
+    Attend(addr);
     emulator_.MemoryWrite8(addr, val);
 }
 
 void EmulatorMemory::write16(uint32_t addr, uint16_t val) {
     PROFILE_ACCESS(addr, 1, true);
+    Attend(addr);
     emulator_.MemoryWrite16(addr, val);
 }
 
 void EmulatorMemory::write32(uint32_t addr, uint32_t val) {
     PROFILE_ACCESS(addr, 2, true);
+    Attend(addr);
     emulator_.MemoryWrite32(addr, val);
 }
 

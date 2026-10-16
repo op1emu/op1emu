@@ -401,7 +401,7 @@ void USB::HandleSetupPacket(USBSetupBytes setup, const u8* data, std::size_t len
     ep0.dataPacketReceived = true;
     epTxInterrupts |= (1 << 0);
     // The CPU thread publishes the interrupt at its next service.
-    hostRequest_.store(true, std::memory_order_release);
+    HostRequested();
 }
 
 void USB::HandleDataWrite(int ep, int interval, const u8* data, std::size_t length, WriteDoneCallback callback) {
@@ -416,7 +416,7 @@ void USB::HandleDataWrite(int ep, int interval, const u8* data, std::size_t leng
     endpoint.dataPacketReceived = true;
     endpoint.rxCallback = callback;
     epRxInterrupts |= (1 << ep);
-    hostRequest_.store(true, std::memory_order_release);
+    HostRequested();
 }
 
 void USB::HandleDataRead(int ep, int interval, std::size_t limit, ReplyCallback callback) {
@@ -425,7 +425,7 @@ void USB::HandleDataRead(int ep, int interval, std::size_t limit, ReplyCallback 
     auto& endpoint = endpoints[ep];
     endpoint.txLimit = limit;
     endpoint.txCallback = callback;
-    hostRequest_.store(true, std::memory_order_release);
+    HostRequested();
 }
 
 void USB::ProcessTransfer() {
