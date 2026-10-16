@@ -12,9 +12,30 @@ public:
     void Tick();  // Called periodically to update RTC state
     void ProcessWithInterrupt(int ivg) override;
 
+    // Tick() has work: a register was written since the last Tick(), or the
+    // calendar has reached another second. Otherwise Tick() would only
+    // publish its level again, which ReplayInterrupt() does.
+    bool NeedsTick() const;
+    void ReplayInterrupt() const { TriggerInterrupt(level_); }
+
+    void Write32(u32 offset, u32 value) override {
+        written_ = true;
+        RegisterDevice::Write32(offset, value);
+    }
+
 private:
+    using TimePoint = std::chrono::system_clock::time_point;
     void UpdateInterrupts();
     u32 GetCurrentStat();
+    u32 StatAt(TimePoint now) const;
+    // The first time at or after `now` at which StatAt() changes.
+    TimePoint NextStatChange(TimePoint now) const;
+
+    // Between Tick()s: a register write, and what the last Tick() saw.
+    bool written_ = true;
+    int level_ = 0;
+    TimePoint lastTick_;
+    TimePoint nextChange_;
 
     bool stopwatchIntEnabled = false;
     bool alarmIntEnabled = false;

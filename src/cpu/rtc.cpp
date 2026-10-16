@@ -86,19 +86,35 @@ static std::chrono::system_clock::time_point BlackfinToTime(u32 rtcBfin) {
     return std::chrono::system_clock::time_point(std::chrono::seconds(totalSeconds));
 }
 
-u32 RTC::GetCurrentStat() {
-    auto now = time_.SystemNow();
+u32 RTC::StatAt(TimePoint now) const {
     return TimeToBlackfin(now - baseTime + BlackfinToTime(statShadow));
+}
+
+u32 RTC::GetCurrentStat() {
+    return StatAt(time_.SystemNow());
+}
+
+RTC::TimePoint RTC::NextStatChange(TimePoint now) const {
+    // StatAt() is a function of whole seconds of `calendar`, truncated toward
+    // zero by TimeToBlackfin.
+    const auto calendar = (now - baseTime + BlackfinToTime(statShadow)).time_since_epoch();
+    if (calendar < calendar.zero()) return now + TimePoint::duration(1);  // not worth exactness
+    const auto next = std::chrono::duration_cast<std::chrono::seconds>(calendar) + std::chrono::seconds(1);
+    return now + (next - calendar);
+}
+
+bool RTC::NeedsTick() const {
+    if (written_) return true;
+    const auto now = time_.SystemNow();
+    // A host clock set back (wall mode) can change the calendar any time.
+    return now >= nextChange_ || now < lastTick_;
 }
 
 void RTC::UpdateInterrupts() {
     u32 ictl = Read32(0x04);
     u32 istat = Read32(0x08);
-    if ((ictl & istat) != 0) {
-        TriggerInterrupt(1);
-    } else {
-        TriggerInterrupt(0);
-    }
+    level_ = (ictl & istat) != 0 ? 1 : 0;
+    TriggerInterrupt(level_);
 }
 
 void RTC::Tick() {
@@ -152,6 +168,9 @@ void RTC::Tick() {
 
     lastStat = currentStat;
     UpdateInterrupts();
+    written_ = false;
+    lastTick_ = time_.SystemNow();
+    nextChange_ = NextStatChange(lastTick_);
 }
 
 void RTC::ProcessWithInterrupt(int ivg) {

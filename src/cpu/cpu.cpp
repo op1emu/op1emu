@@ -622,7 +622,19 @@ void BlackFinCpu::ServiceDevices(int ivg) {
     // A disabled USB returns before moving data or publishing a level.
     if (s.usb->Enabled()) ServiceDevice(*s.usb, s.usbIndex, ivg);
     ServiceDevice(*s.nfc, s.nfcIndex, ivg);
-    ServiceDevice(*s.rtc, s.rtcIndex, ivg);
+    // The RTC publishes its level after every block, which the SIC answers by
+    // raising every pending line again: between its ticks it still has to.
+    if (s.rtc->NeedsTick()) {
+        ServiceDevice(*s.rtc, s.rtcIndex, ivg);
+    } else {
+#ifdef ENABLE_PROFILING
+        if (auto* stats = Service()) stats->current = static_cast<int>(s.rtcIndex);
+#endif
+        s.rtc->ReplayInterrupt();
+#ifdef ENABLE_PROFILING
+        if (auto* stats = Service()) stats->current = stats->other;
+#endif
+    }
     ServiceDevice(*s.dma, s.dmaIndex, ivg);
     // The core timer only clears TINT, once the CPU is in its IVG.
     if (ivg == IVG_IVTMR && s.coreTimer->InterruptPending())
