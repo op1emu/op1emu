@@ -356,6 +356,12 @@ static void CoreTimerCountsGuestCycles() {
     at(1600);
     Require(timer.Read32(0x0C) == 0 && rises == 4, "reading TCOUNT brings the count up to date (TCNTL cleared TINT)");
     Require(timer.NextExpiry() == std::nullopt, "and expires it");
+    // Enabled first, loaded after: counting starts with the load.
+    timer.Write32(0x00, 7);
+    Require(!timer.NextExpiry(), "nothing to count with TCOUNT 0");
+    at(2000);
+    timer.Write32(0x04, 10);
+    Require(timer.NextExpiry() == 2020u, "a TPERIOD write starts an enabled timer");
 }
 
 // An unpaced peripheral (the PPI, MDMA) moves a row once its elements' SCLK

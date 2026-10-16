@@ -207,7 +207,8 @@ uint64_t DMAChannel::IdleUntil() const {
     const u32 pace = CyclesPerElement(*bus);
     if (!pace) return idle;
     // Guest nanoseconds are 2.5 per cycle, rounded down: cycles >= c exactly
-    // when nanoseconds >= c * 5 / 2.
+    // when nanoseconds >= c * 5 / 2 (in wall mode about then: at worst the
+    // DMA is called before its row is due, and moves nothing).
     const uint64_t dueCycles = pacedFrom_ + uint64_t(length / elementBytes) * pace;
     return std::max(idle, dueCycles * 5 / 2);
 }

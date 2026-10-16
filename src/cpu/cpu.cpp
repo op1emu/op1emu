@@ -208,10 +208,14 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     sic->SetLineRaisedCallback([this](u16) { LatchLines(); });
     devices.push_back(sic);
     coreTimer = std::make_shared<CoreTimer>(0xFFE03000, time_);
-    // The core timer's interrupt is a line of the core's own, IVG6.
+    // The core timer latches IVG6 when it expires, once: TINT is its status,
+    // not a line the core keeps latching while it is set.
     coreTimer->BindInterrupt(IVG_IVTMR, [this](int ivg, int level) {
-        coreTimerLine_ = level != 0;
-        if (coreTimerLine_) LatchLines();
+        if (level && !coreTimerLevel_) {
+            coreTimerExpired_ = true;
+            LatchLines();
+        }
+        coreTimerLevel_ = level != 0;
     });
     devices.emplace_back(coreTimer);
 
@@ -548,14 +552,15 @@ void BlackFinCpu::ScheduleEvent(std::function<void()> event, uint64_t dueNs) {
 // ISR returns or the guest clears its ILAT bit. Inside a block (a register
 // write raised the line) the core takes the interrupt at its next check.
 void BlackFinCpu::LatchLines() {
-    const u16 lines = sic->Lines() | (coreTimerLine_ ? 1u << IVG_IVTMR : 0u);
-    if (!lines) return;
+    const u16 lines = sic->Lines();
+    if (!lines && !coreTimerExpired_) return;
     // Another thread (the USB/IP loop) must not touch the CEC; the CPU thread
     // latches the line after its next block.
     if (std::this_thread::get_id() != cpuThread_.load(std::memory_order_relaxed)) return;
     const uint32_t ilat = cec_mmr_read(cpuState_.get(), CEC_MMR_BASE + 4 * CEC_IDX_ILAT);
     const uint32_t ipend = cec_mmr_read(cpuState_.get(), CEC_MMR_BASE + 4 * CEC_IDX_IPEND);
     u16 latch = lines & ~(ilat | ipend);
+    if (coreTimerExpired_) latch |= 1u << IVG_IVTMR;  // an edge: latched even while IVG6 runs
     if (!latch) return;
     // bcore's cec_raise() is the RAISE instruction: in user mode it raises an
     // exception instead. A peripheral cannot, so wait for supervisor mode.
@@ -570,6 +575,7 @@ void BlackFinCpu::LatchLines() {
 #endif
         return;
     }
+    coreTimerExpired_ = false;
     for (; latch; latch &= latch - 1) {
         const int ivg = __builtin_ctz(latch);
 #ifdef ENABLE_PROFILING
@@ -701,8 +707,9 @@ void BlackFinCpu::RaiseInterrupt(int ivg) {
 #endif
 }
 
-// Runs the events due by now, in due order. One an event queues for now or
-// earlier runs in the same call.
+// Runs the events due by now, in due order. An event that queues another
+// for now or earlier runs it in the same call (in wall mode the clock has
+// moved on by then, so it may wait for the next).
 void BlackFinCpu::ProcessEvents() {
     const uint64_t now = time_.Nanoseconds();
     if (inboxPending_.load(std::memory_order_acquire)) {
@@ -749,12 +756,14 @@ void BlackFinCpu::AttachDisplay(const std::shared_ptr<Display>& display) {
     // frontend only presents pixels. Wall mode keeps the frontend's host poll.
     if (time_.Deterministic()) return;
     display->SetOnFrameStartCallback([this](Display& disp) {
+        // The end of the pulse is timed from its start on the CPU thread, so
+        // the pin is low for at least the next block.
         this->QueueEvent([this]() {
             this->portG->SetPinInput(3, GPIOPinLevel::Low);
+            this->QueueEvent([this]() {
+                this->portG->SetPinInput(3, GPIOPinLevel::High);
+            }, std::chrono::nanoseconds(1000));
         });
-        this->QueueEvent([this]() {
-            this->portG->SetPinInput(3, GPIOPinLevel::High);
-        }, std::chrono::nanoseconds(1000));
     });
 }
 

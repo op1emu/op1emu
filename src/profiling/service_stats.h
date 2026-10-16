@@ -32,7 +32,7 @@ struct ServiceStats {
         uint64_t published = 0;  // interrupt levels published to the SIC
         uint64_t transitions = 0;  // ... that changed the pin's level
         uint64_t queued = 0;     // events queued, other than interrupt raises
-        uint64_t raises = 0;     // interrupt raises queued
+        uint64_t raises = 0;     // interrupt raises queued: none since lines are levels, kept for the schema
         uint64_t work = 0;       // data the device moved (DMA: bytes)
     };
     struct Pin {
@@ -44,9 +44,8 @@ struct ServiceStats {
     std::vector<Source> sources;
     int block = 0, events = 0, other = 0;  // indexes of the non-device sources
     int current = 0;                       // the source running now
-    bool raising = false;                  // inside an interrupt-raise QueueEvent
     std::array<Pin, 64> pins{};
-    std::array<uint64_t, 16> forwarded{};  // raises the SIC queued, per IVG
+    std::array<uint64_t, 16> forwarded{};  // high lines the CPU latched, per IVG
     std::array<uint64_t, 16> raised{};     // raises delivered to the CEC, per IVG
     uint64_t processCalls = 0, nonEmptyCalls = 0, lengthSum = 0, lengthMax = 0;
     std::atomic<uint64_t> queuedOtherThreads{0};
@@ -69,8 +68,7 @@ struct ServiceStats {
     bool OnCpuThread() const { return std::this_thread::get_id() == cpuThread.load(std::memory_order_relaxed); }
     void Published(int pin, int level);
     void Forwarded(int ivg);
-    void SetRaising(bool value);
-    void Queued();  // with the event queue's lock held
+    void Queued();  // from any thread
 
     // Cumulative counts as JSON (op1.service.v1), with the CEC's per-level
     // latched and taken interrupts and bcore's dispatch counts beside them.

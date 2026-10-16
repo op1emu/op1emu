@@ -51,7 +51,8 @@ protected:
 class TimeSource;
 
 // The master moves a byte every nine SCL periods of guest time: SCL is
-// CLKHI + CLKLOW periods of the 10 MHz reference PRESCALE derives from SCLK,
+// CLKHI + CLKLOW periods of the 10 MHz reference PRESCALE is meant to derive
+// from SCLK (taken as 10 MHz whatever PRESCALE says),
 // divided by a speedup (SetSpeedup; 1 is the hardware's rate). An address
 // byte comes first; a full receive FIFO or an empty transmit FIFO holds SCL
 // until the guest makes room or data.

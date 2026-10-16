@@ -184,7 +184,8 @@ protected:
     std::atomic<profiling::ServiceStats*> service_{nullptr};
     profiling::ServiceStats* Service() const { return service_.load(std::memory_order_acquire); }
 #endif
-    bool coreTimerLine_ = false;
+    bool coreTimerLevel_ = false;    // TINT, as the core timer last published it
+    bool coreTimerExpired_ = false;  // an expiry not latched yet (user mode holds it)
     bool userModeLatchWarned_ = false;
 #ifdef ENABLE_PROFILING
     uint64_t userModeLatchDeferred_ = 0;

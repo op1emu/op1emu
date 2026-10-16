@@ -124,8 +124,10 @@ void RTC::Tick() {
         CountServiceWork(1);
     }
 
-    // Check for second tick
-    u32 currentStat = GetCurrentStat();
+    // Check for second tick. One reading of the clock for the whole tick: in
+    // wall mode a second could otherwise pass between two.
+    const TimePoint now = time_.SystemNow();
+    u32 currentStat = StatAt(now);
     auto currentStatTime = BlackfinToTime(currentStat);
     auto secondsSinceLast = std::chrono::duration_cast<std::chrono::seconds>(currentStatTime - BlackfinToTime(lastStat)).count();
 
@@ -133,7 +135,6 @@ void RTC::Tick() {
     if (prescalerEnabled && secondsSinceLast >= 1) {
         secondsEvent = true;
 
-        u32 currentStat = GetCurrentStat();
         auto&& [days, hour, min, sec] = GetBlackfinTime(currentStat);
         if (sec == 0) {
             minutesEvent = true;
@@ -168,8 +169,8 @@ void RTC::Tick() {
     lastStat = currentStat;
     UpdateInterrupts();
     written_ = false;
-    lastTick_ = time_.SystemNow();
-    nextChange_ = NextStatChange(lastTick_);
+    lastTick_ = now;
+    nextChange_ = NextStatChange(now);
 }
 
 void RTC::ProcessWithInterrupt(int ivg) {

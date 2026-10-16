@@ -56,18 +56,13 @@ void ServiceStats::Forwarded(int ivg) {
     if (ivg >= 0 && ivg < static_cast<int>(forwarded.size())) ++forwarded[ivg];
 }
 
-void ServiceStats::SetRaising(bool value) {
-    if (OnCpuThread()) raising = value;
-}
-
 void ServiceStats::Queued() {
     if (!OnCpuThread()) {
         queuedOtherThreads.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     auto& source = sources[current];
-    if (raising) ++source.raises;
-    else ++source.queued;
+    ++source.queued;
 }
 
 static void WriteString(FILE* file, const std::string& text) {

@@ -33,6 +33,8 @@ protected:
     u32 CountAt(u64 cycles) const;
     // Starts or stops counting when TMPWR/TMREN changed, at guest time `cycles`.
     void UpdateCounting(u64 cycles);
+    // TCOUNT has a new value, at guest time `cycles`.
+    void Reload(u64 cycles);
     void UpdateInterrups();
 
     bool power      = false;

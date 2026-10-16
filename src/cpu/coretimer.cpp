@@ -20,7 +20,7 @@ CoreTimer::CoreTimer(u32 baseAddr, const TimeSource& time)
     TPERIOD.writeCallback = [this](u32 v) {
         // Writes to TPERIOD are mirrored into TCOUNT
         tcount = v;
-        if (origin_) origin_ = time_.Cycles();
+        Reload(time_.Cycles());
     };
 
     REG32(TSCALE, 0x08);
@@ -28,9 +28,7 @@ CoreTimer::CoreTimer(u32 baseAddr, const TimeSource& time)
 
     REG32(TCOUNT, 0x0C);
     FIELD(TCOUNT, VAL, 0, 32, R(origin_ ? CountAt(time_.Cycles()) : tcount), W(tcount));
-    TCOUNT.writeCallback = [this](u32 v) {
-        if (origin_) origin_ = time_.Cycles();
-    };
+    TCOUNT.writeCallback = [this](u32 v) { Reload(time_.Cycles()); };
 }
 
 u64 CoreTimer::CyclesPerTick() const {
@@ -47,6 +45,13 @@ u32 CoreTimer::CountAt(u64 cycles) const {
 std::optional<u64> CoreTimer::NextExpiry() const {
     if (!origin_) return std::nullopt;
     return *origin_ + u64(tcount) * CyclesPerTick();
+}
+
+void CoreTimer::Reload(u64 cycles) {
+    // A running count restarts from the new value; an enabled timer that had
+    // nothing to count starts now.
+    if (origin_) origin_ = cycles;
+    else UpdateCounting(cycles);
 }
 
 void CoreTimer::UpdateCounting(u64 cycles) {

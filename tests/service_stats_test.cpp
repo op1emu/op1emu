@@ -41,13 +41,12 @@ int main() {
         std::thread other([&] {
             stats.Published(52, 1);
             stats.Forwarded(13);
-            stats.SetRaising(true);
             stats.Queued();
         });
         other.join();
         Require(stats.publishedOtherThreads == 1 && stats.forwardedOtherThreads == 1 && stats.queuedOtherThreads == 1,
                 "another thread's publication, forward and event are counted apart");
-        Require(stats.pins[52].published == 0 && stats.forwarded[13] == 0 && !stats.raising,
+        Require(stats.pins[52].published == 0 && stats.forwarded[13] == 0,
                 "and leave the CPU thread's state alone");
         for (const auto& source : stats.sources)
             Require(source.published == 0 && source.queued == 0 && source.raises == 0,
