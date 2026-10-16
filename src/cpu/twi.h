@@ -51,9 +51,10 @@ protected:
 class TimeSource;
 
 // The master moves a byte every nine SCL periods of guest time: SCL is
-// CLKHI + CLKLOW periods of the 10 MHz reference PRESCALE derives from SCLK.
-// An address byte comes first; a full receive FIFO or an empty transmit FIFO
-// holds SCL until the guest makes room or data.
+// CLKHI + CLKLOW periods of the 10 MHz reference PRESCALE derives from SCLK,
+// divided by a speedup (SetSpeedup; 1 is the hardware's rate). An address
+// byte comes first; a full receive FIFO or an empty transmit FIFO holds SCL
+// until the guest makes room or data.
 class TWI : public RegisterDevice {
 public:
     explicit TWI(u32 baseAddr, const TimeSource* time = nullptr);
@@ -70,6 +71,14 @@ public:
     bool NeedsService(uint64_t nowNs) const { return MasterActive() && nowNs >= nextByteNs_; }
     static constexpr int kIvg = 10;  // no master progress while the CPU is in this IVG
 
+    // How many times faster than the programmed SCL the bus runs. At the
+    // hardware's rate the stock boot spends 167 ms more guest time on I2C than
+    // the emulator used to (it moved two bytes per block) and executes 5.9%
+    // more packets to the main display; the default keeps the rate a model
+    // of guest time while the bus stays fast.
+    static constexpr unsigned kDefaultSpeedup = 10;
+    void SetSpeedup(unsigned speedup) { speedup_ = speedup ? speedup : 1; }
+
     void Write32(u32 offset, u32 value) override;
 
 protected:
@@ -81,6 +90,7 @@ protected:
     void Unstall();
 
     const TimeSource* time_;
+    unsigned speedup_ = kDefaultSpeedup;
     // When the master's next byte completes; UINT64_MAX while the FIFO
     // holds it.
     uint64_t nextByteNs_ = 0;

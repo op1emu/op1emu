@@ -407,6 +407,7 @@ static void DmaPacesUnpacedBuses() {
 static void TwiPacesBytes() {
     TimeSource time(true);
     TWI twi(0xFFC01400, &time);
+    twi.SetSpeedup(1);  // the hardware's rate
     twi.AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x20, 0x5A));
     std::vector<uint64_t> fifoAt;  // guest ns at which the receive FIFO grew
     auto fifo = [&] { return (twi.Read32(0x2C) >> 2) & 3; };  // FIFO_STAT RCVSTAT
@@ -437,6 +438,15 @@ static void TwiPacesBytes() {
     run(300000);
     Require(fifoAt.size() == 3 && fifoAt[2] >= read + 21600 && fifoAt[2] < read + 21600 + 20,
             "a read releases SCL: the next byte 21.6 us after it");
+    twi.SetSpeedup(10);
+    twi.Read32(0x88);
+    twi.Read32(0x88);
+    twi.Write32(0x14, 1 << 6 | 4 | 1);  // read 1 byte, 10 times faster
+    const uint64_t start = time.Nanoseconds();
+    const size_t before = fifoAt.size();
+    run(time.Nanoseconds() + 10000);
+    Require(fifoAt.size() == before + 1 && fifoAt.back() >= start + 4320 && fifoAt.back() < start + 4320 + 20,
+            "a speedup of 10 divides the byte time");
 }
 
 int main() {

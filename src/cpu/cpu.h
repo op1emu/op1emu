@@ -74,6 +74,8 @@ public:
     USBDevice& GetUSB() { return *usb; }
 
     void SetBootMode(int mode);
+    // See TWI::SetSpeedup.
+    void SetTwiSpeedup(unsigned speedup);
 
     // True once the JIT could not translate or run a block. The CPU state is
     // then no longer advancing, so the host should stop instead of retrying.

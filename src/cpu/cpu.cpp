@@ -791,6 +791,10 @@ void BlackFinCpu::SetPotentiometerValue(u8 value) {
     });
 }
 
+void BlackFinCpu::SetTwiSpeedup(unsigned speedup) {
+    serviced_.twi->SetSpeedup(speedup);
+}
+
 void BlackFinCpu::SetBootMode(int mode) {
     sic->SetBootMode(mode);
 }

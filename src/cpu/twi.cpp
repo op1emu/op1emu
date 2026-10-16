@@ -140,7 +140,7 @@ uint64_t TWI::Now() const { return time_ ? time_->Nanoseconds() : 0; }
 uint64_t TWI::ByteNs() const {
     if (!time_) return 0;
     const uint64_t periods = std::max<uint64_t>(u64(clkHigh) + clkLow, 1);
-    return 9 * periods * 100;  // 9 SCL periods of the 10 MHz reference
+    return std::max<uint64_t>(9 * periods * 100 / speedup_, 1);  // 9 SCL periods of the 10 MHz reference
 }
 
 void TWI::Unstall() {

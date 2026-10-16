@@ -1,5 +1,6 @@
 #include "loader/ldr.h"
 #include "cpu/cpu.h"
+#include "cpu/twi.h"
 #include "peripheral/MT29F4G08.h"
 #include "utils/log.h"
 #include "glfw_display.h"
@@ -99,6 +100,7 @@ static int RunEmulator(int argc, char* argv[]) {
     bool headless = false;
     bool deterministic = false;
     std::optional<long long> rtcEpoch;
+    unsigned twiSpeedup = TWI::kDefaultSpeedup;
     bool help = false;
     bool options = true;
     std::string inputScript;
@@ -138,6 +140,15 @@ static int RunEmulator(int argc, char* argv[]) {
                                          std::to_string(TimeSource::kMaxEpochSeconds) + "): " + argv[i]);
             rtcEpoch = seconds;
         }
+        else if (options && arg == "--twi-speedup") {
+            if (++i == argc) throw std::runtime_error("--twi-speedup requires a factor");
+            size_t used = 0;
+            long long factor = -1;
+            try { factor = std::stoll(argv[i], &used); } catch (const std::exception&) {}
+            if (used == 0 || argv[i][used] != '\0' || factor < 1 || factor > 100000)
+                throw std::runtime_error(std::string("Invalid --twi-speedup (1..100000): ") + argv[i]);
+            twiSpeedup = static_cast<unsigned>(factor);
+        }
         else if (options && arg == "--perf-jitdump") perfJitdump = anyProfiling = true;
         else if (options && arg == "--profile-counters") profileCounters = anyProfiling = true;
         else if (options && arg == "--profile-probes") profileProbes = anyProfiling = true;
@@ -170,6 +181,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --deterministic       Guest time from executed instructions, not host time:\n"
                      "                        repeatable runs, as fast as the host allows\n"
                      "  --rtc-epoch SECONDS   RTC time at boot with --deterministic (default 2024-01-01)\n"
+                     "  --twi-speedup N       Run the I2C bus N times faster than programmed\n"
+                     "                        (default 10; 1 is the hardware's rate)\n"
                      "  --build-info          Print what this binary was built from (JSON) and exit\n"
                      "Profiling builds (-DENABLE_PROFILING=ON, see docs/profiling.md):\n"
                      "  --profile-marks FILE  Phase marks (firmware PC ranges, verified frame)\n"
@@ -233,6 +246,7 @@ static int RunEmulator(int argc, char* argv[]) {
 
     // Create BlackFin CPU
     BlackFinCpu cpu(deterministic);
+    cpu.SetTwiSpeedup(twiSpeedup);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
 #ifdef ENABLE_PROFILING
     std::unique_ptr<Profiler> profiler;
