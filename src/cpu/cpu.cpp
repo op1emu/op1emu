@@ -205,20 +205,13 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     devices.emplace_back(portH);
 
     sic = std::make_shared<SIC>(0xFFC00100);
-    sic->SetInterruptForwardCallback([this](int ivg, int level) {
-        if (level) {
-#ifdef ENABLE_PROFILING
-            if (auto* stats = Service()) stats->Forwarded(ivg);
-#endif
-            QueueRaise(ivg);
-        }
-    });
+    sic->SetLineRaisedCallback([this](u16) { LatchLines(); });
     devices.push_back(sic);
-    nfc->SetIVGResolver([this]() { return sic->GetIVG(IRQ_NFC); });
-    nfc->SetRoutingVersion(sic->Version());
     coreTimer = std::make_shared<CoreTimer>(0xFFE03000, time_);
+    // The core timer's interrupt is a line of the core's own, IVG6.
     coreTimer->BindInterrupt(IVG_IVTMR, [this](int ivg, int level) {
-        if (level) QueueRaise(ivg);
+        coreTimerLine_ = level != 0;
+        if (coreTimerLine_) LatchLines();
     });
     devices.emplace_back(coreTimer);
 
@@ -450,6 +443,10 @@ HaltReason BlackFinCpu::Run() {
 
     if (time_.Deterministic()) ServicePanel();
     ProcessEvents();
+    // Lines still high get latched again, and a latched interrupt is taken
+    // before the next block.
+    LatchLines();
+    cec_check_pending(cpuState_.get());
     return HaltReason::Break;
 }
 
@@ -543,14 +540,41 @@ void BlackFinCpu::ScheduleEvent(std::function<void()> event, uint64_t dueNs) {
     nextEventNs_ = events_.front().dueNs;
 }
 
-void BlackFinCpu::QueueRaise(int ivg) {
+// Latches every interrupt line that is high and neither latched (ILAT) nor
+// being serviced (IPEND): the core's level-sensitive inputs. Called when a
+// line rises and after every block, which covers a line still high when its
+// ISR returns or the guest clears its ILAT bit. Inside a block (a register
+// write raised the line) the core takes the interrupt at its next check.
+void BlackFinCpu::LatchLines() {
+    const u16 lines = sic->Lines() | (coreTimerLine_ ? 1u << IVG_IVTMR : 0u);
+    if (!lines) return;
+    // Another thread (the USB/IP loop) must not touch the CEC; the CPU thread
+    // latches the line after its next block.
+    if (std::this_thread::get_id() != cpuThread_.load(std::memory_order_relaxed)) return;
+    const uint32_t ilat = cec_mmr_read(cpuState_.get(), CEC_MMR_BASE + 4 * CEC_IDX_ILAT);
+    const uint32_t ipend = cec_mmr_read(cpuState_.get(), CEC_MMR_BASE + 4 * CEC_IDX_IPEND);
+    u16 latch = lines & ~(ilat | ipend);
+    if (!latch) return;
+    // bcore's cec_raise() is the RAISE instruction: in user mode it raises an
+    // exception instead. A peripheral cannot, so wait for supervisor mode.
+    constexpr uint32_t kSupervisorPend = ~0x11u;  // all but EMU and IRPTEN
+    if (!(ipend & kSupervisorPend)) {
+        if (!userModeLatchWarned_) {
+            LogWarn("interrupt lines 0x%04x held off: bcore cannot latch them in user mode", latch);
+            userModeLatchWarned_ = true;
+        }
 #ifdef ENABLE_PROFILING
-    if (auto* stats = Service()) stats->SetRaising(true);
+        ++userModeLatchDeferred_;
 #endif
-    QueueEvent([this, ivg]() { RaiseInterrupt(ivg); });
+        return;
+    }
+    for (; latch; latch &= latch - 1) {
+        const int ivg = __builtin_ctz(latch);
 #ifdef ENABLE_PROFILING
-    if (auto* stats = Service()) stats->SetRaising(false);
+        if (auto* stats = Service()) stats->Forwarded(ivg);
 #endif
+        RaiseInterrupt(ivg);
+    }
 }
 
 #ifdef ENABLE_PROFILING
@@ -638,37 +662,15 @@ void BlackFinCpu::ServiceDevice(D& device, size_t index, int ivg) {
 }
 
 // Between blocks, in the order of `devices`. Every other device has no
-// ProcessWithInterrupt of its own, and each of these is left out exactly when
-// its call would do nothing: the guest sees the same as if every device were
-// called after every block.
+// ProcessWithInterrupt of its own, and each of these is left out when its call
+// would change nothing: publishing a level that is already published does
+// nothing since the core's inputs are levels (LatchLines()).
 void BlackFinCpu::ServiceDevices(int ivg) {
     auto& s = serviced_;
     // A disabled USB returns before moving data or publishing a level.
     if (s.usb->Enabled()) ServiceDevice(*s.usb, s.usbIndex, ivg);
-    if (s.nfc->NeedsService(ivg)) {
-        ServiceDevice(*s.nfc, s.nfcIndex, ivg);
-    } else {
-#ifdef ENABLE_PROFILING
-        if (auto* stats = Service()) stats->current = static_cast<int>(s.nfcIndex);
-#endif
-        s.nfc->ReplayInterrupt();
-#ifdef ENABLE_PROFILING
-        if (auto* stats = Service()) stats->current = stats->other;
-#endif
-    }
-    // The RTC publishes its level after every block, which the SIC answers by
-    // raising every pending line again: between its ticks it still has to.
-    if (s.rtc->NeedsTick()) {
-        ServiceDevice(*s.rtc, s.rtcIndex, ivg);
-    } else {
-#ifdef ENABLE_PROFILING
-        if (auto* stats = Service()) stats->current = static_cast<int>(s.rtcIndex);
-#endif
-        s.rtc->ReplayInterrupt();
-#ifdef ENABLE_PROFILING
-        if (auto* stats = Service()) stats->current = stats->other;
-#endif
-    }
+    if (s.nfc->NeedsService()) ServiceDevice(*s.nfc, s.nfcIndex, ivg);
+    if (s.rtc->NeedsTick()) ServiceDevice(*s.rtc, s.rtcIndex, ivg);
     if (s.dma->NeedsService(time_.Nanoseconds())) ServiceDevice(*s.dma, s.dmaIndex, ivg);
     // The core timer only clears TINT, once the CPU is in its IVG.
     if (ivg == IVG_IVTMR && s.coreTimer->InterruptPending())
@@ -680,9 +682,8 @@ void BlackFinCpu::ServiceDevices(int ivg) {
 
 void BlackFinCpu::RaiseInterrupt(int ivg) {
 #ifdef ENABLE_PROFILING
-    // A level the guest has not taken yet is raised again on every block
-    // while it stays asserted; only a raise that sets a new ILAT bit is
-    // something the guest can see.
+    // Only a raise that sets a new ILAT bit is something the guest can see;
+    // LatchLines() raises only those.
     const uint32_t ilatAddr = CEC_MMR_BASE + 4 * CEC_IDX_ILAT;
     const uint32_t before = cec_mmr_read(cpuState_.get(), ilatAddr);
     if (auto* stats = Service(); stats && ivg >= 0 && ivg < 16) {

@@ -32,7 +32,7 @@ SIC::SIC(u32 baseAddr) : RegisterDevice("SIC", baseAddr, 0x100) {
             imask[i] = v;
         };
         FIELD(IMASK, IMASK, 0, 32, imask_r, imask_w);
-        IMASK.writeCallback = [this](u32 v) { ForwardInterrupts(); };
+        IMASK.writeCallback = [this](u32 v) { UpdateLines(); };
 
         // IAR0-3 - Interrupt Assignment Registers
         for (u32 j = 0; j < 4; j++) {
@@ -45,6 +45,7 @@ SIC::SIC(u32 baseAddr) : RegisterDevice("SIC", baseAddr, 0x100) {
                 iar[index] = v;
             };
             FIELD(IAR, IAR, 0, 32, r, w);
+            IAR.writeCallback = [this](u32 v) { UpdateLines(); };
         }
 
         REG32(ISR, 0x20 + i * 0x40);
@@ -86,23 +87,18 @@ void SIC::SetInterruptLevel(int pin, int level) {
         isr[bank] &= ~bit;
     }
 
-    ForwardInterrupts();
+    UpdateLines();
 }
 
-void SIC::ForwardInterrupts() {
-    for (int i = 0; i < 2; i++) {
-        // Process pending and unmasked interrupts
-        u32 ipend = isr[i] & imask[i];
-
-        if (!ipend) continue;
-
-        for (int pin = 0; pin < 32; pin++) {
-            u32 bit = 1 << pin;
-
-            // This bit isn't pending, check next one
-            if (!(ipend & bit)) continue;
-
-            forwardInterrupt(GetIVG(i * 32 + pin), 1);
+void SIC::UpdateLines() {
+    u16 lines = 0;
+    for (int bank = 0; bank < 2; bank++) {
+        for (u32 pending = isr[bank] & imask[bank]; pending; pending &= pending - 1) {
+            const int ivg = GetIVG(bank * 32 + __builtin_ctz(pending));
+            if (ivg < 16) lines |= 1u << ivg;  // an IAR value past IVG15 routes nowhere
         }
     }
+    const u16 rising = lines & ~lines_;
+    lines_ = lines;
+    if (rising && lineRaised) lineRaised(rising);
 }

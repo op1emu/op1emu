@@ -1,9 +1,12 @@
 // A device serviced only when it has work must show the guest exactly what
 // the same device shows when it is serviced after every block: each test
 // drives two instances with the same inputs, one polled at every step and one
-// through its service contract, and compares what the guest can observe.
+// through its service contract, and compares what the guest can observe. An
+// interrupt is a level, so what counts is the level last published, not how
+// often it was published again.
 #include "cpu/dma.h"
 #include "cpu/nand.h"
+#include "cpu/sic.h"
 #include "cpu/sport.h"
 #include "cpu/rtc.h"
 #include "cpu/time_source.h"
@@ -15,8 +18,6 @@
 #include <random>
 #include <string>
 #include <vector>
-
-extern int cec_current_ivg();
 
 static void Require(bool ok, const std::string& message) {
     if (!ok) {
@@ -35,9 +36,9 @@ static std::vector<u32> RtcRegisters(RTC& rtc) {
 static void RtcMatchesPolling(uint32_t seed) {
     TimeSource polledTime(true), scheduledTime(true);
     RTC polled(0xFFC00300, polledTime), scheduled(0xFFC00300, scheduledTime);
-    std::vector<int> polledLevels, scheduledLevels;
-    polled.BindInterrupt(14, [&](int, int level) { polledLevels.push_back(level); });
-    scheduled.BindInterrupt(14, [&](int, int level) { scheduledLevels.push_back(level); });
+    int polledLevel = 0, scheduledLevel = 0;
+    polled.BindInterrupt(14, [&](int, int level) { polledLevel = level; });
+    scheduled.BindInterrupt(14, [&](int, int level) { scheduledLevel = level; });
 
     std::mt19937 rng(seed);
     uint64_t ticks = 0;
@@ -73,13 +74,11 @@ static void RtcMatchesPolling(uint32_t seed) {
         if (scheduled.NeedsTick()) {
             scheduled.Tick();
             ++ticks;
-        } else {
-            scheduled.ReplayInterrupt();
         }
         Require(RtcRegisters(polled) == RtcRegisters(scheduled),
                 "seed " + std::to_string(seed) + ": registers differ at step " + std::to_string(step));
-        Require(polledLevels == scheduledLevels,
-                "seed " + std::to_string(seed) + ": published levels differ at step " + std::to_string(step));
+        Require(polledLevel == scheduledLevel,
+                "seed " + std::to_string(seed) + ": RTC levels differ at step " + std::to_string(step));
     }
     Require(ticks < 20000, "the scheduled RTC must skip calls with nothing to do");
 }
@@ -135,16 +134,9 @@ static void NfcMatchesPolling(uint32_t seed) {
     auto polledFlash = std::make_shared<StepFlash>(), scheduledFlash = std::make_shared<StepFlash>();
     polled.AttachNandFlash(polledFlash);
     scheduled.AttachNandFlash(scheduledFlash);
-    std::vector<int> polledLevels, scheduledLevels;
-    polled.BindInterrupt(48, [&](int, int level) { polledLevels.push_back(level); });
-    scheduled.BindInterrupt(48, [&](int, int level) { scheduledLevels.push_back(level); });
-    // The NFC's ISR is running when the resolver names the current IVG.
-    const int current = cec_current_ivg();
-    int routedTo = current + 1;
-    uint64_t routing = 0;
-    polled.SetIVGResolver([&] { return routedTo; });
-    scheduled.SetIVGResolver([&] { return routedTo; });
-    scheduled.SetRoutingVersion(&routing);
+    int polledLevel = 0, scheduledLevel = 0;
+    polled.BindInterrupt(48, [&](int, int level) { polledLevel = level; });
+    scheduled.BindInterrupt(48, [&](int, int level) { scheduledLevel = level; });
 
     std::mt19937 rng(seed);
     uint64_t services = 0;
@@ -152,7 +144,7 @@ static void NfcMatchesPolling(uint32_t seed) {
         // What one block does to the NFC.
         const int ops = rng() % 4 == 0 ? rng() % 3 + 1 : 0;
         for (int op = 0; op < ops; ++op) {
-            const int kind = rng() % 9;
+            const int kind = rng() % 8;
             if (kind == 0) {
                 static const u8 commands[] = {0xFF, 0x00, 0x30, 0x80, 0x10, 0x60, 0xD0, 0x70, 0x90};
                 const u8 command = commands[rng() % 9];
@@ -180,27 +172,21 @@ static void NfcMatchesPolling(uint32_t seed) {
                 const u32 length = 1 + rng() % 512;
                 Require(polled.DMAWrite(0, 0, data, length) == scheduled.DMAWrite(0, 0, data, length),
                         "DMAWrite differs");
-            } else if (kind == 7) {
-                // The firmware routes the NFC to another IVG (an SIC_IAR write).
-                routedTo = routedTo == current ? current + 1 : current;
-                ++routing;
             } else {
                 polled.Write32(0x24, 1);
                 scheduled.Write32(0x24, 1);
             }
         }
-        polled.ProcessWithInterrupt(current);
-        if (scheduled.NeedsService(current)) {
-            scheduled.ProcessWithInterrupt(current);
+        polled.ProcessWithInterrupt(-1);
+        if (scheduled.NeedsService()) {
+            scheduled.ProcessWithInterrupt(-1);
             ++services;
-        } else {
-            scheduled.ReplayInterrupt();
         }
         polledFlash->EndOfBlock();
         scheduledFlash->EndOfBlock();
         Require(NfcRegisters(polled) == NfcRegisters(scheduled),
                 "seed " + std::to_string(seed) + ": NFC registers differ at step " + std::to_string(step));
-        Require(polledLevels == scheduledLevels,
+        Require(polledLevel == scheduledLevel,
                 "seed " + std::to_string(seed) + ": NFC levels differ at step " + std::to_string(step));
     }
     Require(services < 20000 * 3 / 4, "the scheduled NFC must skip calls with nothing to do: " + std::to_string(services));
@@ -295,7 +281,34 @@ static void AudioMatchesPolling(uint32_t seed) {
     Require(services < steps / 2, "the scheduled DMA must skip calls with nothing to do: " + std::to_string(services));
 }
 
+// The SIC's outputs are levels: high while a routed pin is asserted and
+// unmasked, whatever else is published.
+static void SicLines() {
+    SIC sic(0xFFC00100);
+    std::vector<u16> rising;
+    sic.SetLineRaisedCallback([&](u16 lines) { rising.push_back(lines); });
+    sic.Write32(0x0C, 1u << 14);           // SIC_IMASK0: unmask pin 14 (RTC)
+    // SIC_IAR1 routes pins 8..15: pin 14 to IVG 7 + 4 = 11.
+    sic.Write32(0x14, 0x04000000);
+    Require(sic.Lines() == 0 && rising.empty(), "no pin asserted");
+    sic.SetInterruptLevel(14, 1);
+    Require(sic.Lines() == 1u << 11 && rising == std::vector<u16>{1u << 11}, "pin 14 drives IVG11");
+    sic.SetInterruptLevel(14, 1);
+    sic.SetInterruptLevel(15, 1);           // masked
+    Require(rising.size() == 1, "publishing the same level again raises nothing");
+    Require(sic.Lines() == 1u << 11, "a masked pin drives nothing");
+    sic.Write32(0x14, 0x05000000);         // reroute pin 14 to IVG12
+    Require(sic.Lines() == 1u << 12 && rising.back() == 1u << 12, "IAR writes move the line");
+    sic.Write32(0x0C, 0);
+    Require(sic.Lines() == 0, "IMASK drops the line");
+    sic.Write32(0x0C, 1u << 14);
+    Require(sic.Lines() == 1u << 12 && rising.size() == 3, "unmasking a pending pin raises its line");
+    sic.SetInterruptLevel(14, 0);
+    Require(sic.Lines() == 0, "deasserting the pin drops the line");
+}
+
 int main() {
+    SicLines();
     for (uint32_t seed = 1; seed <= 20; ++seed) RtcMatchesPolling(seed);
     for (uint32_t seed = 1; seed <= 20; ++seed) NfcMatchesPolling(seed);
     for (uint32_t seed = 1; seed <= 10; ++seed) AudioMatchesPolling(seed);

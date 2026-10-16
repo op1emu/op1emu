@@ -185,27 +185,12 @@ void NFC::CalculateECC(const u8* data, u32 length) {
 
 void NFC::UpdateInterrupts() {
     u16 intStat = Read32(0x08);
-    // NOTE that irqmask bits are active low
-    if (intStat & (~irqmask)) {
-        // WR_DONE is a level until the guest W1C acknowledgement. Do not
-        // re-latch it while the NFC ISR itself is active: the ISR advances a
-        // four-sector page-write state machine, so a duplicate invocation
-        // skips the next 512-byte sector. Once RTI completes, a still-pending
-        // source can be presented again normally. The NFC's IVG is read from
-        // SIC_IARx each time because the firmware remaps it at runtime (the
-        // OP-1 moves it from the reset IVG7 to IVG9 during NAND setup).
-        bool inNfcIsr = pageWriteDone && ivgResolver
-                        && cec_current_ivg() == ivgResolver();
-        published_ = !inNfcIsr;
-        level_ = 1;
-        if (!inNfcIsr) {
-            TriggerInterrupt(1);
-        }
-    } else {
-        published_ = true;
-        level_ = 0;
-        TriggerInterrupt(0);
-    }
+    // NOTE that irqmask bits are active low. The level stays high while
+    // WR_DONE waits for the guest's W1C: the core does not latch it again
+    // while the NFC's ISR runs (BlackFinCpu::LatchLines), which used to skip
+    // a 512-byte sector of the firmware's four-sector page-write state
+    // machine when a raise queued earlier re-entered the ISR.
+    TriggerInterrupt((intStat & (~irqmask)) ? 1 : 0);
 }
 
 void NFC::SetNotBusy(bool value) {
@@ -227,8 +212,6 @@ void NFC::SetWriteBufferEmpty(bool value) {
 }
 
 void NFC::ProcessWithInterrupt(int ivg) {
-    serviceIvg_ = ivg;
-    if (routingVersion_) serviceRouting_ = *routingVersion_;
     SetNotBusy(!nandFlash->IsBusy());
     readDataReady = nandFlash->IsDataReady();
     UpdateInterrupts();

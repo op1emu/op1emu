@@ -115,7 +115,7 @@ protected:
     void ServicePanel();
     void ProcessEvents();
     void RaiseInterrupt(int ivg);
-    void QueueRaise(int ivg);
+    void LatchLines();
     // The devices with work between blocks, each called only when it has some.
     void ServiceDevices(int ivg);
     template <class D> void ServiceDevice(D& device, size_t index, int ivg);
@@ -181,6 +181,11 @@ protected:
     std::unique_ptr<profiling::MemoryCensus> memoryCensus_;
     std::atomic<profiling::ServiceStats*> service_{nullptr};
     profiling::ServiceStats* Service() const { return service_.load(std::memory_order_acquire); }
+#endif
+    bool coreTimerLine_ = false;
+    bool userModeLatchWarned_ = false;
+#ifdef ENABLE_PROFILING
+    uint64_t userModeLatchDeferred_ = 0;
 #endif
     // Last cyclesElapsed value the GP timers were advanced to (see Run()).
     uint64_t lastTimerCycles_ = 0;

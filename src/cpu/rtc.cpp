@@ -113,8 +113,7 @@ bool RTC::NeedsTick() const {
 void RTC::UpdateInterrupts() {
     u32 ictl = Read32(0x04);
     u32 istat = Read32(0x08);
-    level_ = (ictl & istat) != 0 ? 1 : 0;
-    TriggerInterrupt(level_);
+    TriggerInterrupt((ictl & istat) != 0 ? 1 : 0);
 }
 
 void RTC::Tick() {

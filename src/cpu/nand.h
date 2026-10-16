@@ -35,34 +35,16 @@ public:
         this->nandFlash = nandFlash;
     }
 
-    // Returns the core IVG the NFC interrupt is currently routed to (from
-    // SIC_IARx), so the NFC can tell when its own ISR is running.
-    void SetIVGResolver(std::function<int()> resolver) {
-        ivgResolver = std::move(resolver);
-    }
-
     // DMABus interface
     u32 DMARead(int x, int y, void* dest, u32 length) override;
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
 
     void ProcessWithInterrupt(int ivg) override;
 
-    // A count that changes whenever the SIC's routing may have (see
-    // SIC::Version()): the IVG the resolver returns is only re-read then.
-    void SetRoutingVersion(const uint64_t* version) { routingVersion_ = version; }
-
     // ProcessWithInterrupt() has work: a register access or a DMA transfer
-    // since the last call, a flash still busy at it, or a change in what says
-    // whether the NFC's own ISR is running (the current IVG, the SIC's
-    // routing). Otherwise it would only publish its level again, if it
-    // published one, which ReplayInterrupt() does.
-    bool NeedsService(int ivg) const {
-        return touched_ || !notBusy || ivg != serviceIvg_ ||
-               (routingVersion_ && *routingVersion_ != serviceRouting_);
-    }
-    void ReplayInterrupt() const {
-        if (published_) TriggerInterrupt(level_);
-    }
+    // since the last call, or a flash still busy at it. Otherwise it would
+    // only publish the level it last published.
+    bool NeedsService() const { return touched_ || !notBusy; }
 
     void Read(u32 offset, void* buffer, u32 length) override {
         touched_ = true;
@@ -117,13 +99,7 @@ protected:
     u8 writeData = 0;
 
     std::shared_ptr<NandFlash> nandFlash;
-    std::function<int()> ivgResolver;
 
-    // Since the last ProcessWithInterrupt(): accessed, and what it saw.
+    // Accessed since the last ProcessWithInterrupt().
     bool touched_ = true;
-    int serviceIvg_ = -2;
-    uint64_t serviceRouting_ = 0;
-    const uint64_t* routingVersion_ = nullptr;
-    bool published_ = false;  // UpdateInterrupts() published level_ (it may hold back)
-    int level_ = 0;
 };

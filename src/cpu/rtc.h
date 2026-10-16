@@ -14,9 +14,8 @@ public:
 
     // Tick() has work: a register was written since the last Tick(), or the
     // calendar has reached another second. Otherwise Tick() would only
-    // publish its level again, which ReplayInterrupt() does.
+    // publish the level it last published.
     bool NeedsTick() const;
-    void ReplayInterrupt() const { TriggerInterrupt(level_); }
 
     void Write32(u32 offset, u32 value) override {
         written_ = true;
@@ -33,7 +32,6 @@ private:
 
     // Between Tick()s: a register write, and what the last Tick() saw.
     bool written_ = true;
-    int level_ = 0;
     TimePoint lastTick_;
     TimePoint nextChange_;
 
