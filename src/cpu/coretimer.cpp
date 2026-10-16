@@ -69,6 +69,7 @@ void CoreTimer::Advance(u64 cycles) {
     if (cycles < expiry) return;
     interrupt = true;
     UpdateInterrups();
+    if (onExpiry_) onExpiry_();
     if (autoReload && tperiod != 0) {
         // Every period that ended by `cycles` expired; the interrupt counts once.
         const u64 period = u64(tperiod) * CyclesPerTick();

@@ -133,13 +133,17 @@ void MCP230XX::SwitchRegisterBank() {
 }
 
 bool MCP230XX::Write(const u8* buffer, u32 length) {
+    const bool bankMode = registerBank;
     int bank = writeRegister ? REG_ADDR2BANK(writeRegister->addr) : -1;
     int reg = writeRegister ? REG_ADDR2REG(writeRegister->addr) : -1;
     if (!RegisterI2CPeripheral::Write(buffer, length)) {
         return false;
     }
-    // register bank may have changed, re-select register
-    if (bank != -1 && reg != -1) {
+    // IOCON.BANK changed the register map: re-select the register. Only
+    // then: otherwise the pointer has moved on to the next register, and a
+    // sequential write split over several calls (the TWI hands over each
+    // byte as it arrives) must continue there, not start over.
+    if (registerBank != bankMode && bank != -1 && reg != -1) {
         writeRegister = &registers[REG_ADDR(reg, bank)];
         readRegister = writeRegister;
     }

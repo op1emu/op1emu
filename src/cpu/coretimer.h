@@ -1,6 +1,7 @@
 #pragma once
 
 #include "io.h"
+#include <functional>
 #include <optional>
 
 class TimeSource;
@@ -19,6 +20,9 @@ public:
     void Advance(u64 cycles);
     // The guest time at which the count next reaches zero, or none.
     std::optional<u64> NextExpiry() const;
+    // Called at every expiry: each one latches IVG6, whether or not TINT,
+    // which is only status, is still set from the last.
+    void BindExpiry(std::function<void()> callback) { onExpiry_ = std::move(callback); }
 
     u32 Read32(u32 offset) override;
     void Write32(u32 offset, u32 value) override;
@@ -45,5 +49,6 @@ protected:
     u32 tperiod = 0;
     u32 tcount  = 0;  // the count while stopped; at origin_ while counting
     std::optional<u64> origin_;  // guest cycles at which tcount held, while counting
+    std::function<void()> onExpiry_;
     const TimeSource& time_;
 };

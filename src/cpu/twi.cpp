@@ -1,4 +1,5 @@
 #include "twi.h"
+#include "mmr.h"
 #include "time_source.h"
 #include "utils/log.h"
 #include <algorithm>
@@ -147,7 +148,29 @@ void TWI::Unstall() {
     if (nextByteNs_ == UINT64_MAX) nextByteNs_ = Now() + ByteNs();
 }
 
+void TWI::Settle() {
+    if (settling_ || !MasterActive() || Now() < nextByteNs_) return;
+    // ProcessMasterTransfer reads the registers through Read32.
+    settling_ = true;
+    if (cec_current_ivg() != IVG_TWI) {
+        ProcessMasterTransfer();
+    } else {
+        if (Blocked()) nextByteNs_ = UINT64_MAX;
+    }
+    settling_ = false;
+}
+
+bool TWI::Blocked() const {
+    return masterDCNT == 0 || (masterRead ? rcvFifo.size() >= FIFO_SIZE : xmtFifo.empty());
+}
+
+u32 TWI::Read32(u32 offset) {
+    Settle();
+    return RegisterDevice::Read32(offset);
+}
+
 void TWI::Write32(u32 offset, u32 value) {
+    Settle();
     RegisterDevice::Write32(offset, value);
     // A MASTER_CTL write with MEN starts a transfer: the address byte, then
     // the first data byte.
@@ -160,7 +183,22 @@ void TWI::ProcessWithInterrupt(int ivg) {
     }
 }
 
+// Moves the bytes due by now. Paced, one at a time: what ends a transfer
+// (DCNT, MCOMP, an error) then acts after the byte it follows, however late
+// the TWI is serviced.
 void TWI::ProcessMasterTransfer() {
+    if (!time_) {
+        MoveBytes(SIZE_MAX);
+        return;
+    }
+    while (MasterActive() && Now() >= nextByteNs_) {
+        const uint64_t before = nextByteNs_;
+        MoveBytes(1);
+        if (nextByteNs_ == before) break;  // the FIFO holds it, or the transfer failed
+    }
+}
+
+void TWI::MoveBytes(size_t limit) {
     if (!enabled) return;
     if (!masterEnable) return;
 
@@ -174,7 +212,7 @@ void TWI::ProcessMasterTransfer() {
         return;
     }
     const uint64_t byteNs = ByteNs();
-    const size_t due = byteNs ? (now - nextByteNs_) / byteNs + 1 : SIZE_MAX;
+    const size_t due = std::min(byteNs ? size_t((now - nextByteNs_) / byteNs + 1) : SIZE_MAX, limit);
     // Called with no byte possible, a FIFO holds SCL until the guest acts.
     auto stall = [this] {
         nextByteNs_ = UINT64_MAX;
@@ -270,6 +308,10 @@ void TWI::ProcessMasterTransfer() {
             iter->second->Stop();
         }
     }
+
+    // A further byte already due that the FIFO cannot take or give was held
+    // from its due time, as it would have been with a service at that time.
+    if (MasterActive() && Now() >= nextByteNs_ && Blocked()) nextByteNs_ = UINT64_MAX;
 
     // Transfer complete
     masterTransferInProgress = false;

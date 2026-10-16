@@ -208,14 +208,11 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     sic->SetLineRaisedCallback([this](u16) { LatchLines(); });
     devices.push_back(sic);
     coreTimer = std::make_shared<CoreTimer>(0xFFE03000, time_);
-    // The core timer latches IVG6 when it expires, once: TINT is its status,
-    // not a line the core keeps latching while it is set.
-    coreTimer->BindInterrupt(IVG_IVTMR, [this](int ivg, int level) {
-        if (level && !coreTimerLevel_) {
-            coreTimerExpired_ = true;
-            LatchLines();
-        }
-        coreTimerLevel_ = level != 0;
+    // Every core timer expiry latches IVG6, once: TINT is its status, not a
+    // line the core keeps latching while it is set.
+    coreTimer->BindExpiry([this] {
+        coreTimerExpired_ = true;
+        LatchLines();
     });
     devices.emplace_back(coreTimer);
 

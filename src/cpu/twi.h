@@ -80,15 +80,27 @@ public:
     static constexpr unsigned kDefaultSpeedup = 10;
     void SetSpeedup(unsigned speedup) { speedup_ = speedup ? speedup : 1; }
 
+    // A register access first brings the transfer up to its time (Settle):
+    // what the guest sees then depends on guest time, not on when the TWI
+    // was last serviced.
+    u32 Read32(u32 offset) override;
     void Write32(u32 offset, u32 value) override;
 
 protected:
     void ProcessMasterTransfer();
+    // At most `limit` bytes of those due.
+    void MoveBytes(size_t limit);
     void UpdateInterrupts();
     uint64_t Now() const;
     uint64_t ByteNs() const;
     // The guest made room or data for a transfer held by its FIFO.
     void Unstall();
+    // Moves the bytes due by now, as a service would; inside the TWI's IVG
+    // only notes a FIFO that holds the next due byte.
+    void Settle();
+    // The next byte cannot move: no room or no data in the FIFO, or no count.
+    bool Blocked() const;
+    bool settling_ = false;
 
     const TimeSource* time_;
     unsigned speedup_ = kDefaultSpeedup;

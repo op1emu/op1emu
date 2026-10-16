@@ -12,6 +12,7 @@
 #include "cpu/rtc.h"
 #include "cpu/time_source.h"
 #include "cpu/twi.h"
+#include "peripheral/mcp230xx.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -356,6 +357,20 @@ static void CoreTimerCountsGuestCycles() {
     at(1600);
     Require(timer.Read32(0x0C) == 0 && rises == 4, "reading TCOUNT brings the count up to date (TCNTL cleared TINT)");
     Require(timer.NextExpiry() == std::nullopt, "and expires it");
+    // Every expiry is an interrupt, also while TINT is still set from the last.
+    int expiries = 0;
+    timer.BindExpiry([&] { ++expiries; });
+    timer.Write32(0x08, 0);
+    timer.Write32(0x04, 10);
+    timer.Write32(0x00, 7 | 8);  // TINT left set
+    at(time.Cycles() + 10);
+    timer.Advance(time.Cycles());
+    at(time.Cycles() + 10);
+    timer.Advance(time.Cycles());
+    Require(expiries == 2 && timer.InterruptPending(), "each period's expiry counts, TINT or not");
+    timer.Write32(0x00, 0);
+    timer.Write32(0x08, 1);
+    timer.Write32(0x04, 0);
     // Enabled first, loaded after: counting starts with the load.
     timer.Write32(0x00, 7);
     Require(!timer.NextExpiry(), "nothing to count with TCOUNT 0");
@@ -424,14 +439,14 @@ static void TwiPacesBytes() {
     at(1000);
     twi.Write32(0x14, 4 << 6 | 4 | 1);  // read 4 bytes
     uint64_t last = 0;
+    unsigned seen = 0;
     auto run = [&](uint64_t untilNs) {
         while (time.Nanoseconds() < untilNs) {
             time.Retire(7);
-            if (twi.NeedsService(time.Nanoseconds())) {
-                const auto before = fifo();
-                twi.ProcessWithInterrupt(-1);
-                if (fifo() != before) fifoAt.push_back(time.Nanoseconds());
-            }
+            if (twi.NeedsService(time.Nanoseconds())) twi.ProcessWithInterrupt(-1);
+            const unsigned now = fifo();
+            if (now > seen) fifoAt.push_back(time.Nanoseconds());
+            seen = now;
         }
         last = time.Nanoseconds();
     };
@@ -440,6 +455,7 @@ static void TwiPacesBytes() {
     Require(fifoAt[0] >= 1000 + 43200 && fifoAt[0] < 1000 + 43200 + 20, "address and first byte take 43.2 us");
     Require(fifoAt[1] >= 1000 + 64800 && fifoAt[1] < 1000 + 64800 + 20, "the second byte 21.6 us later");
     twi.Read32(0x88);  // RCV_DATA8 at `last`
+    seen = fifo();
     const uint64_t read = last;
     run(300000);
     Require(fifoAt.size() == 3 && fifoAt[2] >= read + 21600 && fifoAt[2] < read + 21600 + 20,
@@ -447,6 +463,7 @@ static void TwiPacesBytes() {
     twi.SetSpeedup(10);
     twi.Read32(0x88);
     twi.Read32(0x88);
+    seen = fifo();
     twi.Write32(0x14, 1 << 6 | 4 | 1);  // read 1 byte, 10 times faster
     const uint64_t start = time.Nanoseconds();
     const size_t before = fifoAt.size();
@@ -455,7 +472,92 @@ static void TwiPacesBytes() {
             "a speedup of 10 divides the byte time");
 }
 
+// What the guest sees of a TWI transfer depends on guest time only, not on
+// where blocks end: two TWIs get the same accesses at the same times, one is
+// serviced after every step, the other rarely.
+static void TwiIgnoresBlockBoundaries(uint32_t seed) {
+    struct Rig {
+        TimeSource time{true};
+        TWI twi{0xFFC01400, &time};
+        Rig() {
+            twi.AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x10, 0xA5));
+            twi.Write32(0x00, 0x0C0C);
+            twi.Write32(0x04, 0x80);
+            twi.Write32(0x1C, 0x10);
+        }
+    } often, rarely;
+    std::mt19937 rng(seed);
+    for (int step = 0; step < 20000; ++step) {
+        const uint64_t packets = rng() % 400 + 1;
+        const uint32_t op = rng() % 16;
+        const bool boundary = rng() % 6 == 0;
+        uint32_t control = (1 + rng() % 6) << 6 | (rng() % 2 ? 4 : 0) | 1;
+        for (Rig* rig : {&often, &rarely}) {
+            rig->time.Retire(packets);
+            if (rig == &often || boundary)
+                if (rig->twi.NeedsService(rig->time.Nanoseconds())) rig->twi.ProcessWithInterrupt(-1);
+        }
+        uint32_t a = 0, b = 0;
+        if (op == 0) {
+            often.twi.Write32(0x14, control);
+            rarely.twi.Write32(0x14, control);
+        } else if (op < 4) {
+            a = often.twi.Read32(0x88);  // RCV_DATA8
+            b = rarely.twi.Read32(0x88);
+        } else if (op < 7) {
+            often.twi.Write32(0x80, step & 0xFF);  // XMT_DATA8
+            rarely.twi.Write32(0x80, step & 0xFF);
+        } else if (op < 10) {
+            a = often.twi.Read32(0x2C);  // FIFO_STAT
+            b = rarely.twi.Read32(0x2C);
+        } else if (op < 12) {
+            a = often.twi.Read32(0x20);  // INT_STAT
+            b = rarely.twi.Read32(0x20);
+            often.twi.Write32(0x20, a);
+            rarely.twi.Write32(0x20, a);
+        }
+        Require(a == b, "seed " + std::to_string(seed) + ": TWI read differs at step " + std::to_string(step));
+    }
+}
+
+// A sequential register write to a real MCP23017 over the TWI: the address
+// pointer advances through IODIRA to IODIRB however the bytes are split
+// between transfers and calls.
+static void Mcp23017SequentialWrite(bool oneByteAtATime) {
+    TimeSource time(true);
+    TWI twi(0xFFC01400, &time);
+    auto gpio = std::make_shared<MCP230XX>(0x20, MCP230XXModel::MCP23017);
+    twi.AttachPeripheral(gpio);
+    twi.Write32(0x00, 0x0C0C);
+    twi.Write32(0x04, 0x80);
+    twi.Write32(0x1C, 0x20);
+    const u8 bytes[] = {0x00, 0x00, 0xFF};  // IODIRA = outputs, IODIRB = inputs
+    if (oneByteAtATime) {
+        twi.Write32(0x80, bytes[0]);
+        twi.Write32(0x14, 3 << 6 | 1);
+        for (int i = 1; i < 3; ++i) {
+            time.Retire(4000);
+            twi.ProcessWithInterrupt(-1);
+            twi.Write32(0x80, bytes[i]);
+        }
+    } else {
+        twi.Write32(0x84, bytes[0] | bytes[1] << 8);
+        twi.Write32(0x14, 3 << 6 | 1);
+        time.Retire(4000);
+        twi.ProcessWithInterrupt(-1);
+        twi.Write32(0x80, bytes[2]);
+    }
+    time.Retire(4000);
+    twi.ProcessWithInterrupt(-1);
+    Require(((twi.Read32(0x20) >> 4) & 1) == 1, "the write completes");
+    Require(gpio->GetDirection(0) == GPIOPinDirection::Output, "IODIRA gets the first data byte");
+    Require(gpio->GetDirection(8) == GPIOPinDirection::Input, "IODIRB gets the second");
+}
+
 int main() {
+    Mcp23017SequentialWrite(false);
+    Mcp23017SequentialWrite(true);
+    for (uint32_t seed = 1; seed <= 10; ++seed) TwiIgnoresBlockBoundaries(seed);
     TwiPacesBytes();
     DmaPacesUnpacedBuses();
     CoreTimerCountsGuestCycles();
