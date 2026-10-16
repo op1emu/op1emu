@@ -112,6 +112,7 @@ static int RunEmulator(int argc, char* argv[]) {
     bool profileCounters = false;
     bool noChain = false;
     bool chainDry = false;
+    bool markDigest = false;
     bool profileProbes = false;
     const std::pair<const char*, std::string*> valueOptions[] = {
         {"--profile-marks", &profileMarks}, {"--profile-trace", &profileTrace},
@@ -132,6 +133,7 @@ static int RunEmulator(int argc, char* argv[]) {
         else if (options && arg == "--deterministic") deterministic = true;
         else if (options && arg == "--no-chain") noChain = true;
         else if (options && arg == "--profile-chain-dry") chainDry = anyProfiling = true;
+        else if (options && arg == "--profile-mark-digest") markDigest = anyProfiling = true;
         else if (options && arg == "--rtc-epoch") {
             if (++i == argc) throw std::runtime_error("--rtc-epoch requires seconds since 1970");
             size_t used = 0;
@@ -200,6 +202,7 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --profile-counters    CPU thread's user-space instructions and cycles at every mark\n"
                      "  --profile-checksum F  Guest-state checksum every N blocks (diagnostic)\n"
                      "  --profile-probes      Capture the marks file's probes (diagnostic)\n"
+                     "  --profile-mark-digest Hashes of guest registers, CEC and RAM at every mark\n"
                      "  --profile-chain-dry   Blocks only report that they would chain; check that\n"
                      "                        the host then has nothing to do ([chain] violations)\n"
                      "  --profile-dump-ir PCS Write the LLVM IR of blocks at these PCs (comma-separated hex)\n"
@@ -257,7 +260,7 @@ static int RunEmulator(int argc, char* argv[]) {
     // An LDR runs with the host looking at the PC after every block
     // (LdrExecutionThread).
     if (chainDry && noChain) throw std::runtime_error("--profile-chain-dry checks chaining: not with --no-chain");
-    cpu.SetChaining(chainDry && positional.size() < 2, chainDry);
+    cpu.SetChaining(!noChain && positional.size() < 2, chainDry);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
 #ifdef ENABLE_PROFILING
     std::unique_ptr<Profiler> profiler;
@@ -274,6 +277,7 @@ static int RunEmulator(int argc, char* argv[]) {
         profile.jitdump = perfJitdump;
         profile.counters = profileCounters;
         profile.probes = profileProbes;
+        profile.markDigest = markDigest;
         if (!profileDumpDir.empty()) profile.dumpIrDir = profileDumpDir;
         for (size_t at = 0; !profileDumpIr.empty() && at <= profileDumpIr.size();) {
             const size_t comma = std::min(profileDumpIr.find(',', at), profileDumpIr.size());

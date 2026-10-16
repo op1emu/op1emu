@@ -48,6 +48,7 @@ struct ProfilerOptions {
     bool jitdump = false;      // --perf-jitdump
     bool counters = false;     // --profile-counters
     bool probes = false;       // --profile-probes: the marks file's probes
+    bool markDigest = false;   // --profile-mark-digest: guest state hashes at every mark
     std::vector<uint32_t> dumpIrPcs;  // --profile-dump-ir PC[,PC...]
     std::string dumpIrDir = "ir";     // --profile-dump-dir
     size_t traceEvents = 262144;      // --profile-trace-events: the recorder's capacity
@@ -55,7 +56,8 @@ struct ProfilerOptions {
 
     bool Enabled() const {
         return !marksPath.empty() || !tracePath.empty() || !censusPrefix.empty() ||
-               !perfFifo.empty() || jitdump || counters || !checksumPath.empty() || probes || !dumpIrPcs.empty();
+               !perfFifo.empty() || jitdump || counters || !checksumPath.empty() || probes || !dumpIrPcs.empty() ||
+               markDigest;
     }
 };
 

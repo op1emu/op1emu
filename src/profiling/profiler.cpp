@@ -526,6 +526,7 @@ struct Profiler::Impl : BcoreEventSink {
         if (perfBegin == name) PerfWrite("enable\n");
         if (perfEnd == name) PerfWrite("disable\n");
         ReadAtMark(name);
+        if (options.markDigest) PrintDigest(name);
         if (options.until == name) {
             stopping = true;
             requestStop();
@@ -685,6 +686,36 @@ struct Profiler::Impl : BcoreEventSink {
             LogError("Failed to write --profile-checksum");
             checksumFailed = true;
         }
+    }
+
+    // The guest's registers, CEC and RAM at a mark, as hashes: two runs that
+    // did the same work print the same lines, whatever the host did between
+    // blocks (a checksum run cannot chain blocks; this one can).
+    void PrintDigest(const char* mark) {
+        const CpuState& state = cpu.State();
+        auto hash = [](const void* begin, size_t bytes, uint64_t h = 0xcbf29ce484222325ull) {
+            const auto* p = static_cast<const uint8_t*>(begin);
+            for (size_t i = 0; i + 8 <= bytes; i += 8) {
+                uint64_t word;
+                std::memcpy(&word, p + i, 8);
+                h = (h ^ word) * 0x100000001b3ull;
+            }
+            for (size_t i = bytes & ~size_t(7); i < bytes; ++i) h = (h ^ p[i]) * 0x100000001b3ull;
+            return h;
+        };
+        const uint32_t cec[3] = {cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_IPEND),
+                                 cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_ILAT),
+                                 cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_IMASK)};
+        uint64_t memory = 0xcbf29ce484222325ull;
+        for (Device* device : cpu.GetEmulator().Devices())
+            if (typeid(*device) == typeid(MemoryDevice))
+                memory = hash(device->Map(0), device->Size(), memory);
+        std::printf("[digest] %s regs=%016" PRIx64 " dag=%016" PRIx64 " sys=%016" PRIx64
+                    " cec=%08x,%08x,%08x memory=%016" PRIx64 "\n",
+                    mark, hash(state.dpregs, sizeof(state.dpregs)), hash(state.ax, size_t((const char*)&state.rets - (const char*)state.ax)),
+                    hash(&state.rets, size_t((const char*)(&state.astat_reserved + 1) - (const char*)&state.rets)),
+                    cec[0], cec[1], cec[2], memory);
+        std::fflush(stdout);
     }
 
     void DumpCensus(const char* mark) {
