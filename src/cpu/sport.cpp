@@ -78,6 +78,28 @@ SPORT::SPORT(u32 baseAddr, int sportNum, const TimeSource& time)
     FIELD(SPORT_STAT, TXHRE, 6, 1, R(transmitHoldRegister.has_value()), N());
 }
 
+uint64_t SPORT::NextSampleNs(uint64_t startNs, uint64_t delivered) const {
+    // DMARead/DMAWrite find floor(floor(elapsed * rate / 1e9) / slowdown)
+    // samples due, which exceeds `delivered` exactly when
+    // elapsed * rate >= (delivered + 1) * slowdown * 1e9.
+    const unsigned __int128 needed = (unsigned __int128)(delivered + 1) * time_.Slowdown() * 1'000'000'000ULL;
+    const unsigned __int128 elapsed = (needed + sampleRateHz_ - 1) / sampleRateHz_;
+    const unsigned __int128 at = startNs + elapsed;
+    return at > UINT64_MAX ? UINT64_MAX : uint64_t(at);
+}
+
+uint64_t SPORT::DMAIdleUntil(bool toMemory, u32 length) const {
+    // The early returns of DMARead/DMAWrite, in their order.
+    const bool enabled = toMemory ? receiveEnabled : transmitEnabled;
+    if (!enabled) return UINT64_MAX;
+    const u8 wordLength = toMemory ? receiveWordLength : transmitWordLength;
+    const bool stereo = toMemory ? receiveStereoFrameSync : transmitStereoFrameSync;
+    const u32 frameSize = (wordLength > 16 ? 4 : 2) * (stereo ? 2 : 1);
+    if (length / frameSize == 0) return UINT64_MAX;
+    if (toMemory) return dmaRxActive_ ? NextSampleNs(dmaRxStartNs_, totalRxSamplesDelivered_) : 0;
+    return dmaTxActive_ ? NextSampleNs(dmaTxStartNs_, totalTxSamplesDelivered_) : 0;
+}
+
 void SPORT::SetTransmitEnable() {
     if (!transmitEnabled) {
         transmitOverflow = false;

@@ -17,6 +17,23 @@ public:
     // Discard any buffered data. MDMA's internal FIFO is flushed when a new
     // transfer starts; peripheral buses ignore this.
     virtual void DMAFlush() {}
+
+    // Before which guest time (TimeSource::Nanoseconds()) a DMARead
+    // (toMemory) or DMAWrite of `length` bytes would do nothing at all: no
+    // data, no state. 0, the default, says any call may do something; the
+    // maximum says none will until the bus is told something new, which it
+    // reports with NotifyDMA().
+    virtual uint64_t DMAIdleUntil(bool toMemory, u32 length) const { return 0; }
+    // The DMA controller's flag NotifyDMA() raises.
+    void SetDMANotify(bool* flag) { dmaNotify_ = flag; }
+
+protected:
+    void NotifyDMA() const {
+        if (dmaNotify_) *dmaNotify_ = true;
+    }
+
+private:
+    bool* dmaNotify_ = nullptr;
 };
 
 // MDMA source/destination channels are just two ordinary DMA channels
@@ -76,6 +93,8 @@ public:
 
     void AttachDMABus(DMAPeripheralType type, const std::shared_ptr<DMABus>& bus) {
         dmaBuses[type] = bus;
+        bus->SetDMANotify(&touched_);
+        touched_ = true;
     }
 
     void BindInterrupt(int channel, int q, InterruptHandler callback);
@@ -88,7 +107,17 @@ public:
 
     void ProcessWithInterrupt(int ivg) override;
 
+    // ProcessWithInterrupt() has work at guest time nowNs: a register access
+    // or a bus notice since the last call, or a running channel whose bus may
+    // move data. Otherwise every channel's transfer would return at once.
+    bool NeedsService(uint64_t nowNs) const { return touched_ || nowNs >= idleUntil_; }
+
 protected:
+    // Before when no running channel can move data (see DMABus::DMAIdleUntil).
+    uint64_t IdleUntil() const;
+
+    bool touched_ = true;
+    uint64_t idleUntil_ = 0;
     Emulator& emulator;
     std::array<std::shared_ptr<DMAChannel>, 16> channels;
     std::map<DMAPeripheralType, std::shared_ptr<DMABus>> dmaBuses;

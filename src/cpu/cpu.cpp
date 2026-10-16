@@ -646,7 +646,7 @@ void BlackFinCpu::ServiceDevices(int ivg) {
         if (auto* stats = Service()) stats->current = stats->other;
 #endif
     }
-    ServiceDevice(*s.dma, s.dmaIndex, ivg);
+    if (s.dma->NeedsService(time_.Nanoseconds())) ServiceDevice(*s.dma, s.dmaIndex, ivg);
     // The core timer only clears TINT, once the CPU is in its IVG.
     if (ivg == IVG_IVTMR && s.coreTimer->InterruptPending())
         ServiceDevice(*s.coreTimer, s.coreTimerIndex, ivg);

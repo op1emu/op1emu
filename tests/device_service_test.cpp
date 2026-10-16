@@ -2,7 +2,9 @@
 // the same device shows when it is serviced after every block: each test
 // drives two instances with the same inputs, one polled at every step and one
 // through its service contract, and compares what the guest can observe.
+#include "cpu/dma.h"
 #include "cpu/nand.h"
+#include "cpu/sport.h"
 #include "cpu/rtc.h"
 #include "cpu/time_source.h"
 #include <cstdint>
@@ -204,8 +206,98 @@ static void NfcMatchesPolling(uint32_t seed) {
     Require(services < 20000 * 3 / 4, "the scheduled NFC must skip calls with nothing to do: " + std::to_string(services));
 }
 
+// SPORT0 audio through DMA channels 3 (receive) and 4 (transmit), autobuffer.
+struct AudioRig {
+    TimeSource time{true};
+    Emulator emulator;
+    MemoryDevice ram{"SDRAM", 0, 0x10000};
+    DMA dma{0xFFC00C00, emulator};
+    std::shared_ptr<SPORT> sport = std::make_shared<SPORT>(0xFFC00800, 0, time);
+    std::vector<std::string> log;
+    int step = 0;
+    uint16_t input = 0;
+
+    AudioRig() {
+        emulator.BindDevice(&ram);
+        dma.AttachDMABus(DMAPeripheralSPORT0Rx, sport);
+        dma.AttachDMABus(DMAPeripheralSPORT0Tx, sport);
+        sport->SetAudioOutputCallback([this](const void* data, size_t samples, int channels, int bits) {
+            log.push_back(std::to_string(step) + " out " + std::to_string(samples) + "x" + std::to_string(channels) +
+                          " " + std::to_string(bits) + " " + std::to_string(*static_cast<const uint16_t*>(data)));
+        });
+        sport->SetAudioInputCallback([this](void* data, size_t samples, int channels, int bits) {
+            auto* out = static_cast<uint16_t*>(data);
+            const size_t words = samples * channels * (bits > 16 ? 2 : 1);
+            for (size_t i = 0; i < words; ++i) out[i] = input++;
+            log.push_back(std::to_string(step) + " in " + std::to_string(samples));
+            return samples;
+        });
+        for (int channel : {3, 4})
+            dma.BindInterrupt(channel, channel, [this](int q, int level) {
+                log.push_back(std::to_string(step) + " irq " + std::to_string(q) + "=" + std::to_string(level));
+            });
+        for (u32 i = 0; i < 0x2000; i += 2) ram.Write32(i, i * 2654435761u);
+    }
+    void Channel(int channel, u32 start, u32 count, bool toMemory, bool enable) {
+        const u32 base = channel * 0x40;
+        dma.Write32(base + 0x04, start);
+        dma.Write32(base + 0x10, count);
+        dma.Write32(base + 0x14, 2);
+        // 16-bit words, autobuffer, interrupt on completion.
+        dma.Write32(base + 0x08, (enable ? 1 : 0) | (toMemory ? 2 : 0) | (1 << 2) | (1 << 7) | (1 << 12));
+    }
+};
+
+static void AudioMatchesPolling(uint32_t seed) {
+    AudioRig polled, scheduled;
+    auto both = [&](auto&& f) { f(polled); f(scheduled); };
+    both([](AudioRig& r) {
+        r.sport->Write32(0x04, 15);        // TCR2: 16-bit words
+        r.sport->Write32(0x24, 15 | 256);  // RCR2: 16-bit stereo
+        r.sport->Write32(0x00, 1);         // TSPEN
+        r.sport->Write32(0x20, 1);         // RSPEN
+        r.Channel(4, 0x1000, 64, false, true);
+        r.Channel(3, 0x4000, 32, true, true);
+    });
+    std::mt19937 rng(seed);
+    uint64_t services = 0;
+    const int steps = 40000;
+    for (int step = 0; step < steps; ++step) {
+        const uint64_t packets = rng() % 2 ? rng() % 30 + 1 : rng() % 20000 + 1;
+        const uint32_t event = rng() % 512;
+        const bool transmit = rng() % 2;
+        both([&](AudioRig& r) {
+            r.step = step;
+            r.time.Retire(packets);
+            if (event == 0) r.sport->Write32(0x00, transmit ? 1 : 0);
+            if (event == 1) r.sport->Write32(0x20, 1);
+            if (event == 2) r.sport->Write32(0x04, 15 | (step % 2 ? 256 : 0));
+            if (event == 3) r.Channel(4, 0x1000 + (step % 7) * 64, 16 + step % 48, false, step % 5 != 0);
+            if (event == 4) r.Channel(3, 0x4000, 1 + step % 32, true, true);
+        });
+        polled.dma.ProcessWithInterrupt(-1);
+        if (scheduled.dma.NeedsService(scheduled.time.Nanoseconds())) {
+            scheduled.dma.ProcessWithInterrupt(-1);
+            ++services;
+        }
+        Require(polled.log == scheduled.log,
+                "seed " + std::to_string(seed) + ": audio differs at step " + std::to_string(step));
+        if (step % 997 == 0)
+            for (u32 i = 0x4000; i < 0x4100; i += 4)
+                Require(polled.ram.Read32(i) == scheduled.ram.Read32(i), "received samples differ");
+    }
+    std::vector<u32> a, b;
+    for (u32 offset = 0; offset < 0x400; offset += 4) {
+        a.push_back(polled.dma.Read32(offset));
+        b.push_back(scheduled.dma.Read32(offset));
+    }
+    Require(a == b, "seed " + std::to_string(seed) + ": DMA registers differ");
+    Require(services < steps / 2, "the scheduled DMA must skip calls with nothing to do: " + std::to_string(services));
+}
+
 int main() {
     for (uint32_t seed = 1; seed <= 20; ++seed) RtcMatchesPolling(seed);
     for (uint32_t seed = 1; seed <= 20; ++seed) NfcMatchesPolling(seed);
+    for (uint32_t seed = 1; seed <= 10; ++seed) AudioMatchesPolling(seed);
     std::puts("device-service-test: ok");
 }

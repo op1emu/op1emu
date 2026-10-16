@@ -15,6 +15,9 @@ public:
     DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defaultPeripheralMap);
     bool IsEnabled() const { return enabled; }
     bool IsRunning() const { return running; }
+    // What ProcessTransfer() would do next: nothing until the returned guest
+    // time (0: it may do something now).
+    uint64_t IdleUntil() const;
     bool IsMDMA() const;
     bool IsMDMASource() const;
     DMAPeripheralType GetPeripheralType() const { return peripheralType; }
@@ -182,6 +185,16 @@ void DMAChannel::ProcessDescriptor()
     currYCount = yCount ?: 0xFFFF;
 }
 
+uint64_t DMAChannel::IdleUntil() const {
+    if (!enabled || !running) return UINT64_MAX;
+    // ProcessTransfer() logs a missing bus on every call.
+    auto bus = dma.GetDMABus(peripheralType);
+    if (!bus) return 0;
+    // The length ProcessTransfer() offers the bus.
+    const u32 length = std::min(u32(currXCount) * (1u << wordSize), 4096u);
+    return bus->DMAIdleUntil(memoryWrite, length);
+}
+
 bool DMAChannel::IsMDMA() const {
     return peripheralType >= DMAPeripheralMDMADest0 && peripheralType <= DMAPeripheralMDMASrc1;
 }
@@ -311,6 +324,7 @@ DMA::DMA(u32 baseAddr, Emulator& emu)
 }
 
 void DMA::Write32(u32 offset, u32 value) {
+    touched_ = true;
     size_t channelIndex = offset / 0x40;
     if (channelIndex < channels.size()) {
         channels[channelIndex]->Write32(offset % 0x40, value);
@@ -318,6 +332,7 @@ void DMA::Write32(u32 offset, u32 value) {
 }
 
 u32 DMA::Read32(u32 offset) {
+    touched_ = true;
     size_t channelIndex = offset / 0x40;
     if (channelIndex < channels.size()) {
         return channels[channelIndex]->Read32(offset % 0x40);
@@ -332,7 +347,15 @@ u32 DMA::Read32(u32 offset) {
 // FLOW=Autobuffer auto-restarting the transfer indefinitely.
 static constexpr u32 MDMA_BURST_BYTES = 4096;
 
+uint64_t DMA::IdleUntil() const {
+    uint64_t until = UINT64_MAX;
+    for (const auto& channel : channels) until = std::min(until, channel->IdleUntil());
+    return until;
+}
+
 void DMA::ProcessWithInterrupt(int ivg) {
+    // Cleared first: a notice raised while the channels run is for the next call.
+    touched_ = false;
     for (auto& channel : channels) {
         if (!channel->IsMDMA()) {
             CountServiceWork(channel->ProcessTransfer());
@@ -346,6 +369,7 @@ void DMA::ProcessWithInterrupt(int ivg) {
         }
         CountServiceWork(total);
     }
+    idleUntil_ = IdleUntil();
 }
 
 void DMA::BindInterrupt(int channel, int q, InterruptHandler callback) {

@@ -20,12 +20,22 @@ public:
     // DMABus interface
     u32 DMARead(int x, int y, void* dest, u32 length) override;
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
+    // Samples come due at the sample rate, counted from the first transfer.
+    uint64_t DMAIdleUntil(bool toMemory, u32 length) const override;
+
+    void Write32(u32 offset, u32 value) override {
+        NotifyDMA();
+        RegisterDevice::Write32(offset, value);
+    }
 
     // Audio callbacks
     void SetAudioOutputCallback(AudioOutputCallback callback) { audioOutputCallback = callback; }
     void SetAudioInputCallback(AudioInputCallback callback) { audioInputCallback = callback; }
 
 protected:
+    // When DMARead/DMAWrite next finds a sample due: the first time at which
+    // `delivered` is below the samples due since `startNs`.
+    uint64_t NextSampleNs(uint64_t startNs, uint64_t delivered) const;
     void SetTransmitEnable();
     void SetReceiveEnable();
 
