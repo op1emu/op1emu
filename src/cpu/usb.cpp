@@ -255,6 +255,7 @@ USB::USB(u32 baseAddr): RegisterDevice("USB", baseAddr, 0x500) {
 }
 
 void USB::Read(u32 offset, void* buffer, u32 length) {
+    touched_ = true;
     // Special handling for EP0 FIFO address + 4
     if (offset == 0x84) {
         auto& ep0 = endpoints[0];
@@ -269,6 +270,7 @@ void USB::Read(u32 offset, void* buffer, u32 length) {
 }
 
 void USB::Write(u32 offset, const void* buffer, u32 length) {
+    touched_ = true;
     RegisterDevice::Write(offset, buffer, length);
 }
 
@@ -398,7 +400,8 @@ void USB::HandleSetupPacket(USBSetupBytes setup, const u8* data, std::size_t len
     setupCallback = callback;
     ep0.dataPacketReceived = true;
     epTxInterrupts |= (1 << 0);
-    UpdateInterrupts();
+    // The CPU thread publishes the interrupt at its next service.
+    hostRequest_.store(true, std::memory_order_release);
 }
 
 void USB::HandleDataWrite(int ep, int interval, const u8* data, std::size_t length, WriteDoneCallback callback) {
@@ -413,7 +416,7 @@ void USB::HandleDataWrite(int ep, int interval, const u8* data, std::size_t leng
     endpoint.dataPacketReceived = true;
     endpoint.rxCallback = callback;
     epRxInterrupts |= (1 << ep);
-    UpdateInterrupts();
+    hostRequest_.store(true, std::memory_order_release);
 }
 
 void USB::HandleDataRead(int ep, int interval, std::size_t limit, ReplyCallback callback) {
@@ -422,6 +425,7 @@ void USB::HandleDataRead(int ep, int interval, std::size_t limit, ReplyCallback 
     auto& endpoint = endpoints[ep];
     endpoint.txLimit = limit;
     endpoint.txCallback = callback;
+    hostRequest_.store(true, std::memory_order_release);
 }
 
 void USB::ProcessTransfer() {
@@ -486,5 +490,8 @@ void USB::ProcessTransfer() {
 }
 
 void USB::ProcessWithInterrupt(int ivg) {
+    hostRequest_.store(false, std::memory_order_relaxed);
     ProcessTransfer();
+    // Last: UpdateInterrupts() reads the registers through Read32().
+    touched_ = false;
 }

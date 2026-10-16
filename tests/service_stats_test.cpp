@@ -58,9 +58,10 @@ int main() {
                 "the CPU thread's publication is attributed to the running source");
     }
     {
-        // The USB/IP thread publishes levels through the CPU's USB device at
-        // any time, also after the profiler is gone: the counts it reaches
-        // belong to the CPU and outlive the profiler.
+        // Other threads queue events at any time, also after the profiler is
+        // gone: the counts they reach belong to the CPU and outlive the
+        // profiler. The USB/IP thread's requests publish nothing: the CPU
+        // thread services them.
         BlackFinCpu cpu(true);
         profiling::ServiceStats* stats = nullptr;
         {
@@ -70,13 +71,16 @@ int main() {
             stats = &cpu.EnableServiceStats();
             Require(stats == &cpu.EnableServiceStats(), "one set of counts per CPU");
         }
-        const uint64_t before = stats->publishedOtherThreads;
+        const uint64_t published = stats->publishedOtherThreads;
+        const uint64_t queued = stats->queuedOtherThreads;
         std::thread usbip([&] {
             const u8 packet[4] = {1, 2, 3, 4};
             cpu.GetUSB().HandleDataWrite(1, 0, packet, sizeof(packet), [] {});
+            cpu.SetPotentiometerValue(7);
         });
         usbip.join();
-        Require(stats->publishedOtherThreads > before, "another thread's publications still land in live counts");
+        Require(stats->publishedOtherThreads == published, "a USB/IP request publishes no level off the CPU thread");
+        Require(stats->queuedOtherThreads > queued, "another thread's events still land in live counts");
     }
     {
         // bcore fetches a block's instructions through the host memory as it

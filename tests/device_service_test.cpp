@@ -11,6 +11,7 @@
 #include "cpu/sport.h"
 #include "cpu/rtc.h"
 #include "cpu/time_source.h"
+#include "cpu/twi.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -401,7 +402,45 @@ static void DmaPacesUnpacedBuses() {
     Require(serviced.size() <= 8, "the DMA is not called between rows: " + std::to_string(serviced.size()));
 }
 
+// TWI master bytes take nine SCL periods of guest time each, after an address
+// byte; a full receive FIFO holds SCL until the guest reads it.
+static void TwiPacesBytes() {
+    TimeSource time(true);
+    TWI twi(0xFFC01400, &time);
+    twi.AttachPeripheral(std::make_shared<DummyI2CPeripheral>(0x20, 0x5A));
+    std::vector<uint64_t> fifoAt;  // guest ns at which the receive FIFO grew
+    auto fifo = [&] { return (twi.Read32(0x2C) >> 2) & 3; };  // FIFO_STAT RCVSTAT
+    auto at = [&](uint64_t ns) { time.Retire((ns * 2 + 4) / 5 - time.Packets()); };
+    twi.Write32(0x00, 12 << 8 | 12);  // CLKDIV: 2.4 us SCL, 21.6 us per byte
+    twi.Write32(0x04, 0x80);          // TWI_ENA
+    twi.Write32(0x1C, 0x20);          // MASTER_ADDR
+    at(1000);
+    twi.Write32(0x14, 4 << 6 | 4 | 1);  // read 4 bytes
+    uint64_t last = 0;
+    auto run = [&](uint64_t untilNs) {
+        while (time.Nanoseconds() < untilNs) {
+            time.Retire(7);
+            if (twi.NeedsService(time.Nanoseconds())) {
+                const auto before = fifo();
+                twi.ProcessWithInterrupt(-1);
+                if (fifo() != before) fifoAt.push_back(time.Nanoseconds());
+            }
+        }
+        last = time.Nanoseconds();
+    };
+    run(200000);
+    Require(fifoAt.size() == 2, "two bytes fill the FIFO, then SCL is held: " + std::to_string(fifoAt.size()));
+    Require(fifoAt[0] >= 1000 + 43200 && fifoAt[0] < 1000 + 43200 + 20, "address and first byte take 43.2 us");
+    Require(fifoAt[1] >= 1000 + 64800 && fifoAt[1] < 1000 + 64800 + 20, "the second byte 21.6 us later");
+    twi.Read32(0x88);  // RCV_DATA8 at `last`
+    const uint64_t read = last;
+    run(300000);
+    Require(fifoAt.size() == 3 && fifoAt[2] >= read + 21600 && fifoAt[2] < read + 21600 + 20,
+            "a read releases SCL: the next byte 21.6 us after it");
+}
+
 int main() {
+    TwiPacesBytes();
     DmaPacesUnpacedBuses();
     CoreTimerCountsGuestCycles();
     SicLines();

@@ -48,9 +48,15 @@ protected:
     u8 data;
 };
 
+class TimeSource;
+
+// The master moves a byte every nine SCL periods of guest time: SCL is
+// CLKHI + CLKLOW periods of the 10 MHz reference PRESCALE derives from SCLK.
+// An address byte comes first; a full receive FIFO or an empty transmit FIFO
+// holds SCL until the guest makes room or data.
 class TWI : public RegisterDevice {
 public:
-    TWI(u32 baseAddr);
+    explicit TWI(u32 baseAddr, const TimeSource* time = nullptr);
 
     void AttachPeripheral(const std::shared_ptr<I2CPeripheral>& client) {
         clients[client->Address()] = client;
@@ -59,11 +65,25 @@ public:
     void ProcessWithInterrupt(int ivg) override;
     // A master transfer may move data; otherwise ProcessWithInterrupt does nothing.
     bool MasterActive() const { return enabled && masterEnable; }
+    // ProcessWithInterrupt() has work at guest time nowNs: the next byte of
+    // an enabled master transfer is due.
+    bool NeedsService(uint64_t nowNs) const { return MasterActive() && nowNs >= nextByteNs_; }
     static constexpr int kIvg = 10;  // no master progress while the CPU is in this IVG
+
+    void Write32(u32 offset, u32 value) override;
 
 protected:
     void ProcessMasterTransfer();
     void UpdateInterrupts();
+    uint64_t Now() const;
+    uint64_t ByteNs() const;
+    // The guest made room or data for a transfer held by its FIFO.
+    void Unstall();
+
+    const TimeSource* time_;
+    // When the master's next byte completes; UINT64_MAX while the FIFO
+    // holds it.
+    uint64_t nextByteNs_ = 0;
 
     // Control register
     u16 prescale = 0;

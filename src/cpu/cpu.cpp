@@ -215,7 +215,7 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     });
     devices.emplace_back(coreTimer);
 
-    std::shared_ptr<TWI> twi = std::make_shared<TWI>(0xFFC01400);
+    std::shared_ptr<TWI> twi = std::make_shared<TWI>(0xFFC01400, &time_);
     devices.push_back(twi);
     serviced_.twi = twi;
 
@@ -669,8 +669,7 @@ void BlackFinCpu::ServiceDevice(D& device, size_t index, int ivg) {
 // nothing since the core's inputs are levels (LatchLines()).
 void BlackFinCpu::ServiceDevices(int ivg) {
     auto& s = serviced_;
-    // A disabled USB returns before moving data or publishing a level.
-    if (s.usb->Enabled()) ServiceDevice(*s.usb, s.usbIndex, ivg);
+    if (s.usb->NeedsService()) ServiceDevice(*s.usb, s.usbIndex, ivg);
     if (s.nfc->NeedsService()) ServiceDevice(*s.nfc, s.nfcIndex, ivg);
     if (s.rtc->NeedsTick()) ServiceDevice(*s.rtc, s.rtcIndex, ivg);
     if (s.dma->NeedsService(time_.Nanoseconds())) ServiceDevice(*s.dma, s.dmaIndex, ivg);
@@ -679,7 +678,7 @@ void BlackFinCpu::ServiceDevices(int ivg) {
         ServiceDevice(*s.coreTimer, s.coreTimerIndex, ivg);
     // Without an enabled master transfer, or inside the TWI's IVG, the TWI
     // does nothing (MPROG is set and cleared within the call).
-    if (ivg != TWI::kIvg && s.twi->MasterActive()) ServiceDevice(*s.twi, s.twiIndex, ivg);
+    if (ivg != TWI::kIvg && s.twi->NeedsService(time_.Nanoseconds())) ServiceDevice(*s.twi, s.twiIndex, ivg);
 }
 
 void BlackFinCpu::RaiseInterrupt(int ivg) {

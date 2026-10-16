@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include "io.h"
 #include <functional>
 #include <queue>
@@ -102,8 +104,20 @@ public:
     void HandleDataRead(int ep, int interval, std::size_t limit, ReplyCallback callback) override;
 
     void ProcessWithInterrupt(int ivg) override;
-    // GLOBAL_ENA: a disabled USB neither moves data nor publishes levels.
-    bool Enabled() const { return enabled; }
+    // ProcessWithInterrupt() has work: the USB is enabled (GLOBAL_ENA), and
+    // the guest accessed it or the host sent a request since the last call.
+    bool NeedsService() const {
+        return enabled && (touched_ || hostRequest_.load(std::memory_order_acquire));
+    }
+
+    u32 Read32(u32 offset) override {
+        touched_ = true;
+        return RegisterDevice::Read32(offset);
+    }
+    void Write32(u32 offset, u32 value) override {
+        touched_ = true;
+        RegisterDevice::Write32(offset, value);
+    }
 
 protected:
     void UpdateInterrupts();
@@ -116,6 +130,10 @@ protected:
     std::size_t readDeviceToHostFIFO(int ep, u8* data, std::size_t length);
 
 protected:
+    // Since the last ProcessWithInterrupt(): a guest access, a host request.
+    bool touched_ = true;
+    std::atomic<bool> hostRequest_{false};
+
     // Connection state
     bool connected = false;
 

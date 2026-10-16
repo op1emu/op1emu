@@ -1,5 +1,7 @@
 #include "twi.h"
+#include "time_source.h"
 #include "utils/log.h"
+#include <algorithm>
 
 // TWI_FIFO_STAT
 static constexpr u16 FIFO_EMPTY = 0x0;
@@ -9,7 +11,7 @@ static constexpr u16 FIFO_FULL  = 0x3;
 static constexpr size_t FIFO_SIZE = 2;
 static constexpr int IVG_TWI = TWI::kIvg;
 
-TWI::TWI(u32 baseAddr) : RegisterDevice("TWI", baseAddr, 0x90) {
+TWI::TWI(u32 baseAddr, const TimeSource* time) : RegisterDevice("TWI", baseAddr, 0x90), time_(time) {
     REG32(CLKDIV, 0x00);
     FIELD(CLKDIV, CLKLOW, 0, 8, R(clkLow), W(clkLow));
     FIELD(CLKDIV, CLKHI, 8, 8, R(clkHigh), W(clkHigh));
@@ -94,6 +96,7 @@ TWI::TWI(u32 baseAddr) : RegisterDevice("TWI", baseAddr, 0x90) {
         if (xmtFifo.size() < FIFO_SIZE) {
             xmtFifo.push(v & 0xFF);
         }
+        Unstall();
     });
 
     REG32(XMT_DATA16, 0x84);
@@ -104,6 +107,7 @@ TWI::TWI(u32 baseAddr) : RegisterDevice("TWI", baseAddr, 0x90) {
                 xmtFifo.push((v >> 8) & 0xFF);
             }
         }
+        Unstall();
     });
 
     REG32(RCV_DATA8, 0x88);
@@ -111,6 +115,7 @@ TWI::TWI(u32 baseAddr) : RegisterDevice("TWI", baseAddr, 0x90) {
         if (rcvFifo.empty()) return 0;
         u8 val = rcvFifo.front();
         rcvFifo.pop();
+        Unstall();
         return val;
     }, N());
 
@@ -125,8 +130,28 @@ TWI::TWI(u32 baseAddr) : RegisterDevice("TWI", baseAddr, 0x90) {
             val |= (rcvFifo.front() << 8);
             rcvFifo.pop();
         }
+        Unstall();
         return val;
     }, N());
+}
+
+uint64_t TWI::Now() const { return time_ ? time_->Nanoseconds() : 0; }
+
+uint64_t TWI::ByteNs() const {
+    if (!time_) return 0;
+    const uint64_t periods = std::max<uint64_t>(u64(clkHigh) + clkLow, 1);
+    return 9 * periods * 100;  // 9 SCL periods of the 10 MHz reference
+}
+
+void TWI::Unstall() {
+    if (nextByteNs_ == UINT64_MAX) nextByteNs_ = Now() + ByteNs();
+}
+
+void TWI::Write32(u32 offset, u32 value) {
+    RegisterDevice::Write32(offset, value);
+    // A MASTER_CTL write with MEN starts a transfer: the address byte, then
+    // the first data byte.
+    if (offset == 0x14 && masterEnable) nextByteNs_ = Now() + 2 * ByteNs();
 }
 
 void TWI::ProcessWithInterrupt(int ivg) {
@@ -142,14 +167,30 @@ void TWI::ProcessMasterTransfer() {
     // Set transfer in progress
     masterTransferInProgress = true;
 
+    // The bytes whose time has come, the first at nextByteNs_.
+    const uint64_t now = Now();
+    if (now < nextByteNs_) {
+        masterTransferInProgress = false;
+        return;
+    }
+    const uint64_t byteNs = ByteNs();
+    const size_t due = byteNs ? (now - nextByteNs_) / byteNs + 1 : SIZE_MAX;
+    // Called with no byte possible, a FIFO holds SCL until the guest acts.
+    auto stall = [this] {
+        nextByteNs_ = UINT64_MAX;
+        masterTransferInProgress = false;
+    };
+    auto moved = [this, byteNs](size_t bytes) { nextByteNs_ += bytes * byteNs; };
+
     if (masterRead) {
         // Master read operation
-        size_t bytesRead = std::min(FIFO_SIZE - rcvFifo.size(), (size_t)masterDCNT);
+        size_t bytesRead = std::min({FIFO_SIZE - rcvFifo.size(), (size_t)masterDCNT, due});
         if (bytesRead == 0) {
             // Nothing to read
-            masterTransferInProgress = false;
+            stall();
             return;
         }
+        moved(bytesRead);
         auto iter = clients.find(masterAddr);
         if (iter == clients.end()) {
             LogDebug("TWI: No client found at address 0x%02X\n", masterAddr);
@@ -182,12 +223,13 @@ void TWI::ProcessMasterTransfer() {
         }
     } else {
         // Master write operation
-        size_t bytesWrite = std::min(xmtFifo.size(), (size_t)masterDCNT);
+        size_t bytesWrite = std::min({xmtFifo.size(), (size_t)masterDCNT, due});
         if (bytesWrite == 0) {
             // Nothing to write
-            masterTransferInProgress = false;
+            stall();
             return;
         }
+        moved(bytesWrite);
         auto iter = clients.find(masterAddr);
         if (iter == clients.end()) {
             LogDebug("TWI: No client found at address 0x%02X\n", masterAddr);
