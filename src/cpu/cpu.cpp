@@ -68,9 +68,8 @@ static constexpr int IRQ_USB_INT2 = 54;
 static constexpr int IRQ_USB_DMAINT = 55;
 static constexpr int IRQ_GPTIMER_0 = 32;
 
-// Thin CEC device shim so the Emulator device map covers the CEC MMR range.
-// bcore intercepts these internally during JIT execution, but the Emulator
-// needs a device registered to avoid "unmapped address" warnings.
+// The CEC's MMRs, which bcore keeps (cec_mmr_read/cec_mmr_write): generated
+// code reaches them through the device map like any other MMR.
 // Note: CEC state is process-global (module-level statics in bcore's cec.cpp).
 // Only one BlackFinCpu instance may exist per process.
 class BcoreCECDevice : public Device {
@@ -92,6 +91,9 @@ public:
     void Write32(u32 offset, u32 value) override {
         cec_mmr_write(cpu_, baseAddress + offset, value);
     }
+    // A read is a load from bcore's state. A write can change what is
+    // pending (IMASK) and which high lines the host latches again (ILAT).
+    bool HostWorkAfterAccess(u32 offset, bool write) const override { return write; }
 private:
     CpuState* cpu_;
 };

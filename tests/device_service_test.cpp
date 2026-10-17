@@ -301,6 +301,77 @@ static void NfcPioMatchesPolling(u32 irqmask) {
     Require(quiet * 2 > kSteps, "NFC PIO: most accesses leave the host nothing to do");
 }
 
+// A memory DMA the guest polls: it starts a transfer from MDMA_S0 to
+// MDMA_D0, reads MDMA_D0_IRQ_STATUS every block and acknowledges DMA_DONE
+// before the next one. Serviced through its contract (reads and the
+// acknowledgement give it no work), the DMA moves the same bytes at the same
+// guest times and shows the same status as one serviced after every block.
+struct MdmaRig {
+    TimeSource time{true};
+    Emulator emulator;
+    MemoryDevice ram{"SDRAM", 0, 0x10000};
+    DMA dma{0xFFC00C00, emulator, &time};
+    std::shared_ptr<MemorySrcDMABus> src = std::make_shared<MemorySrcDMABus>();
+    std::shared_ptr<MemoryDestDMABus> dst = std::make_shared<MemoryDestDMABus>(*src);
+    int level = 0;
+
+    MdmaRig() {
+        emulator.BindDevice(&ram);
+        dma.AttachDMABus(DMAPeripheralMDMADest0, dst);
+        dma.AttachDMABus(DMAPeripheralMDMASrc0, src);
+        dma.BindInterrupt(12, 12, [this](int, int l) { level = l; });
+        for (u32 i = 0; i < 0x4000; i += 4) ram.Write32(i, i * 2654435761u);
+    }
+    void Start(u32 from, u32 to, u32 words) {
+        dma.Write32(0x344, from);   // MDMA_S0_START_ADDR
+        dma.Write32(0x350, words);  // MDMA_S0_X_COUNT
+        dma.Write32(0x354, 4);      // MDMA_S0_X_MODIFY
+        dma.Write32(0x304, to);     // MDMA_D0_START_ADDR
+        dma.Write32(0x310, words);
+        dma.Write32(0x314, 4);
+        dma.Write32(0x348, 0x09);         // DMAEN, 32-bit
+        dma.Write32(0x308, 0x8B);         // DMAEN, WNR, 32-bit, DI_EN
+    }
+};
+
+static void MdmaPollingMatchesPolling(uint32_t seed) {
+    MdmaRig polled, scheduled;
+    std::mt19937 rng(seed);
+    uint64_t services = 0;
+    int transfers = 0;
+    constexpr int kSteps = 30000;
+    for (int step = 0; step < kSteps; ++step) {
+        const u32 status = polled.dma.Read32(0x328);
+        Require(status == scheduled.dma.Read32(0x328),
+                "seed " + std::to_string(seed) + ": MDMA_D0_IRQ_STATUS differs at step " + std::to_string(step));
+        if (status & 1) {
+            polled.dma.Write32(0x328, 1);
+            scheduled.dma.Write32(0x328, 1);
+        }
+        if (!(status & 8) && rng() % 8 == 0) {
+            const u32 words = 16 + rng() % 400, from = (rng() % 0x400) * 4, to = 0x2000 + (rng() % 0x200) * 4;
+            polled.Start(from, to, words);
+            scheduled.Start(from, to, words);
+            ++transfers;
+        }
+        const uint64_t packets = 1 + rng() % 40;
+        polled.time.Retire(packets);
+        scheduled.time.Retire(packets);
+        polled.dma.ProcessWithInterrupt(-1);
+        if (scheduled.dma.NeedsService(scheduled.time.Nanoseconds())) {
+            scheduled.dma.ProcessWithInterrupt(-1);
+            ++services;
+        }
+        Require(polled.level == scheduled.level,
+                "seed " + std::to_string(seed) + ": MDMA levels differ at step " + std::to_string(step));
+    }
+    for (u32 i = 0; i < 0x4000; i += 4)
+        Require(polled.ram.Read32(i) == scheduled.ram.Read32(i), "seed " + std::to_string(seed) + ": memory differs");
+    Require(transfers > 100, "the guest ran transfers");
+    Require(services * 2 < kSteps, "the polled MDMA is serviced when a row is due, not at every poll: " +
+                                       std::to_string(services) + " of " + std::to_string(kSteps));
+}
+
 // SPORT0 audio through DMA channels 3 (receive) and 4 (transmit), autobuffer.
 struct AudioRig {
     TimeSource time{true};
@@ -666,6 +737,7 @@ int main() {
     for (uint32_t seed = 1; seed <= 20; ++seed) RtcMatchesPolling(seed);
     for (uint32_t seed = 1; seed <= 20; ++seed) NfcMatchesPolling(seed);
     for (u32 irqmask : {0x1Fu, 0x17u, 0x16u, 0x00u}) NfcPioMatchesPolling(irqmask);
+    for (uint32_t seed = 1; seed <= 10; ++seed) MdmaPollingMatchesPolling(seed);
     for (uint32_t seed = 1; seed <= 10; ++seed) AudioMatchesPolling(seed);
     std::puts("device-service-test: ok");
 }

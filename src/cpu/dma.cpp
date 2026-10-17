@@ -345,8 +345,13 @@ DMA::DMA(u32 baseAddr, Emulator& emu, const TimeSource* time)
     }
 }
 
+// Offset of a channel's IRQ_STATUS: DMA_DONE and DMA_ERR are W1C (the level
+// is published here), DMA_RUN is read-only. Neither what a channel moves nor
+// DMA::IdleUntil() depends on them.
+static constexpr u32 kIrqStatus = 0x28;
+
 void DMA::Write32(u32 offset, u32 value) {
-    touched_ = true;
+    if (offset % 0x40 != kIrqStatus) touched_ = true;
     size_t channelIndex = offset / 0x40;
     if (channelIndex < channels.size()) {
         channels[channelIndex]->Write32(offset % 0x40, value);
@@ -354,7 +359,6 @@ void DMA::Write32(u32 offset, u32 value) {
 }
 
 u32 DMA::Read32(u32 offset) {
-    touched_ = true;
     size_t channelIndex = offset / 0x40;
     if (channelIndex < channels.size()) {
         return channels[channelIndex]->Read32(offset % 0x40);

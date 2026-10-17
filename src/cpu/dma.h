@@ -120,8 +120,11 @@ public:
     void Write32(u32 offset, u32 value) override;
 
     void ProcessWithInterrupt(int ivg) override;
+    // Reads have no effect, and acknowledging a channel's IRQ_STATUS changes
+    // nothing a service would act on; any other write may (touched_).
+    bool HostWorkAfterAccess(u32 offset, bool write) const override { return write && touched_; }
 
-    // ProcessWithInterrupt() has work at guest time nowNs: a register access
+    // ProcessWithInterrupt() has work at guest time nowNs: a register write
     // or a bus notice since the last call, or a running channel whose bus may
     // move data. Otherwise every channel's transfer would return at once.
     bool NeedsService(uint64_t nowNs) const { return touched_ || nowNs >= idleUntil_; }
