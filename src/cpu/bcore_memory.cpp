@@ -19,10 +19,10 @@ EmulatorMemory::EmulatorMemory(Emulator& emulator)
 // Generated code calls here only for what is not in DirectPages(): the MMRs,
 // mostly. After the access, so that the device it reached can say from its
 // state then whether the host has work after the block (see
-// Emulator::HostWorkAfter). The CPU thread is the only one running guest
+// Emulator::HostWorkAfter, ReadAttended and WriteAttended). The CPU thread is the only one running guest
 // code, but other threads set the budget to 0 too.
-void EmulatorMemory::Attend(uint32_t addr, uint32_t length, bool write) const {
-    if (!chainBudget_ || !emulator_.HostWorkAfter(addr, length, write)) return;
+void EmulatorMemory::Attend(bool hostWork) const {
+    if (!chainBudget_ || !hostWork) return;
 #ifdef ENABLE_PROFILING
     if (__atomic_load_n(chainBudget_, __ATOMIC_RELAXED)) ++chainStops_;
 #endif
@@ -43,41 +43,47 @@ uintptr_t EmulatorMemory::fast_base() const {
 
 uint8_t EmulatorMemory::read8(uint32_t addr) const {
     PROFILE_ACCESS(addr, 0, false);
-    const uint8_t value = emulator_.MemoryRead8(addr);
-    Attend(addr, 1, false);
+    bool hostWork;
+    const uint8_t value = emulator_.ReadAttended<uint8_t>(addr, hostWork);
+    Attend(hostWork);
     return value;
 }
 
 uint16_t EmulatorMemory::read16(uint32_t addr) const {
     PROFILE_ACCESS(addr, 1, false);
-    const uint16_t value = emulator_.MemoryRead16(addr);
-    Attend(addr, 2, false);
+    bool hostWork;
+    const uint16_t value = emulator_.ReadAttended<uint16_t>(addr, hostWork);
+    Attend(hostWork);
     return value;
 }
 
 uint32_t EmulatorMemory::read32(uint32_t addr) const {
     PROFILE_ACCESS(addr, 2, false);
-    const uint32_t value = emulator_.MemoryRead32(addr);
-    Attend(addr, 4, false);
+    bool hostWork;
+    const uint32_t value = emulator_.ReadAttended<uint32_t>(addr, hostWork);
+    Attend(hostWork);
     return value;
 }
 
 void EmulatorMemory::write8(uint32_t addr, uint8_t val) {
     PROFILE_ACCESS(addr, 0, true);
-    emulator_.MemoryWrite8(addr, val);
-    Attend(addr, 1, true);
+    bool hostWork;
+    emulator_.WriteAttended<uint8_t>(addr, val, hostWork);
+    Attend(hostWork);
 }
 
 void EmulatorMemory::write16(uint32_t addr, uint16_t val) {
     PROFILE_ACCESS(addr, 1, true);
-    emulator_.MemoryWrite16(addr, val);
-    Attend(addr, 2, true);
+    bool hostWork;
+    emulator_.WriteAttended<uint16_t>(addr, val, hostWork);
+    Attend(hostWork);
 }
 
 void EmulatorMemory::write32(uint32_t addr, uint32_t val) {
     PROFILE_ACCESS(addr, 2, true);
-    emulator_.MemoryWrite32(addr, val);
-    Attend(addr, 4, true);
+    bool hostWork;
+    emulator_.WriteAttended<uint32_t>(addr, val, hostWork);
+    Attend(hostWork);
 }
 
 static_assert(PAGE_BITS == Memory::kPageBits, "bcore's page table has op1emu's page size");

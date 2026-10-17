@@ -231,6 +231,59 @@ bool Emulator::HostWorkAfter(u32 addr, u32 length, bool write) const
     return dev->HostWorkAfterAccess(addr - dev->BaseAddress(), write);
 }
 
+// The device an MMR access of sizeof(T) bytes at addr reaches as a whole, with
+// no hook to run, or null.
+template <typename T>
+static Device* WholeMmrAccess(Device* dev, u32 addr, bool hooks)
+{
+    if (addr < 0xFFC00000 || hooks || !dev) return nullptr;
+    return uint64_t(addr) + sizeof(T) - 1 <= dev->EndAddress() ? dev : nullptr;
+}
+
+template <typename T>
+T Emulator::ReadAttended(u32 addr, bool& hostWork)
+{
+    const bool hooks = !readHooks.empty() || !writeHooks.empty();
+    if (Device* dev = WholeMmrAccess<T>(addr >= 0xFFC00000 ? Find(addr) : nullptr, addr, hooks)) {
+        const u32 offset = addr - dev->BaseAddress();
+        T value = 0;
+        if constexpr (sizeof(T) == 4) value = dev->Read32(offset);  // as MemoryRead32
+        else dev->Read(offset, &value, sizeof(T));                  // as MemoryRead
+        hostWork = dev->HostWorkAfterAccess(offset, false);
+        return value;
+    }
+    T value;
+    if constexpr (sizeof(T) == 1) value = MemoryRead8(addr);
+    else if constexpr (sizeof(T) == 2) value = MemoryRead16(addr);
+    else value = MemoryRead32(addr);
+    hostWork = HostWorkAfter(addr, sizeof(T), false);
+    return value;
+}
+
+template <typename T>
+void Emulator::WriteAttended(u32 addr, T value, bool& hostWork)
+{
+    const bool hooks = !readHooks.empty() || !writeHooks.empty();
+    if (Device* dev = WholeMmrAccess<T>(addr >= 0xFFC00000 ? Find(addr) : nullptr, addr, hooks)) {
+        const u32 offset = addr - dev->BaseAddress();
+        if constexpr (sizeof(T) == 4) dev->Write32(offset, value);  // as MemoryWrite32
+        else dev->Write(offset, &value, sizeof(T));                 // as MemoryWrite
+        hostWork = dev->HostWorkAfterAccess(offset, true);
+        return;
+    }
+    if constexpr (sizeof(T) == 1) MemoryWrite8(addr, value);
+    else if constexpr (sizeof(T) == 2) MemoryWrite16(addr, value);
+    else MemoryWrite32(addr, value);
+    hostWork = HostWorkAfter(addr, sizeof(T), true);
+}
+
+template u8 Emulator::ReadAttended<u8>(u32, bool&);
+template u16 Emulator::ReadAttended<u16>(u32, bool&);
+template u32 Emulator::ReadAttended<u32>(u32, bool&);
+template void Emulator::WriteAttended<u8>(u32, u8, bool&);
+template void Emulator::WriteAttended<u16>(u32, u16, bool&);
+template void Emulator::WriteAttended<u32>(u32, u32, bool&);
+
 bool Emulator::IsMemoryValid(u32 addr)
 {
     return Find(addr) != nullptr;

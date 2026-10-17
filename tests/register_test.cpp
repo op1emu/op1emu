@@ -1,10 +1,12 @@
 // Register and RegisterDevice dispatch through their flattened tables: every
 // read and write must call the same field callbacks, in the same order and
 // with the same values, as walking the maps did, and find the same register.
+#include "cpu/emu.h"
 #include "cpu/io.h"
 #include <cstdio>
 #include <cstdlib>
 #include <random>
+#include <tuple>
 #include <string>
 #include <vector>
 
@@ -105,7 +107,63 @@ static void DeviceFindsRegisters() {
     Require(half == 0x1004, "a 16-bit read takes the low half of the register");
 }
 
+// A device at the end of an MMR range that says the host has work after
+// writes only, logging what reaches it.
+class MmrDevice : public RegisterDevice {
+public:
+    MmrDevice(u32 base, std::vector<std::string>& log) : RegisterDevice("mmr", base, 0x10), log_(log) {
+        for (u32 addr = 0; addr < 0x10; addr += 4) {
+            REG32(r, addr);
+            r.readCallback = [this, addr] { log_.push_back("r" + std::to_string(addr)); return 0x11223344u + addr; };
+            r.writeCallback = [this, addr](u32 v) { log_.push_back("w" + std::to_string(addr) + "=" + std::to_string(v)); };
+        }
+    }
+    bool HostWorkAfterAccess(u32 offset, bool write) const override { return write; }
+
+private:
+    std::vector<std::string>& log_;
+};
+
+// One lookup for an access and the question after it gives what the access
+// and Emulator::HostWorkAfter give, wherever the access lands.
+static void AttendedAccessesMatch(bool hook) {
+    std::vector<std::string> fastLog, slowLog;
+    Emulator fast, slow;
+    MemoryDevice fastRam("SDRAM", 0, 0x2000), slowRam("SDRAM", 0, 0x2000);
+    MmrDevice fastMmr(0xFFC00100, fastLog), slowMmr(0xFFC00100, slowLog);
+    for (auto [emu, ram, mmr] : {std::tuple{&fast, &fastRam, &fastMmr}, std::tuple{&slow, &slowRam, &slowMmr}}) {
+        emu->BindDevice(ram);
+        emu->BindDevice(mmr);
+        if (hook) emu->AddReadHook(0xFFC00104, [](u32) { return 0xABCDu; });
+    }
+    for (u32 addr : {0x100u, 0xFFC000FEu, 0xFFC00100u, 0xFFC00102u, 0xFFC00104u, 0xFFC0010Cu, 0xFFC0010Du,
+                     0xFFC0010Eu, 0xFFC0010Fu, 0xFFC00110u, 0xFFC00200u}) {
+        bool fastWork = false;
+        const std::string where = std::to_string(addr) + (hook ? " (hook)" : "");
+        Require(fast.ReadAttended<u8>(addr, fastWork) == slow.MemoryRead8(addr) &&
+                    fastWork == slow.HostWorkAfter(addr, 1, false), "8-bit read at " + where);
+        Require(fast.ReadAttended<u16>(addr, fastWork) == slow.MemoryRead16(addr) &&
+                    fastWork == slow.HostWorkAfter(addr, 2, false), "16-bit read at " + where);
+        Require(fast.ReadAttended<u32>(addr, fastWork) == slow.MemoryRead32(addr) &&
+                    fastWork == slow.HostWorkAfter(addr, 4, false), "32-bit read at " + where);
+        fast.WriteAttended<u8>(addr, 0x5A, fastWork);
+        slow.MemoryWrite8(addr, 0x5A);
+        Require(fastWork == slow.HostWorkAfter(addr, 1, true), "8-bit write at " + where);
+        fast.WriteAttended<u16>(addr, 0x1234, fastWork);
+        slow.MemoryWrite16(addr, 0x1234);
+        Require(fastWork == slow.HostWorkAfter(addr, 2, true), "16-bit write at " + where);
+        fast.WriteAttended<u32>(addr, 0x89ABCDEF, fastWork);
+        slow.MemoryWrite32(addr, 0x89ABCDEF);
+        Require(fastWork == slow.HostWorkAfter(addr, 4, true), "32-bit write at " + where);
+        Require(fastLog == slowLog, "the device sees the same accesses at " + where);
+    }
+    for (u32 addr = 0; addr < 0x2000; addr += 4)
+        Require(fastRam.Read32(addr) == slowRam.Read32(addr), "RAM differs");
+}
+
 int main() {
+    AttendedAccessesMatch(false);
+    AttendedAccessesMatch(true);
     for (uint32_t seed = 1; seed <= 500; ++seed) FieldsMatchMapWalk(seed);
     DeviceFindsRegisters();
     std::puts("register-test: ok");

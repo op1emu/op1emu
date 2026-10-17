@@ -56,7 +56,7 @@ public:
 #endif
 
 private:
-    void Attend(uint32_t addr, uint32_t length, bool write) const;
+    void Attend(bool hostWork) const;
 
     Emulator& emulator_;
     uint32_t* chainBudget_ = nullptr;
