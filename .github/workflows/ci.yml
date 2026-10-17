@@ -20,6 +20,19 @@ jobs:
       - run: pip install pytest
       - run: python3 -m pytest tools/tests -q
 
+  libcxx:
+    # libc++'s system_clock counts microseconds, not libstdc++'s nanoseconds;
+    # guest time converts to it (TimeSource::SystemNow, DueNs).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang-15 libc++-15-dev libc++abi-15-dev
+      - name: TimeSource test with libc++
+        run: |
+          clang++-15 -std=c++17 -stdlib=libc++ -Wall -Wextra -Werror -I src \
+            -o time-source-test tests/time_source_test.cpp
+          ./time-source-test
+
   build-test:
     name: build-test (profiling=${{ matrix.profiling }})
     runs-on: ubuntu-22.04

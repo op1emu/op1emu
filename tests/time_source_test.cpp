@@ -83,9 +83,14 @@ int main() {
         Require(TimeSource::PacketsAt(UINT64_MAX) == UINT64_MAX, "never stays never");
         const auto epoch = time.SystemNow();
         Require(time.DueNs(epoch) == 0 && time.DueNs(epoch - std::chrono::seconds(1)) == 0, "due now");
-        time.Retire(TimeSource::PacketsAt(time.DueNs(epoch + std::chrono::nanoseconds(1000000001))));
-        Require(time.SystemNow() >= epoch + std::chrono::nanoseconds(1000000001), "SystemNow reaches the due time");
-        Require((time.Packets() - 1) * 5 / 2 < 1000000001, "at the first packet that does");
+        // In the clock's own ticks (1 us in libc++): just past a second.
+        const auto due = epoch + std::chrono::ceil<TimeSource::SystemClock::duration>(std::chrono::nanoseconds(1000000001));
+        const uint64_t packets = TimeSource::PacketsAt(time.DueNs(due));
+        time.Retire(packets);
+        Require(time.SystemNow() >= due, "SystemNow reaches the due time");
+        TimeSource before(true);
+        before.Retire(packets - 1);
+        Require(before.SystemNow() < due, "at the first packet that does");
     }
     std::puts("TimeSource and PanelOscillator tests passed");
 }

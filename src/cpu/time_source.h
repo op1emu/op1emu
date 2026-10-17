@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
-#include <type_traits>
 
 // Where guest-visible time comes from. One of two models, fixed for the life
 // of the CPU:
@@ -75,10 +74,11 @@ public:
     }
     void SetEpoch(SystemClock::time_point epoch) { epoch_ = epoch; }
     // Deterministic mode: the first guest time at which SystemNow() reaches t.
+    // SystemNow() truncates guest nanoseconds to the clock's ticks (1 us in
+    // libc++), so k ticks past the epoch are reached at k ticks in
+    // nanoseconds; rounding up covers a clock finer than nanoseconds.
     uint64_t DueNs(SystemClock::time_point t) const {
-        static_assert(std::is_same_v<SystemClock::duration, std::chrono::nanoseconds>,
-                      "SystemNow() is epoch plus guest nanoseconds, exactly");
-        return t <= epoch_ ? 0 : uint64_t((t - epoch_).count());
+        return t <= epoch_ ? 0 : uint64_t(std::chrono::ceil<std::chrono::nanoseconds>(t - epoch_).count());
     }
     // The first packet count at which Nanoseconds() reaches ns: the least p
     // with p * 5 / 2 >= ns. UINT64_MAX for never.
