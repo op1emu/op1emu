@@ -85,6 +85,11 @@ public:
     // (see DirectPages()) below the MMR space and no hook in its page.
     // Anything else may give the host work between blocks.
     bool Quiet(u32 addr) const;
+    // After a guest access of length bytes at addr: whether it may have given
+    // the host work between blocks. No below the MMR space where Quiet(), and
+    // in the MMR space when the one device it reached says so
+    // (Device::HostWorkAfterAccess); yes anywhere else.
+    bool HostWorkAfter(u32 addr, u32 length, bool write) const;
     void RebuildDirectPages();
 
     const std::vector<Device*>& Devices() const { return devices; }

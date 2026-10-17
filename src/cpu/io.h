@@ -43,6 +43,15 @@ public:
 
     virtual void ProcessWithInterrupt(int ivg) {}
 
+    // After a guest access at offset (from generated code, inside a run that
+    // may chain blocks): whether the host may have work after the block,
+    // which then returns to it (see EmulatorMemory). The host's work after a
+    // block is the device service, timers, the panel, events and latching
+    // interrupt lines; an access that changes none of them, nor when any of
+    // them comes due, can say no. Levels it changes are published inside the
+    // access as before. The default, yes, is always right.
+    virtual bool HostWorkAfterAccess(u32 offset, bool write) const { return true; }
+
     // What a service call moved or completed (DMA, TWI, USB: bytes; RTC: a
     // completed register write; NFC: the flash turning ready), for the
     // profiling build's service census; nothing in a normal build. A device

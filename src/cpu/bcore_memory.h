@@ -42,8 +42,8 @@ public:
     bool callbacks_preserve_registers() const override { return true; }
 
     // bcore's CpuState::chain_budget: an access that may give the host work
-    // (one that is not Emulator::Quiet) sets it to 0, so the run returns to
-    // the host after the block. Not owned.
+    // (Emulator::HostWorkAfter) sets it to 0, so the run returns to the host
+    // after the block. Not owned.
     void SetChainBudget(uint32_t* budget) { chainBudget_ = budget; }
 #ifdef ENABLE_PROFILING
     // Accesses that stopped a run's chaining (BlackFinCpu's [chain] counts).
@@ -56,7 +56,7 @@ public:
 #endif
 
 private:
-    void Attend(uint32_t addr) const;
+    void Attend(uint32_t addr, uint32_t length, bool write) const;
 
     Emulator& emulator_;
     uint32_t* chainBudget_ = nullptr;

@@ -203,6 +203,9 @@ protected:
     // Packets the run starting at pc may retire before the host has work.
     uint32_t ChainBudget(uint32_t pc);
     bool chaining_ = false;
+    // A block is running (Core::run): what a device access queues now was
+    // not in the run's budget.
+    bool inRun_ = false;
     static constexpr uint32_t kMaxChainPackets = 1u << 24;
     // Wall mode: no packet count says when a device is due.
     static constexpr uint32_t kWallChainPackets = 4096;

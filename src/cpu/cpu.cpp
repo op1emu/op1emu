@@ -414,7 +414,10 @@ HaltReason BlackFinCpu::Run() {
 #endif
     // Execute one basic block — bcore updates cpuState_->pc internally.
     // Hardware loops, PC advance, and hwloop counters are all handled by bcore.
-    if (!core_->run(cpuState_->pc)) {
+    inRun_ = true;
+    const bool ran = core_->run(cpuState_->pc);
+    inRun_ = false;
+    if (!ran) {
         // Translation/JIT failure: PC is unchanged, so retrying would loop
         // forever. Skip device processing and let the host stop the run.
         LogError("JIT execution failed at PC 0x%08x", cpuState_->pc);
@@ -675,6 +678,9 @@ void BlackFinCpu::StopChaining() {
 }
 
 void BlackFinCpu::ScheduleEvent(std::function<void()> event, uint64_t dueNs) {
+    // Queued inside a run, by a device access: the run's budget did not
+    // count it, so the host takes over after the block.
+    if (inRun_) StopChaining();
     events_.push_back({dueNs, eventSequence_++, std::move(event)});
     std::push_heap(events_.begin(), events_.end(), std::greater<>());
     nextEventNs_ = events_.front().dueNs;

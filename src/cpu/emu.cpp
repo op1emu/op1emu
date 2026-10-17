@@ -203,6 +203,15 @@ bool Emulator::Quiet(u32 addr) const
            writeHooks.lower_bound(first) == writeHooks.upper_bound(last);
 }
 
+bool Emulator::HostWorkAfter(u32 addr, u32 length, bool write) const
+{
+    if (addr < 0xFFC00000) return !Quiet(addr);
+    const Device* dev = get_device(addr, deviceSegments);
+    if (!dev || uint64_t(addr) + length - 1 > dev->EndAddress()) return true;
+    if (readHooks.count(addr) || writeHooks.count(addr)) return true;
+    return dev->HostWorkAfterAccess(addr - dev->BaseAddress(), write);
+}
+
 bool Emulator::IsMemoryValid(u32 addr)
 {
     return get_device(addr, deviceSegments) != nullptr;
