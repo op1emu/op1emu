@@ -55,7 +55,9 @@ constexpr uint32_t kIsr = 0xFFA00200;     // IVG6, the core timer
 constexpr uint32_t kHooked = 0x2000;      // RAM with a read hook
 constexpr uint32_t kTcount = 0xFFE0300C;  // core timer TCOUNT
 
-enum class Loop { Plain, Hooked, Mmr, HardwareLoop };
+constexpr uint32_t kNfcIrqStat = 0xFFC03708;  // NFC_IRQSTAT
+
+enum class Loop { Plain, Hooked, Mmr, HardwareLoop, Nfc };
 
 // Leaves reset for IVG15, which runs the loop in supervisor mode with
 // interrupts on (bcore latches no line in user mode):
@@ -72,7 +74,8 @@ static std::vector<uint16_t> Code(Loop loop) {
     case Loop::Plain:  // L: R0 += 1; R2 = CYCLES; JUMP.S L;
         return {0x6408, 0x3196, 0x2ffe};
     case Loop::Hooked:
-    case Loop::Mmr:  // L: R0 += 1; R1 = [P0]; R2 = CYCLES; JUMP.S L;
+    case Loop::Mmr:
+    case Loop::Nfc:  // L: R0 += 1; R1 = [P0]; R2 = CYCLES; JUMP.S L;
         return {0x6408, 0x9101, 0x3196, 0x2ffd};
     case Loop::HardwareLoop:  // L: P1 = 100; LSETUP (B, B) LC0 = P1; B: R0 += 1; R2 = CYCLES; JUMP.S L;
         return {0xe129, 0x0064, 0xe0a2, 0x1002, 0x6408, 0x3196, 0x2ffa};
@@ -115,6 +118,7 @@ static Outcome Scenario(bool chain, Loop loop, uint64_t dueNs, bool timer) {
         });
     }
     if (loop == Loop::Mmr) cpu.State().dpregs[8] = kTcount;
+    if (loop == Loop::Nfc) cpu.State().dpregs[8] = kNfcIrqStat;
     if (timer) {
         // Every expiry enters the ISR, at the packet the host latches it.
         Write(emu, kIsr, kIsrCode);
@@ -145,8 +149,9 @@ int main() {
     std::filesystem::current_path(directory);
     unsigned pairs = 0;
     uint64_t plainRuns = 0, chainedRuns = 0, plainLoopRuns = 0, chainedLoopRuns = 0;
+    uint64_t plainQuietRuns = 0, chainedQuietRuns = 0;
     uint64_t loopIterations = 0, isrEntries = 0;
-    for (Loop loop : {Loop::Plain, Loop::Hooked, Loop::Mmr, Loop::HardwareLoop}) {
+    for (Loop loop : {Loop::Plain, Loop::Hooked, Loop::Mmr, Loop::HardwareLoop, Loop::Nfc}) {
         for (uint64_t dueNs : {1u, 2u, 3u, 5u, 7u, 999u, 1000u, 1001u, 25001u, 100001u}) {
             for (bool timer : {false, true}) {
                 const Outcome plain = Scenario(false, loop, dueNs, timer);
@@ -172,6 +177,10 @@ int main() {
                     plainLoopRuns += plain.runs;
                     chainedLoopRuns += chained.runs;
                 }
+                if (!timer && loop == Loop::Nfc && dueNs > 1000) {
+                    plainQuietRuns += plain.runs;
+                    chainedQuietRuns += chained.runs;
+                }
             }
         }
     }
@@ -179,6 +188,8 @@ int main() {
     // Loops that touch no device and are not interrupted return only at a
     // due time.
     Require(chainedLoopRuns * 10 < plainLoopRuns, "loops without device accesses chain");
+    // So do loops whose device accesses leave the host nothing to do.
+    Require(chainedQuietRuns * 10 < plainQuietRuns, "loops polling a quiet device register chain");
     std::filesystem::current_path(original);
     std::filesystem::remove_all(directory);
     std::printf("cpu-chain-test: ok, %u pairs, runs %llu unchained, %llu chained\n", pairs,

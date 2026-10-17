@@ -196,8 +196,109 @@ static void NfcMatchesPolling(uint32_t seed) {
                 "seed " + std::to_string(seed) + ": NFC registers differ at step " + std::to_string(step));
         Require(polledLevel == scheduledLevel,
                 "seed " + std::to_string(seed) + ": NFC levels differ at step " + std::to_string(step));
+        // The level the service published is NFC_IRQSTAT & ~NFC_IRQMASK as
+        // the registers read.
+        const u32 stat = polled.RegisterDevice::Read32(0x08), mask = polled.RegisterDevice::Read32(0x0C);
+        Require(polledLevel == int((stat & ~mask & 0x1F) != 0),
+                "seed " + std::to_string(seed) + ": NFC level is not IRQSTAT & ~IRQMASK at step " + std::to_string(step));
     }
     Require(services < 20000 * 3 / 4, "the scheduled NFC must skip calls with nothing to do: " + std::to_string(services));
+}
+
+// A flash that, after a read command, is busy until the end of the next
+// block and then has a page of kPage bytes ready.
+class PageFlash : public NandFlash {
+public:
+    static constexpr int kPage = 64;
+    void SendCommand(u8 command) override {
+        if (command == 0x30) {
+            busy_ = true;
+            clearIn_ = 2;
+        }
+    }
+    void SendAddress(u8) override {}
+    u8 ReadData() override {
+        if (remaining_ == 0) return 0xFF;
+        return u8(--remaining_);
+    }
+    void WriteData(u8) override {}
+    bool IsDataReady() const override { return remaining_ != 0; }
+    bool IsBusy() const override { return busy_; }
+    void StartPageRead() override {}
+    void StartPageWrite() override {}
+    u32 PageRead(u8*, u32) override { return 0; }
+    u32 PageWrite(const u8*, u32 length) override { return length; }
+    void SetReadCallback(ReadCallback) override {}
+    void SetReadyCallback(std::function<void()> callback) override { onReady_ = std::move(callback); }
+    void EndOfBlock() {
+        if (clearIn_ > 0 && --clearIn_ == 0) {
+            busy_ = false;
+            remaining_ = kPage;
+            if (onReady_) onReady_();
+        }
+    }
+
+private:
+    std::function<void()> onReady_;
+    bool busy_ = false;
+    int clearIn_ = 0, remaining_ = 0;
+};
+
+// The firmware's PIO read: per byte a block that writes NFC_DATA_RD, polls
+// NFC_IRQSTAT for RD_RDY, writes RD_RDY back and reads NFC_READ, a read
+// command at every page end. Serviced only when the service would change
+// something, the NFC shows the guest what it shows serviced after every
+// block, and is serviced about once a page rather than once a byte.
+static void NfcPioMatchesPolling(u32 irqmask) {
+    NFC polled(0xFFC03700), scheduled(0xFFC03700);
+    auto polledFlash = std::make_shared<PageFlash>(), scheduledFlash = std::make_shared<PageFlash>();
+    polled.AttachNandFlash(polledFlash);
+    scheduled.AttachNandFlash(scheduledFlash);
+    int polledLevel = 0, scheduledLevel = 0;
+    polled.BindInterrupt(48, [&](int, int level) { polledLevel = level; });
+    scheduled.BindInterrupt(48, [&](int, int level) { scheduledLevel = level; });
+    polled.Write32(0x0C, irqmask);
+    scheduled.Write32(0x0C, irqmask);
+
+    constexpr int kSteps = 20000;
+    uint64_t services = 0, quiet = 0;
+    bool needCommand = true;
+    for (int step = 0; step < kSteps; ++step) {
+        auto both = [&](auto&& op) {
+            const u32 a = op(polled), b = op(scheduled);
+            Require(a == b, "NFC PIO: an access reads differently at step " + std::to_string(step));
+            // What the access says about the host is what the service then does.
+            quiet += !scheduled.HostWorkAfterAccess(0, false);
+        };
+        if (needCommand) {
+            both([](NFC& n) { n.Write32(0x44, 0x00); return 0u; });
+            both([](NFC& n) { n.Write32(0x44, 0x30); return 0u; });
+            needCommand = false;
+        } else {
+            both([](NFC& n) { n.Write32(0x4C, 0); return 0u; });
+            const u32 stat = polled.Read32(0x08);
+            Require(stat == scheduled.Read32(0x08), "NFC PIO: NFC_IRQSTAT differs at step " + std::to_string(step));
+            if (stat & 0x08) {
+                both([](NFC& n) { n.Write32(0x08, 0x08); return 0u; });
+                both([](NFC& n) { return n.Read32(0x2C); });
+            } else if (!polledFlash->IsBusy()) {
+                needCommand = true;
+            }
+        }
+        polled.ProcessWithInterrupt(-1);
+        if (scheduled.NeedsService()) {
+            scheduled.ProcessWithInterrupt(-1);
+            ++services;
+        }
+        polledFlash->EndOfBlock();
+        scheduledFlash->EndOfBlock();
+        Require(NfcRegisters(polled) == NfcRegisters(scheduled),
+                "NFC PIO: registers differ at step " + std::to_string(step));
+        Require(polledLevel == scheduledLevel, "NFC PIO: levels differ at step " + std::to_string(step));
+    }
+    Require(services * 10 < kSteps, "NFC PIO: the service runs about once a page, not once a byte: " +
+                                        std::to_string(services) + " of " + std::to_string(kSteps));
+    Require(quiet * 2 > kSteps, "NFC PIO: most accesses leave the host nothing to do");
 }
 
 // SPORT0 audio through DMA channels 3 (receive) and 4 (transmit), autobuffer.
@@ -564,6 +665,7 @@ int main() {
     SicLines();
     for (uint32_t seed = 1; seed <= 20; ++seed) RtcMatchesPolling(seed);
     for (uint32_t seed = 1; seed <= 20; ++seed) NfcMatchesPolling(seed);
+    for (u32 irqmask : {0x1Fu, 0x17u, 0x16u, 0x00u}) NfcPioMatchesPolling(irqmask);
     for (uint32_t seed = 1; seed <= 10; ++seed) AudioMatchesPolling(seed);
     std::puts("device-service-test: ok");
 }

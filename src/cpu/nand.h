@@ -41,27 +41,26 @@ public:
 
     void ProcessWithInterrupt(int ivg) override;
 
-    // ProcessWithInterrupt() has work: a register access or a DMA transfer
-    // since the last call. Otherwise it would only publish the level it last
-    // published: the flash's busy and ready edges reach NBUSY when they
-    // happen (SendCommand, the ready callback).
+    // ProcessWithInterrupt() has work: it would change NBUSY, RD_RDY or the
+    // level it last published (ServiceIsNoop()). Its result depends only on
+    // the NFC's and the flash's state, which change only at register
+    // accesses, DMA transfers and the flash's ready callback (an event), so
+    // each of those decides it anew from the state it leaves.
     bool NeedsService() const { return touched_; }
+    // A register access gives the host work after the block only when the
+    // service would then do something. A command that makes the flash busy
+    // queues its ready event, which stops the run by itself.
+    bool HostWorkAfterAccess(u32 offset, bool write) const override { return touched_; }
 
-    void Read(u32 offset, void* buffer, u32 length) override {
-        touched_ = true;
-        RegisterDevice::Read(offset, buffer, length);
-    }
-    void Write(u32 offset, const void* buffer, u32 length) override {
-        touched_ = true;
-        RegisterDevice::Write(offset, buffer, length);
-    }
+    // 8- and 16-bit accesses reach these through RegisterDevice::Read/Write.
     u32 Read32(u32 offset) override {
-        touched_ = true;
-        return RegisterDevice::Read32(offset);
+        const u32 value = RegisterDevice::Read32(offset);
+        Settle();
+        return value;
     }
     void Write32(u32 offset, u32 value) override {
-        touched_ = true;
         RegisterDevice::Write32(offset, value);
+        Settle();
     }
 
 protected:
@@ -69,6 +68,11 @@ protected:
     void ResetECC();
     void CalculateECC(const u8* data, u32 length);
     void UpdateInterrupts();
+    // NFC_IRQSTAT as the guest reads it.
+    u16 IrqStat() const;
+    // ProcessWithInterrupt() would change nothing.
+    bool ServiceIsNoop() const;
+    void Settle() { touched_ = !ServiceIsNoop(); }
 
     void SetNotBusy(bool value);
     void SetWriteBufferEmpty(bool value);
@@ -101,6 +105,8 @@ protected:
 
     std::shared_ptr<NandFlash> nandFlash;
 
-    // Accessed since the last ProcessWithInterrupt().
+    // ProcessWithInterrupt() has work (NeedsService()).
     bool touched_ = true;
+    // The level UpdateInterrupts() last published, -1 before the first.
+    int publishedLevel_ = -1;
 };

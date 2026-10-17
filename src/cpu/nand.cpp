@@ -108,6 +108,7 @@ void NFC::AttachNandFlash(const std::shared_ptr<NandFlash>& flash) {
     nandFlash->SetReadyCallback([this] {
         SetNotBusy(true);
         UpdateInterrupts();
+        Settle();
     });
 }
 
@@ -122,19 +123,18 @@ void NFC::ResetECC()
 
 u32 NFC::DMARead(int x, int y, void* dest, u32 length)
 {
-    touched_ = true;
     u32 len = nandFlash->PageRead(static_cast<u8*>(dest), length);
     CalculateECC(static_cast<const u8*>(dest), len);
     transferCount += len;
     if (transferCount >= PageSize()) {
         pageReadPending = false;
     }
+    Settle();
     return len;
 }
 
 u32 NFC::DMAWrite(int x, int y, const void* source, u32 length)
 {
-    touched_ = true;
     u32 len = nandFlash->PageWrite(static_cast<const u8*>(source), length);
     CalculateECC(static_cast<const u8*>(source), len);
     transferCount += len;
@@ -142,6 +142,7 @@ u32 NFC::DMAWrite(int x, int y, const void* source, u32 length)
         pageWritePending = false;
         pageWriteDone = true;
     }
+    Settle();
     return len;
 }
 
@@ -193,14 +194,28 @@ void NFC::CalculateECC(const u8* data, u32 length) {
     }
 }
 
+u16 NFC::IrqStat() const {
+    return u16(notBusyRising) | u16(writeBufferOverflow) << 1 | u16(writeBufferEmptyRising) << 2 |
+           u16(readDataReady) << 3 | u16(pageWriteDone) << 4;
+}
+
+// What ProcessWithInterrupt() would set, compared with what is set.
+bool NFC::ServiceIsNoop() const {
+    if (!nandFlash) return false;
+    const bool ready = nandFlash->IsDataReady();
+    if (notBusy == nandFlash->IsBusy() || readDataReady != ready) return false;
+    return int((IrqStat() & ~irqmask) != 0) == publishedLevel_;
+}
+
 void NFC::UpdateInterrupts() {
-    u16 intStat = Read32(0x08);
+    u16 intStat = IrqStat();
     // NOTE that irqmask bits are active low. The level stays high while
     // WR_DONE waits for the guest's W1C: the core does not latch it again
     // while the NFC's ISR runs (BlackFinCpu::LatchLines), which used to skip
     // a 512-byte sector of the firmware's four-sector page-write state
     // machine when a raise queued earlier re-entered the ISR.
-    TriggerInterrupt((intStat & (~irqmask)) ? 1 : 0);
+    publishedLevel_ = (intStat & (~irqmask)) ? 1 : 0;
+    TriggerInterrupt(publishedLevel_);
 }
 
 void NFC::SetNotBusy(bool value) {
@@ -225,6 +240,5 @@ void NFC::ProcessWithInterrupt(int ivg) {
     SetNotBusy(!nandFlash->IsBusy());
     readDataReady = nandFlash->IsDataReady();
     UpdateInterrupts();
-    // Last: UpdateInterrupts() reads the registers through Read32().
     touched_ = false;
 }
