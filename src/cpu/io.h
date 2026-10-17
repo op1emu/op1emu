@@ -113,10 +113,28 @@ struct Register {
     std::string name;
     std::function<u32()> readCallback;
     std::function<void(u32)> writeCallback;
+    // Read and written in name order, which some write callbacks depend on
+    // (USB_CSR0's FLUSHFIFO before SERVICED_RXPKTRDY).
     std::map<std::string, Field> fields;
 
     u32 Read32();
     void Write32(u32 value);
+
+private:
+    // `fields` in the same order with their masks, rebuilt when a field is
+    // added; a copy of the register starts without it.
+    struct Flat {
+        u32 mask;
+        const Field* field;
+    };
+    struct FlatFields {
+        std::vector<Flat> list;
+        FlatFields() = default;
+        FlatFields(const FlatFields&) {}
+        FlatFields& operator=(const FlatFields&) { list.clear(); return *this; }
+    };
+    FlatFields flat_;
+    const std::vector<Flat>& Fields();
 };
 
 class RegisterDevice : public Device {
@@ -131,6 +149,13 @@ public:
 
 protected:
     std::map<u32, Register> registers;
+
+private:
+    // The register at a word offset, or null: `registers` by index, rebuilt
+    // when a register is added (USB adds some at its first access).
+    Register* Find(u32 offset);
+    std::vector<Register*> byWord_;
+    size_t indexed_ = 0;
 };
 
 #define REG32(r, a) Register &r = registers[a]; r.addr = a; r.name = #r;

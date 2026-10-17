@@ -70,7 +70,22 @@ bool MemoryDevice::UpdatePageTable(std::array<u8*, NUM_PAGE_TABLE_ENTRIES>& tabl
 }
 
 
-#define MAKE_32BIT_MASK(offset, length) (((~0U) >> (32 - (length))) << (offset))
+// A field's bits. The shift count is taken modulo 32, as x86 does: a field of
+// length 0 (USB_INTRUSB.SOF_B) covers every bit from its offset up, as it
+// did when this was a shift by 32 compiled to `shr %cl`.
+static u32 FieldMask(int offset, int length)
+{
+    return ((~0U) >> ((32 - length) & 31)) << offset;
+}
+
+const std::vector<Register::Flat>& Register::Fields()
+{
+    if (flat_.list.size() != fields.size()) {
+        flat_.list.clear();
+        for (const auto& [name, f] : fields) flat_.list.push_back({FieldMask(f.offset, f.length), &f});
+    }
+    return flat_.list;
+}
 
 u32 Register::Read32()
 {
@@ -78,9 +93,8 @@ u32 Register::Read32()
     if (readCallback) {
         value = readCallback();
     } else {
-        for (const auto& [name, f] : fields) {
-            u32 mask = MAKE_32BIT_MASK(f.offset, f.length);
-            value = (value & ~mask) | ((f.readCallback() << f.offset) & mask);
+        for (const Flat& f : Fields()) {
+            value = (value & ~f.mask) | ((f.field->readCallback() << f.field->offset) & f.mask);
         }
     }
     return value;
@@ -88,13 +102,30 @@ u32 Register::Read32()
 
 void Register::Write32(u32 value)
 {
-    for (const auto& [name, f] : fields) {
-        u32 mask = MAKE_32BIT_MASK(f.offset, f.length);
-        f.writeCallback((value & mask) >> f.offset);
+    for (const Flat& f : Fields()) {
+        f.field->writeCallback((value & f.mask) >> f.field->offset);
     }
     if (writeCallback) {
         writeCallback(value);
     }
+}
+
+Register* RegisterDevice::Find(u32 offset)
+{
+    if (offset & 3) {
+        auto iter = registers.find(offset);
+        return iter != registers.end() ? &iter->second : nullptr;
+    }
+    if (indexed_ != registers.size()) {
+        byWord_.clear();
+        for (auto& [addr, reg] : registers) {
+            if (addr & 3) continue;
+            if (addr / 4 >= byWord_.size()) byWord_.resize(addr / 4 + 1, nullptr);
+            byWord_[addr / 4] = &reg;
+        }
+        indexed_ = registers.size();
+    }
+    return offset / 4 < byWord_.size() ? byWord_[offset / 4] : nullptr;
 }
 
 void RegisterDevice::Read(u32 offset, void* buffer, u32 length)
@@ -122,17 +153,15 @@ void RegisterDevice::Write(u32 offset, const void* buffer, u32 length)
 
 u32 RegisterDevice::Read32(u32 offset)
 {
-    auto iter = registers.find(offset);
-    if (iter != registers.end()) {
-        return iter->second.Read32();
+    if (Register* reg = Find(offset)) {
+        return reg->Read32();
     }
     return 0;
 }
 
 void RegisterDevice::Write32(u32 offset, u32 value)
 {
-    auto iter = registers.find(offset);
-    if (iter != registers.end()) {
-        iter->second.Write32(value);
+    if (Register* reg = Find(offset)) {
+        reg->Write32(value);
     }
 }
