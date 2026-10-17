@@ -815,6 +815,16 @@ python3 -m op1prof perf --binary $B $IN --window main-boot:main-display \
   --event cycles:u --period 4000000 --call-graph lbr
 ```
 
+An LBR call stack starts at the target of the last call, not at the
+sampled instruction: where the function called jumped on to another, the
+stack still names the first. Chained blocks run each other by such jumps
+(musttail), so with LBR stacks `report` takes every sample's leaf from a
+second `perf script -G` pass, which prints the sampled IP alone, and
+refuses the capture when the two passes do not list the same samples in
+the same order. Before this, all of a chained run's time went to its first
+block: on a stock boot with chaining, `bb_0x01a9bd30` showed 0.37 s of self
+time from 6 ms of its own samples, the rest from the blocks it chained to.
+
 For `cpu-clock` it also compares the sampled CPU
 time with the trace's execution CPU. For a non-precise event it says that the
 totals are only valid per block and symbol.

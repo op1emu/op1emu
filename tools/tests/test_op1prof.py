@@ -361,6 +361,68 @@ def test_parse_samples_reads_call_chains():
     assert last.frames == (("[unknown]", "[unknown]"),) and last.period == 7
 
 
+def _leaves(*samples):
+    """perf script -G text: (tid, seconds, period, frame), the frame of the sampled IP."""
+    return [f" {tid} {seconds}:     {period}     {0x2000 + i:x} {frame}"
+            for i, (tid, seconds, period, frame) in enumerate(samples)]
+
+
+# Core::run called bb_0x01a9bd30, which ran bb_0x019be3f0 by a musttail
+# jump: the LBR call stack's leaf is the target of the last call, the
+# sampled IP is in the block jumped to.
+CHAINED = [
+    (42, "10.000000100", 250, ["bb_0x01a9bd30 (/j.so)", "Core::run(unsigned int) (/x/op1emu)", RUN]),
+    (42, "10.000000200", 50, ["EmulatorMemory::read16(unsigned int) const (/x/op1emu)", "bb_0x019be3f0 (/j.so)",
+                              "Core::run(unsigned int) (/x/op1emu)", RUN]),
+]
+CHAINED_LEAVES = [
+    (42, "10.000000100", 250, "bb_0x019be3f0 (/j.so)"),
+    (42, "10.000000200", 50, "EmulatorMemory::read16(unsigned int) const (/x/op1emu)"),
+]
+
+
+def test_lbr_leaf_is_the_sampled_ip_not_the_block_the_chain_was_entered_by():
+    first, second = perf_report.with_leaves(perf_report.parse_samples(_script(*CHAINED)),
+                                            perf_report.parse_leaves(_leaves(*CHAINED_LEAVES)))
+    assert first.frames == (("bb_0x019be3f0", "j.so"), ("Core::run(unsigned int)", "op1emu"),
+                            ("BlackFinCpu::Run()", "op1emu"))
+    assert second.frames == next(perf_report.parse_samples(_script(CHAINED[1]))).frames
+    result = perf_report.attribute([first, second], _perf_trace(), ("a", "b"), Categories.load(),
+                                   perf_report.Labels())
+    assert result.self_blocks == {"bb_0x019be3f0": 250}
+    assert result.incl_blocks == {"bb_0x019be3f0": 300}
+
+
+def test_leaves_must_be_the_same_samples_in_the_same_order():
+    chains = perf_report.parse_samples(_script(*CHAINED))
+    other = [CHAINED_LEAVES[0], (42, "10.000000200", 51, CHAINED_LEAVES[1][3])]
+    with pytest.raises(ValueError, match="sample 1"):
+        list(perf_report.with_leaves(chains, perf_report.parse_leaves(_leaves(*other))))
+    with pytest.raises(ValueError, match="2 samples with call chains, 1 without"):
+        list(perf_report.with_leaves(perf_report.parse_samples(_script(*CHAINED)),
+                                     perf_report.parse_leaves(_leaves(CHAINED_LEAVES[0]))))
+    with pytest.raises(ValueError, match="cannot parse"):
+        list(perf_report.parse_leaves([" 42 10.000000100:     250 "]))
+
+
+@pytest.mark.parametrize("call_graph, leaf", [("lbr", "bb_0x019be3f0"), ("fp", "bb_0x01a9bd30")])
+def test_analyze_takes_leaves_from_the_sampled_ip_for_lbr_captures(tmp_path, monkeypatch, call_graph, leaf):
+    capture = _capture(tmp_path, _perf_trace())
+    info = json.loads((capture / "capture.json").read_text())
+    (capture / "capture.json").write_text(json.dumps({**info, "call_graph": call_graph}))
+    passes = []
+
+    def script(data, call_chains=True):
+        passes.append(call_chains)
+        return _script(*CHAINED) if call_chains else _leaves(*CHAINED_LEAVES)
+
+    monkeypatch.setattr(perf_report, "_perf_script", script)
+    data = perf_report.analyze(capture, Categories.load(), perf_report.Labels())
+    assert data["blocks"][0]["block"] == leaf
+    # Frame-pointer chains start at the sampled IP already: one pass.
+    assert passes == ([True, False] if call_graph == "lbr" else [True])
+
+
 def _perf_trace(tid=42):
     return {"schema": "op1.trace.v2", "dropped": 0, "cpu_thread_tid": tid, "traceEvents": [
         {"name": "a", "cat": "mark", "ts": 10_000_000.0, "args": {"wall_ns": 0, "thread_cpu_ns": 0}},

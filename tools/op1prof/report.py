@@ -25,6 +25,9 @@ BLOCK_PREFIX = "bb_0x"
 
 HEADER = re.compile(r"^\s*(?P<tid>\d+)\s+(?P<time>\d+\.\d+):\s+(?P<period>\d+)\s*$")
 FRAME = re.compile(r"^\s+(?P<ip>[0-9a-f]+)\s+(?P<sym>.*)\s+\((?P<dso>[^()]*)\)\s*$")
+# `perf script -G`: the header and the sampled IP's frame on one line.
+LEAF = re.compile(r"^\s*(?P<tid>\d+)\s+(?P<time>\d+\.\d+):\s+(?P<period>\d+)"
+                  r"\s+(?P<ip>[0-9a-f]+)\s+(?P<sym>.*)\s+\((?P<dso>[^()]*)\)\s*$")
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,35 @@ def parse_samples(lines: Iterable[str]) -> Iterator[Sample]:
             header, frames = None, []
     if header:
         yield _sample(header, frames)
+
+
+def parse_leaves(lines: Iterable[str]) -> Iterator[Sample]:
+    """Samples from `perf script -G -F tid,time,period,ip,sym,dso --ns`:
+    each with the one frame of its sampled IP."""
+    for line in lines:
+        if not line.strip():
+            continue
+        match = LEAF.match(line)
+        if not match:
+            raise ValueError(f"cannot parse a perf script line without call chains: {line.strip()[:120]!r}")
+        yield _sample(match, [(match.group("sym"), match.group("dso").rsplit("/", 1)[-1])])
+
+
+def with_leaves(samples: Iterable[Sample], leaves: Iterable[Sample]) -> Iterator[Sample]:
+    """Each sample with its leaf frame replaced by the function of its
+    sampled IP. An LBR call stack starts at the target of the last call,
+    which is where the IP is unless that function jumped elsewhere since:
+    generated code runs the blocks it chains by musttail jumps, so every
+    block after the first of a run had its time charged to the first.
+    `leaves` are the same samples in the same order (`parse_leaves`)."""
+    samples, leaves = list(samples), list(leaves)
+    if len(samples) != len(leaves):
+        raise ValueError(f"perf script gave {len(samples)} samples with call chains, {len(leaves)} without")
+    for index, (sample, leaf) in enumerate(zip(samples, leaves)):
+        if (sample.tid, sample.time_ns, sample.period) != (leaf.tid, leaf.time_ns, leaf.period):
+            raise ValueError(f"perf script sample {index} differs with and without call chains")
+        yield Sample(tid=sample.tid, time_ns=sample.time_ns, period=sample.period,
+                     frames=leaf.frames + sample.frames[1:])
 
 
 def _sample(header: re.Match, frames: List[Tuple[str, str]]) -> Sample:
@@ -307,6 +339,9 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
     trace_data = trace.load(str(capture / "run" / "trace.json"))
     if samples is None:
         samples = parse_samples(_perf_script(capture / "perf.jit.data"))
+        # A frame-pointer chain starts at the sampled IP already.
+        if info.get("call_graph", "fp") == "lbr":
+            samples = with_leaves(samples, parse_leaves(_perf_script(capture / "perf.jit.data", call_chains=False)))
     result = attribute(samples, trace_data, window, categories, labels, callers_of)
     phase = trace.phase(trace_data, *window)
     execution = result.execution
@@ -352,9 +387,9 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
     return data
 
 
-def _perf_script(data: Path) -> List[str]:
-    script = subprocess.run([*perf.perf_command(data.parent), "script", "-i", str(data), "-F",
-                             "tid,time,period,ip,sym,dso", "--ns"],
+def _perf_script(data: Path, call_chains: bool = True) -> List[str]:
+    script = subprocess.run([*perf.perf_command(data.parent), "script", "-i", str(data),
+                             *([] if call_chains else ["-G"]), "-F", "tid,time,period,ip,sym,dso", "--ns"],
                             capture_output=True, text=True)
     if script.returncode != 0:
         raise RuntimeError(f"perf script failed: {script.stderr.strip()[-300:]}")
