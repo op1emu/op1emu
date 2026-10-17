@@ -98,6 +98,12 @@ public:
     const std::map<u32, std::function<void(u32, u32)>>& WriteHooks() const { return writeHooks; }
 
 protected:
+    // get_device() for addr, from a small per-thread cache of the addresses
+    // looked up last (the same few MMRs, mostly). Exact: an entry holds only
+    // for the device map it was looked up in (generation_).
+    Device* Find(u32 addr) const;
+    uint64_t generation_ = 0;
+
     std::shared_ptr<FastMem> fastmem;
     std::recursive_mutex mutex;
     std::shared_ptr<std::array<u8*, NUM_PAGE_TABLE_ENTRIES>> pageTable;

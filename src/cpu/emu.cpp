@@ -4,14 +4,18 @@
 #include "emu.h"
 #include <utils/log.h>
 
+// Unique across every Emulator and every change to one's device map.
+static std::atomic<uint64_t> deviceMapGenerations{0};
+
 Emulator::Emulator()
-    : directPages(NUM_PAGE_TABLE_ENTRIES, nullptr)
+    : generation_(++deviceMapGenerations), directPages(NUM_PAGE_TABLE_ENTRIES, nullptr)
 {
     pageTable = std::make_shared<std::array<u8*, NUM_PAGE_TABLE_ENTRIES>>();
 }
 
 void Emulator::BindDevice(Device* dev)
 {
+    generation_ = ++deviceMapGenerations;
     devices.push_back(dev);
     deviceSegments.emplace(dev->BaseAddress(), dev);
     deviceSegments.emplace(dev->EndAddress(), dev);
@@ -43,10 +47,25 @@ static Device* get_device(u32 addr, const std::map<u32, Device*>& devices)
     return nullptr;
 }
 
+Device* Emulator::Find(u32 addr) const
+{
+    struct Entry {
+        uint64_t generation;
+        u32 addr;
+        Device* dev;
+    };
+    thread_local Entry cache[256] = {};
+    Entry& entry = cache[(addr >> 2) & 255];
+    if (entry.generation == generation_ && entry.addr == addr) return entry.dev;
+    Device* dev = get_device(addr, deviceSegments);
+    entry = {generation_, addr, dev};
+    return dev;
+}
+
 void Emulator::MemoryRead(u32 addr, void* buffer, int length)
 {
     while (length > 0) {
-        Device* dev = get_device(addr, deviceSegments);
+        Device* dev = Find(addr);
         if (!dev) {
             length = 0;
         } else {
@@ -63,7 +82,7 @@ void Emulator::MemoryRead(u32 addr, void* buffer, int length)
 void Emulator::MemoryWrite(u32 addr, const void* buffer, int length)
 {
     while (length > 0) {
-        Device* dev = get_device(addr, deviceSegments);
+        Device* dev = Find(addr);
         if (!dev) {
             length = 0;
         } else {
@@ -79,7 +98,7 @@ void Emulator::MemoryWrite(u32 addr, const void* buffer, int length)
 
 bool Emulator::Maps(u32 addr, u32 length)
 {
-    const Device* dev = get_device(addr, deviceSegments);
+    const Device* dev = Find(addr);
     return dev && uint64_t(addr) + length - 1 <= dev->EndAddress();
 }
 
@@ -102,7 +121,7 @@ u32 Emulator::MemoryRead32(u32 vaddr)
     if (readHooks.find(vaddr) != readHooks.end()) {
         return readHooks[vaddr](vaddr);
     } else {
-        Device* dev = get_device(vaddr, deviceSegments);
+        Device* dev = Find(vaddr);
         if (!dev) {
             return 0;
         } else {
@@ -134,7 +153,7 @@ void Emulator::MemoryWrite32(u32 vaddr, u32 value)
     if (writeHooks.find(vaddr) != writeHooks.end()) {
         writeHooks[vaddr](vaddr, value);
     } else {
-        Device* dev = get_device(vaddr, deviceSegments);
+        Device* dev = Find(vaddr);
         if (dev) {
             u32 offset = vaddr - dev->BaseAddress();
             dev->Write32(offset, value);
@@ -155,7 +174,7 @@ bool Emulator::MemoryWriteExclusive32(u32 vaddr, u32 value, u32 expected)
 
 void* Emulator::MemoryMap(u32 addr)
 {
-    Device* dev = get_device(addr, deviceSegments);
+    Device* dev = Find(addr);
     if (!dev) {
         return nullptr;
     } else {
@@ -196,7 +215,7 @@ bool Emulator::Quiet(u32 addr) const
 {
     constexpr u32 kPageSize = 1u << PAGE_BITS;
     if (addr >= 0xFFC00000) return false;
-    const Device* dev = get_device(addr, deviceSegments);
+    const Device* dev = Find(addr);
     if (!dev || typeid(*dev) != typeid(MemoryDevice)) return false;
     const u32 first = addr & ~(kPageSize - 1), last = first + (kPageSize - 1);
     return readHooks.lower_bound(first) == readHooks.upper_bound(last) &&
@@ -206,7 +225,7 @@ bool Emulator::Quiet(u32 addr) const
 bool Emulator::HostWorkAfter(u32 addr, u32 length, bool write) const
 {
     if (addr < 0xFFC00000) return !Quiet(addr);
-    const Device* dev = get_device(addr, deviceSegments);
+    const Device* dev = Find(addr);
     if (!dev || uint64_t(addr) + length - 1 > dev->EndAddress()) return true;
     if (readHooks.count(addr) || writeHooks.count(addr)) return true;
     return dev->HostWorkAfterAccess(addr - dev->BaseAddress(), write);
@@ -214,7 +233,7 @@ bool Emulator::HostWorkAfter(u32 addr, u32 length, bool write) const
 
 bool Emulator::IsMemoryValid(u32 addr)
 {
-    return get_device(addr, deviceSegments) != nullptr;
+    return Find(addr) != nullptr;
 }
 
 void Emulator::PatchSoftwareBreak(u32 addr, u8 num)
