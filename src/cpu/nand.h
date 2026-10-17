@@ -52,6 +52,14 @@ public:
     // queues its ready event, which stops the run by itself.
     bool HostWorkAfterAccess(u32 offset, bool write) const override { return touched_; }
 
+#ifdef ENABLE_PROFILING
+    // What ProcessWithInterrupt() sets, packed: the dry run's check that a
+    // service it skipped would have changed nothing.
+    u32 ServiceState() const {
+        return u32(notBusy) | u32(notBusyRising) << 1 | u32(readDataReady) << 2 | u32(publishedLevel_ + 1) << 3;
+    }
+#endif
+
     // 8- and 16-bit accesses reach these through RegisterDevice::Read/Write.
     u32 Read32(u32 offset) override {
         const u32 value = RegisterDevice::Read32(offset);

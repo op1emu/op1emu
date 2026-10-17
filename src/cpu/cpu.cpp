@@ -457,6 +457,9 @@ HaltReason BlackFinCpu::Run() {
     if (auto* stats = Service()) stats->current = stats->other;
 #endif
     ServiceDevices(ivg);
+#ifdef ENABLE_PROFILING
+    if (would) CheckSkippedServices(ivg);
+#endif
     // The guest time at the end of the block: timers count to it.
     const uint64_t blockEnd = time_.Cycles();
     coreTimer->Advance(blockEnd);
@@ -833,6 +836,28 @@ void BlackFinCpu::ServiceDevices(int ivg) {
     // does nothing (MPROG is set and cleared within the call).
     if (ivg != TWI::kIvg && s.twi->NeedsService(time_.Nanoseconds())) ServiceDevice(*s.twi, s.twiIndex, ivg);
 }
+
+#ifdef ENABLE_PROFILING
+// Dry run, after a block that would have chained: the devices whose accesses
+// keep chaining when they leave a service nothing to do (NFC, DMA) are
+// serviced anyway, and must come out of it as they went in. A run that
+// chains skips these calls; the check says that skipping them was right.
+void BlackFinCpu::CheckSkippedServices(int ivg) {
+    auto& s = serviced_;
+    bool changed = false;
+    if (!s.nfc->NeedsService()) {
+        const u32 before = s.nfc->ServiceState();
+        s.nfc->ProcessWithInterrupt(ivg);
+        changed |= s.nfc->ServiceState() != before;
+    }
+    if (!s.dma->NeedsService(time_.Nanoseconds())) {
+        const uint64_t work = s.dma->ServiceWork(), idle = s.dma->IdleUntilNs();
+        s.dma->ProcessWithInterrupt(ivg);
+        changed |= s.dma->ServiceWork() != work || s.dma->IdleUntilNs() != idle;
+    }
+    if (changed) ++hostWork_[kWorkQuiet];
+}
+#endif
 
 void BlackFinCpu::RaiseInterrupt(int ivg) {
 #ifdef ENABLE_PROFILING

@@ -214,7 +214,11 @@ protected:
     static constexpr uint64_t kMaxCatchupTicks = 64;
 #ifdef ENABLE_PROFILING
     // The host's work between blocks, by kind, for the dry run's check.
-    enum HostWork { kWorkService, kWorkTimerTick, kWorkExpiry, kWorkPanel, kWorkEvent, kWorkLatch, kWorkCec, kWorkKinds };
+    // kWorkQuiet: a service the device's contract skipped would have changed
+    // something (CheckSkippedServices).
+    enum HostWork { kWorkService, kWorkTimerTick, kWorkExpiry, kWorkPanel, kWorkEvent, kWorkLatch, kWorkCec, kWorkQuiet,
+                    kWorkKinds };
+    void CheckSkippedServices(int ivg);
     std::array<uint64_t, kWorkKinds> hostWork_{};
     ChainCounts chainCounts_;
     void CountChain(uint32_t budget, uint32_t retired, uint32_t chained, uint64_t accessStops);

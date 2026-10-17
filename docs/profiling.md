@@ -196,9 +196,23 @@ the next TWI byte, the RTC's next calendar change, the core timer's expiry or
 the next GP timer tick. It is 0 when a device it services already has work, and
 at PCs where the host must see the block start: 0xFFA00000 (which drops every
 translation) and, in profiling builds, the range of every mark not yet fired.
-During the run the budget drops to 0 when the host gets work: an access that
-reaches a device (anything but plain RAM), anything another thread hands the
-CPU thread, and in bcore every interrupt entry, return, exception and halt.
+During the run the budget drops to 0 when the host gets work: an access
+after which the device it reached may need the host (anything but plain RAM,
+unless the device says otherwise; see below), an event a device queues during
+the access, anything another thread hands the CPU thread, and in bcore every
+interrupt entry, return, exception and halt.
+
+A device answers for its accesses after each one (`Device::HostWorkAfterAccess`;
+yes by default). The host's work after a block is the device service, the
+timers, the panel, events and latching interrupt lines, and the run's budget
+already covers what of it comes due in time, so an access that changes none
+of it, nor when any of it comes due, can let the run go on. Levels an access
+changes are published inside it, as before. The NFC says no when its service
+would then change nothing (it sets NBUSY and RD_RDY from the flash and
+publishes its level; it is decided again from the state each access, DMA
+transfer and ready callback leaves): the firmware's byte-by-byte PIO reads
+stay in generated code. So do reads of the CEC (IPEND), the DMA and the GP
+timers, and acknowledgements of a DMA channel's IRQ_STATUS.
 A block that ends at or past the budget, with an interrupt pending, or whose
 successor is not compiled returns. Chaining runs the guest's work block for
 block as before: every mark's counters, `runs` and `translated` included, are
@@ -219,7 +233,9 @@ profiling option works on chained runs.
 `--profile-chain-dry` compiles blocks to say they would chain
 (`CpuState::chain_would`) and return instead, and the CPU then checks that
 it does nothing after them: no device service, timer tick or expiry, TE
-edge, event, latch or interrupt check. A `[chain]` line after every mark
+edge, event, latch or interrupt check. The NFC and the DMA, whose accesses
+keep chaining when their service would do nothing, are then serviced anyway
+and must come out of it unchanged (`violation_quiet` when not). A `[chain]` line after every mark
 counts the returns to the host by reason, cumulative:
 
 ```

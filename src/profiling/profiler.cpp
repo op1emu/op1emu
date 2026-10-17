@@ -517,7 +517,7 @@ struct Profiler::Impl : BcoreEventSink {
                     " would=%" PRIu64 " violations=%" PRIu64,
                     name, chains.runs, chains.chained, chains.hostOnly, chains.service, chains.deadline,
                     chains.access, chains.cec, chains.pending, chains.miss, chains.would, chains.violations);
-        static const char* const kWork[] = {"service", "tick", "expiry", "panel", "event", "latch", "cec"};
+        static const char* const kWork[] = {"service", "tick", "expiry", "panel", "event", "latch", "cec", "quiet"};
         for (size_t kind = 0; kind < sizeof(kWork) / sizeof(kWork[0]); ++kind)
             if (chains.violation[kind]) std::printf(" violation_%s=%" PRIu64, kWork[kind], chains.violation[kind]);
         std::printf("\n");
