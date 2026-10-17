@@ -204,7 +204,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --profile-probes      Capture the marks file's probes (diagnostic)\n"
                      "  --profile-mark-digest Hashes of guest registers, CEC and RAM at every mark\n"
                      "  --profile-chain-dry   Blocks only report that they would chain; check that\n"
-                     "                        the host then has nothing to do ([chain] violations)\n"
+                     "                        the host then has nothing to do ([chain] violations;\n"
+                     "                        with --deterministic)\n"
                      "  --profile-dump-ir PCS Write the LLVM IR of blocks at these PCs (comma-separated hex)\n"
                      "  --profile-dump-dir D  Directory for those files (default ir)\n"
                      "  --profile-checksum-every N  Blocks between checksums (default 65536)\n"
@@ -223,6 +224,9 @@ static int RunEmulator(int argc, char* argv[]) {
         throw std::runtime_error("--input-script requires --headless");
     if (rtcEpoch && !deterministic)
         throw std::runtime_error("--rtc-epoch requires --deterministic");
+    // Wall mode chains a fixed number of packets, whatever is due.
+    if (chainDry && !deterministic)
+        throw std::runtime_error("--profile-chain-dry requires --deterministic");
 #ifndef ENABLE_PROFILING
     if (anyProfiling)
         throw std::runtime_error("Profiling options need a build with -DENABLE_PROFILING=ON");

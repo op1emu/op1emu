@@ -204,6 +204,14 @@ successor is not compiled returns. Chaining runs the guest's work block for
 block as before: every mark's counters, `runs` and `translated` included, are
 identical with `--no-chain`, which turns it off.
 
+That holds in deterministic mode (`--deterministic`), where guest time is
+packets and every due time is a packet count. In wall mode guest time is host
+time, which no packet count predicts, so a run chains at most 4096 packets
+whatever is due: the host sees an event or a timer up to as late as those
+packets take to run, as on a slower host. Wall mode never repeated a run's
+work to begin with; the dry run and its zero-violation result are for
+deterministic mode, and `--profile-chain-dry` requires it.
+
 Census, probe and checksum runs count every block start, so they never
 chain; `--profile-until` stops chaining once its mark fires. Every other
 profiling option works on chained runs.
