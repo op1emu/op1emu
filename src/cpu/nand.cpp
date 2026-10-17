@@ -214,8 +214,12 @@ void NFC::UpdateInterrupts() {
     // while the NFC's ISR runs (BlackFinCpu::LatchLines), which used to skip
     // a 512-byte sector of the firmware's four-sector page-write state
     // machine when a raise queued earlier re-entered the ISR.
-    publishedLevel_ = (intStat & (~irqmask)) ? 1 : 0;
-    TriggerInterrupt(publishedLevel_);
+    const int level = (intStat & (~irqmask)) ? 1 : 0;
+    // Publishing the level the SIC has changes nothing there: the core
+    // latches a line that stays high again after every block (LatchLines).
+    if (level == publishedLevel_) return;
+    publishedLevel_ = level;
+    TriggerInterrupt(level);
 }
 
 void NFC::SetNotBusy(bool value) {
