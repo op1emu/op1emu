@@ -239,7 +239,7 @@ and must come out of it unchanged (`violation_quiet` when not). A `[chain]` line
 counts the returns to the host by reason, cumulative:
 
 ```
-[chain] main-frame returns=11449265 chained=353807065 host_only=2 service=149007 deadline=238170 access=10926629 cec=31003 pending=0 miss=104454 would=0 violations=0
+[chain] main-frame returns=994324 chained=364262006 host_only=2 service=8567 deadline=238478 access=479438 cec=163251 pending=0 miss=104588 would=0 violations=0
 ```
 
 `returns` are runs, `chained` the blocks they ran after their first;
@@ -250,9 +250,11 @@ thread, `pending` with an interrupt to check, `miss` at a block not in the
 chain table. With the dry run, `would` counts the blocks that would have
 chained and `violations` those after which the host did something anyway,
 by kind (`violation_service=...`). On a stock boot to `main-frame` (the
-ECC-repaired image), 353,807,065 of 365,256,330 block ends would have
-chained, with no violation; chained, the boot returns to the host 11,449,265
-times, 95% of them after an NFC or other device access.
+ECC-repaired image), 364,262,006 of 365,256,330 block ends would have
+chained, with no violation; chained, the boot returns to the host 994,324
+times. Before device accesses could keep chaining it returned 11,449,265
+times, 10,926,629 of them after a device access, nearly all to an NFC or a
+DMA service with nothing to do; now 479,438.
 
 `--profile-mark-digest` prints a `[digest]` line at every mark: hashes of the
 guest registers (by group), the CEC's IPEND, ILAT and IMASK, and every RAM
