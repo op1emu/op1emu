@@ -74,18 +74,27 @@ def annotate(capture: Path, pc: int, allow_imprecise: bool, lines: int) -> str:
         raise ValueError(f"{info['event']} is not a precise event, so it cannot rank instructions: capture with "
                          "--event cycles:upp (or pass --allow-imprecise to see it anyway)")
     symbol = f"bb_0x{pc:08x}"
-    result = subprocess.run([*perf_command(capture), "annotate", "-i", str(capture / "perf.jit.data"), "--stdio",
-                             "-s", symbol],
-                            capture_output=True, text=True)
-    if result.returncode != 0 or not result.stdout.strip():
-        raise ValueError(f"perf annotate found no samples in {symbol}: {result.stderr.strip()[-300:]}")
-    text = result.stdout.splitlines()
-    head = [f"perf annotate {symbol} ({info['event']}, window {' -> '.join(info['window'])})"]
+    # The block's rarely run paths are a symbol of their own, which the report
+    # counts as the block (report.block_pc): each part that has samples.
+    parts, errors = [], []
+    for part in (symbol, f"{symbol}.cold"):
+        result = subprocess.run([*perf_command(capture), "annotate", "-i", str(capture / "perf.jit.data"),
+                                 "--stdio", "-s", part],
+                                capture_output=True, text=True)
+        if result.returncode != 0 or not result.stdout.strip():
+            errors.append(result.stderr.strip()[-300:])
+            continue
+        text = result.stdout.splitlines()
+        parts += [f"perf annotate {part} ({info['event']}, window {' -> '.join(info['window'])})"]
+        parts += text[:lines] + ([f"... {len(text) - lines} more lines"] if len(text) > lines else [])
+    if not parts:
+        raise ValueError(f"perf annotate found no samples in {symbol} or {symbol}.cold: {errors[0]}")
+    head = []
     if not info["precise"]:
         head.append("not a precise event: shares are where the timer landed, not where the time went")
     dumps = sorted((capture / "run" / "ir").glob(f"{symbol}.*.ll")) if (capture / "run" / "ir").is_dir() else []
     head += [f"IR: {path}" for path in dumps]
-    return "\n".join(head + text[:lines] + ([f"... {len(text) - lines} more lines"] if len(text) > lines else []))
+    return "\n".join(head + parts)
 
 
 # perf copies every file it records samples in (the binary snapshot, and the

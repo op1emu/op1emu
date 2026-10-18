@@ -1187,8 +1187,35 @@ def test_run_dumps_ir_of_chosen_blocks_and_annotate_needs_a_precise_event(files,
         returncode, stdout, stderr = 0, "\n".join(f"line {i}" for i in range(5)), ""
     monkeypatch.setattr(perf.subprocess, "run", lambda command, **kw: calls.append(command) or Done())
     text = perf.annotate(capture, 0x1a5e27e, True, 3)
-    assert calls[0][-2:] == ["-s", "bb_0x01a5e27e"]
+    assert calls[0][-2:] == ["-s", "bb_0x01a5e27e"] and calls[1][-2:] == ["-s", "bb_0x01a5e27e.cold"]
     assert "shares are where the timer landed" in text and "... 2 more lines" in text
+
+
+def _annotate_with(monkeypatch, tmp_path, sampled):
+    """annotate with perf answering for the symbols in `sampled` only."""
+    capture = tmp_path / "capture"
+    capture.mkdir(parents=True)
+    (capture / "capture.json").write_text(json.dumps({"event": "cycles:upp", "precise": True, "window": ["a", "b"]}))
+
+    class Result:
+        def __init__(self, symbol):
+            self.returncode = 0 if symbol in sampled else 255
+            self.stdout = f"code of {symbol}" if symbol in sampled else ""
+            self.stderr = "" if symbol in sampled else "Error:\nThe perf.jit.data data has no samples!"
+    monkeypatch.setattr(perf.subprocess, "run", lambda command, **kw: Result(command[-1]))
+    return perf.annotate(capture, 0x1a5e27e, False, 10)
+
+
+def test_annotate_shows_a_blocks_cold_part(monkeypatch, tmp_path):
+    # Only the cold part sampled: that is the block's code, not "no samples".
+    text = _annotate_with(monkeypatch, tmp_path / "cold", {"bb_0x01a5e27e.cold"})
+    assert "perf annotate bb_0x01a5e27e.cold (cycles:upp" in text and "code of bb_0x01a5e27e.cold" in text
+    assert "perf annotate bb_0x01a5e27e " not in text
+    # Both sampled: hot part first, then the cold part.
+    text = _annotate_with(monkeypatch, tmp_path / "both", {"bb_0x01a5e27e", "bb_0x01a5e27e.cold"})
+    assert text.index("code of bb_0x01a5e27e\n") < text.index("code of bb_0x01a5e27e.cold")
+    with pytest.raises(ValueError, match=r"no samples in bb_0x01a5e27e or bb_0x01a5e27e\.cold"):
+        _annotate_with(monkeypatch, tmp_path / "none", set())
 
 
 # ---- gate and run hygiene ----

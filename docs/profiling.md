@@ -427,7 +427,8 @@ to those blocks' compile CPU in the trace. `run --dump-pc PC` and
 `perf --dump-pc PC` (repeatable) put the files in the run's `ir/`.
 
 `annotate CAPTURE --pc PC` shows `perf annotate` of that block's generated
-code from a perf capture (the first `--lines` lines, default 120), beside the
+code from a perf capture (the first `--lines` lines, default 120, of each
+part: the block and its `.cold` part, whichever have samples), beside the
 IR files of the same run. It refuses a
 non-precise event, which cannot rank instructions, unless
 `--allow-imprecise`:
