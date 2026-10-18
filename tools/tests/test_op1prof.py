@@ -596,6 +596,7 @@ def test_pc_range_and_symbol_labels(tmp_path):
     labels = perf_report.Labels(census.Symbols(symbols), [perf_report.PcRange("loop", 0x200, 0x2ff)])
     assert labels(0x104) == "bb_0x00000104 dsp_fir+0x4" and labels(0x250) == "loop"
     assert perf_report.block_pc("bb_0x01a5e27e") == 0x01a5e27e and perf_report.block_pc("bb_main") is None
+    assert perf_report.block_pc("bb_0x01a5e27e.cold") == 0x01a5e27e
 
 
 def test_phases_cover_every_pair_of_consecutive_marks():

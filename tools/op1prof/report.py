@@ -100,10 +100,12 @@ def _sample(header: re.Match, frames: List[Tuple[str, str]]) -> Sample:
 
 
 def block_pc(symbol: str) -> Optional[int]:
+    """The guest PC of a block function, or of its cold part
+    (bb_0x<pc>.cold, where bcore's backend split the block)."""
     if not symbol.startswith(BLOCK_PREFIX):
         return None
     try:
-        return int(symbol[len(BLOCK_PREFIX) - 2:], 16)
+        return int(symbol[len(BLOCK_PREFIX) - 2:].removesuffix(".cold"), 16)
     except ValueError:
         return None
 

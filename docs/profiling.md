@@ -467,7 +467,9 @@ perf inject --jit -i boot.perf -o boot.jit.perf
 `perf inject` needs no setting, as it opens the dump through the path perf
 recorded when the emulator mapped it.
 
-Generated code then appears as `bb_0x<pc>` symbols, one per guest block.
+Generated code then appears as `bb_0x<pc>` symbols, one per guest block, and
+`bb_0x<pc>.cold` for the block's rarely run paths, which bcore's backend
+splits off to a region of their own; `op1prof` counts both as the block.
 `cpu-clock` samples are fine for symbol and address-range totals but cannot
 blame a single instruction; use a precise event such as `cycles:upp` for that.
 Unprivileged perf needs `kernel.perf_event_paranoid` at most 2, which allows
