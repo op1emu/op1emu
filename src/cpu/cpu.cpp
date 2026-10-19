@@ -343,6 +343,10 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     // the next run would write a host clock that may lag behind, so CYCLES
     // keeps the run's first value instead.
     core_->set_host_cycles(deterministic);
+#ifndef ENABLE_PROFILING
+    // Block runs are counted for the profiler only (Profiler::AfterRun).
+    core_->set_count_chained(false);
+#endif
     SetChaining(false);
 
     time_.StartWallClock();
