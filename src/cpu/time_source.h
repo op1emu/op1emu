@@ -48,7 +48,10 @@ public:
     // While a block runs, the 1-based index of the packet executing in it
     // (bcore's CpuState::packets), 0 between blocks: in deterministic mode a
     // device the block accesses then sees the time of the packet accessing
-    // it, not of the block's start.
+    // it, not of the block's start. bcore stores the index only where it can
+    // be read -- before each call into the host and when the block returns
+    // (Core::set_lazy_state) -- so it is current in a memory callback, not
+    // to another thread looking while the block runs.
     void SetBlockPackets(const uint32_t* index) { blockIndex_ = index; }
     // While a run chains blocks (bcore's CpuState::chain_packets), the
     // packets the blocks before the running one retired; 0 between runs.
