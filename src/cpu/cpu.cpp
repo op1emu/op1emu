@@ -573,6 +573,8 @@ void BlackFinCpu::SetChaining(bool chaining, bool dry) {
     core_->set_chaining(chaining, dry);
 }
 
+void BlackFinCpu::SetLoopBlocks(bool loop) { core_->set_loop_blocks(loop); }
+
 #ifdef ENABLE_PROFILING
 void BlackFinCpu::SetProfiler(Profiler* profiler) {
     profiler_ = profiler;

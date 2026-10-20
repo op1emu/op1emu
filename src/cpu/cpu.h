@@ -79,6 +79,11 @@ public:
     // dry, blocks only report that they would have (profiling builds check
     // that the host then had nothing to do). Before the first Run().
     void SetChaining(bool chaining, bool dry = false);
+    // Whether blocks that run themselves again in a native loop keep the
+    // guest registers in host registers across it (bcore's
+    // Core::set_loop_blocks; on by default). The same results either way.
+    // Before the first Run().
+    void SetLoopBlocks(bool loop);
 #ifdef ENABLE_PROFILING
     // Returns to the host by why the run ended (cumulative), and the dry
     // run's checks: profiling's [chain] lines.

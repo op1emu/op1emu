@@ -521,6 +521,11 @@ struct Profiler::Impl : BcoreEventSink {
         for (size_t kind = 0; kind < sizeof(kWork) / sizeof(kWork[0]); ++kind)
             if (chains.violation[kind]) std::printf(" violation_%s=%" PRIu64, kWork[kind], chains.violation[kind]);
         std::printf("\n");
+        // What bcore made of the guest's loops (BcoreStats), cumulative.
+        const BcoreStats loops = cpu.CoreStats();
+        std::printf("[loops] %s loop_blocks=%" PRIu64 " proven=%" PRIu64 " speculated=%" PRIu64 " vectorized=%" PRIu64
+                    "\n",
+                    name, loops.loop_blocks, loops.loops_proven, loops.loops_speculated, loops.loops_vectorized);
         std::fflush(stdout);
         if (census) DumpCensus(name);
         if (perfBegin == name) PerfWrite("enable\n");

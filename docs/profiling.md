@@ -256,6 +256,15 @@ times. Before device accesses could keep chaining it returned 11,449,265
 times, 10,926,629 of them after a device access, nearly all to an NFC or a
 DMA service with nothing to do; now 479,438.
 
+A `[loops]` line follows it: what bcore made of the guest's loops so far,
+from its counters (`BcoreStats`). `loop_blocks` are the blocks compiled as
+loop blocks (blocks that run themselves again keep the guest registers in
+host registers across the loop; `--no-loop-blocks` turns them off),
+`proven` their loops given a copy with every guest memory access checked
+once at the loop's entry, `speculated` the proven copies of a saturating
+MAC sum given a speculative copy, and `vectorized` the loops the vectorizer
+vectorized.
+
 `--profile-mark-digest` prints a `[digest]` line at every mark: hashes of the
 guest registers (by group), the CEC's IPEND, ILAT and IMASK, and every RAM
 device. Two runs that did the same work print the same lines, whatever the
@@ -383,7 +392,7 @@ when it fires, printed as a `[read]` line and recorded in the trace
  "mem": [{"name": "r1_prio", "base": "R1", "offset": "0xc"}, {"name": "current", "addr": "0xff802de4"}]}
 ```
 
-`regs` takes R0-R7, P0-P5, SP, FP, I0-I3, LC0, LC1, RETS, RETI, RETX, RETN,
+`regs` takes R0-R7, P0-P5, SP, FP, I0-I3, M0-M3, B0-B3, L0-L3, LT0, LT1, LB0, LB1, LC0, LC1, RETS, RETI, RETX, RETN,
 USP, SEQSTAT and SYSCFG; `mem` reads `words` 32-bit words (default 1) at an
 absolute `addr` or at a `base` register plus `offset`, up to 16 values per
 probe. Each hit is a trace event (category `probe`) with the block count,

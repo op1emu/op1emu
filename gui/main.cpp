@@ -111,6 +111,7 @@ static int RunEmulator(int argc, char* argv[]) {
     bool perfJitdump = false;
     bool profileCounters = false;
     bool noChain = false;
+    bool noLoopBlocks = false;
     bool chainDry = false;
     bool markDigest = false;
     bool profileProbes = false;
@@ -132,6 +133,7 @@ static int RunEmulator(int argc, char* argv[]) {
         else if (options && arg == "--headless") headless = true;
         else if (options && arg == "--deterministic") deterministic = true;
         else if (options && arg == "--no-chain") noChain = true;
+        else if (options && arg == "--no-loop-blocks") noLoopBlocks = true;
         else if (options && arg == "--profile-chain-dry") chainDry = anyProfiling = true;
         else if (options && arg == "--profile-mark-digest") markDigest = anyProfiling = true;
         else if (options && arg == "--rtc-epoch") {
@@ -188,6 +190,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "                        repeatable runs, as fast as the host allows\n"
                      "  --rtc-epoch SECONDS   RTC time at boot with --deterministic (default 2024-01-01)\n"
                      "  --no-chain            Return to the host after every guest block\n"
+                     "  --no-loop-blocks      Keep a guest loop's registers in memory across it\n"
+                     "                        (bcore loop blocks off; same results, slower)\n"
                      "  --twi-speedup N       Run the I2C bus N times faster than programmed\n"
                      "                        (default 10; 1 is the hardware's rate)\n"
                      "  --build-info          Print what this binary was built from (JSON) and exit\n"
@@ -265,6 +269,7 @@ static int RunEmulator(int argc, char* argv[]) {
     // (LdrExecutionThread).
     if (chainDry && noChain) throw std::runtime_error("--profile-chain-dry checks chaining: not with --no-chain");
     cpu.SetChaining(!noChain && positional.size() < 2, chainDry);
+    if (noLoopBlocks) cpu.SetLoopBlocks(false);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
 #ifdef ENABLE_PROFILING
     std::unique_ptr<Profiler> profiler;

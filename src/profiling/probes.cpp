@@ -27,6 +27,10 @@ const Register kRegisters[] = {
     REG("P0", dpregs[8]), REG("P1", dpregs[9]), REG("P2", dpregs[10]), REG("P3", dpregs[11]),
     REG("P4", dpregs[12]), REG("P5", dpregs[13]), REG("SP", dpregs[14]), REG("FP", dpregs[15]),
     REG("I0", iregs[0]), REG("I1", iregs[1]), REG("I2", iregs[2]), REG("I3", iregs[3]),
+    REG("M0", mregs[0]), REG("M1", mregs[1]), REG("M2", mregs[2]), REG("M3", mregs[3]),
+    REG("B0", bregs[0]), REG("B1", bregs[1]), REG("B2", bregs[2]), REG("B3", bregs[3]),
+    REG("L0", lregs[0]), REG("L1", lregs[1]), REG("L2", lregs[2]), REG("L3", lregs[3]),
+    REG("LT0", lt[0]), REG("LT1", lt[1]), REG("LB0", lb[0]), REG("LB1", lb[1]),
     REG("LC0", lc[0]), REG("LC1", lc[1]), REG("RETS", rets), REG("RETI", reti), REG("RETX", retx),
     REG("RETN", retn), REG("USP", usp), REG("SEQSTAT", seqstat), REG("SYSCFG", syscfg),
 };
