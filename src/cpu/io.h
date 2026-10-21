@@ -51,6 +51,12 @@ public:
     // them comes due, can say no. Levels it changes are published inside the
     // access as before. The default, yes, is always right.
     virtual bool HostWorkAfterAccess(u32 offset, bool write) const { return true; }
+    // A read at offset would return the same and do the same if repeated
+    // until the host next services this device or something writes to it:
+    // it has no effect and its value is a function of state that changes only
+    // then, not of the time (bcore's CpuState::unstable_reads counts those
+    // that are not). No by default.
+    virtual bool ReadStable(u32 offset) const { return false; }
 
     // What a service call moved or completed (DMA, TWI, USB: bytes; RTC: a
     // completed register write; NFC: the flash turning ready), for the

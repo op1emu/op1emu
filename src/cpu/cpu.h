@@ -87,6 +87,11 @@ public:
     // Whether an IDLE waits for a wakeup (deterministic mode, on by
     // default) or does nothing (wall mode). Before the first Run().
     void SetIdleWaits(bool waits);
+    // Loop blocks that wait skip to their last iteration (bcore's
+    // Core::set_steady_skip: 0 off, 1 dry, 2 on). Before the first Run().
+    void SetSteadySkip(int mode);
+    // Steady iterations dry mode counted (CpuState::steady_iterations).
+    uint64_t SteadyIterations() const;
 
 #ifdef ENABLE_PROFILING
     // Returns to the host by why the run ended (cumulative), and the dry

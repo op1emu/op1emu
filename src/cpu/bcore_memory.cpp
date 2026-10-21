@@ -43,25 +43,28 @@ uintptr_t EmulatorMemory::fast_base() const {
 
 uint8_t EmulatorMemory::read8(uint32_t addr) const {
     PROFILE_ACCESS(addr, 0, false);
-    bool hostWork;
-    const uint8_t value = emulator_.ReadAttended<uint8_t>(addr, hostWork);
+    bool hostWork, stable;
+    const uint8_t value = emulator_.ReadAttended<uint8_t>(addr, hostWork, stable);
     Attend(hostWork);
+    if (!stable && unstableReads_) ++*unstableReads_;
     return value;
 }
 
 uint16_t EmulatorMemory::read16(uint32_t addr) const {
     PROFILE_ACCESS(addr, 1, false);
-    bool hostWork;
-    const uint16_t value = emulator_.ReadAttended<uint16_t>(addr, hostWork);
+    bool hostWork, stable;
+    const uint16_t value = emulator_.ReadAttended<uint16_t>(addr, hostWork, stable);
     Attend(hostWork);
+    if (!stable && unstableReads_) ++*unstableReads_;
     return value;
 }
 
 uint32_t EmulatorMemory::read32(uint32_t addr) const {
     PROFILE_ACCESS(addr, 2, false);
-    bool hostWork;
-    const uint32_t value = emulator_.ReadAttended<uint32_t>(addr, hostWork);
+    bool hostWork, stable;
+    const uint32_t value = emulator_.ReadAttended<uint32_t>(addr, hostWork, stable);
     Attend(hostWork);
+    if (!stable && unstableReads_) ++*unstableReads_;
     return value;
 }
 

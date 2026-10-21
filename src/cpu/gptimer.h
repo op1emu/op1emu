@@ -21,6 +21,8 @@ public:
     void Write32(u32 offset, u32 value) override;
     // Reads have no effect: the host ticks the timers at its own times.
     bool HostWorkAfterAccess(u32 offset, bool write) const override { return write; }
+    // The timers change only at the host's ticks and at writes.
+    bool ReadStable(u32 offset) const override { return true; }
 
     void BindInterrupt(int id, int q, InterruptHandler callback);
 

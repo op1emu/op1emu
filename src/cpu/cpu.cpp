@@ -305,6 +305,7 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     // Initialize bcore after all devices are bound
     bcoreMemory_ = std::make_unique<EmulatorMemory>(emulator);
     bcoreMemory_->SetChainBudget(&cpuState_->chain_budget);
+    bcoreMemory_->SetUnstableReads(&cpuState_->unstable_reads);
     // A host request reaches the USB on the USB/IP thread; the CPU thread
     // services it after its next block.
     usb->SetHostRequestCallback([this] { StopChaining(); });
@@ -651,6 +652,10 @@ void BlackFinCpu::SetChaining(bool chaining, bool dry) {
 }
 
 void BlackFinCpu::SetLoopBlocks(bool loop) { core_->set_loop_blocks(loop); }
+
+void BlackFinCpu::SetSteadySkip(int mode) { core_->set_steady_skip(mode); }
+
+uint64_t BlackFinCpu::SteadyIterations() const { return cpuState_->steady_iterations; }
 
 void BlackFinCpu::SetIdleWaits(bool waits) { core_->set_idle_waits(waits && time_.Deterministic(), &idleWake_); }
 

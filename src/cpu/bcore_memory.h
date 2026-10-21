@@ -45,6 +45,9 @@ public:
     // (Emulator::HostWorkAfter) sets it to 0, so the run returns to the host
     // after the block. Not owned.
     void SetChainBudget(uint32_t* budget) { chainBudget_ = budget; }
+    // bcore's CpuState::unstable_reads: reads counted there when the device
+    // (or plain memory) cannot promise they would repeat (Device::ReadStable).
+    void SetUnstableReads(uint64_t* count) { unstableReads_ = count; }
 #ifdef ENABLE_PROFILING
     // Accesses that stopped a run's chaining (BlackFinCpu's [chain] counts).
     uint64_t ChainStops() const { return chainStops_; }
@@ -60,6 +63,7 @@ private:
 
     Emulator& emulator_;
     uint32_t* chainBudget_ = nullptr;
+    uint64_t* unstableReads_ = nullptr;
 #ifdef ENABLE_PROFILING
     Profiler* profiler_ = nullptr;
     profiling::MemoryCensus* census_ = nullptr;

@@ -231,7 +231,7 @@ static Device* WholeMmrAccess(Device* dev, u32 addr, bool hooks)
 }
 
 template <typename T>
-T Emulator::ReadAttended(u32 addr, bool& hostWork)
+T Emulator::ReadAttended(u32 addr, bool& hostWork, bool& stable)
 {
     const bool hooks = !readHooks.empty() || !writeHooks.empty();
     if (Device* dev = WholeMmrAccess<T>(addr >= 0xFFC00000 ? Find(addr) : nullptr, addr, hooks)) {
@@ -240,6 +240,7 @@ T Emulator::ReadAttended(u32 addr, bool& hostWork)
         if constexpr (sizeof(T) == 4) value = dev->Read32(offset);  // as MemoryRead32
         else dev->Read(offset, &value, sizeof(T));                  // as MemoryRead
         hostWork = dev->HostWorkAfterAccess(offset, false);
+        stable = dev->ReadStable(offset);
         return value;
     }
     T value;
@@ -247,6 +248,8 @@ T Emulator::ReadAttended(u32 addr, bool& hostWork)
     else if constexpr (sizeof(T) == 2) value = MemoryRead16(addr);
     else value = MemoryRead32(addr);
     hostWork = HostWorkAfter(addr, sizeof(T), false);
+    // Plain memory with no hook in its page: only stores change it.
+    stable = Quiet(addr);
     return value;
 }
 
@@ -267,9 +270,9 @@ void Emulator::WriteAttended(u32 addr, T value, bool& hostWork)
     hostWork = HostWorkAfter(addr, sizeof(T), true);
 }
 
-template u8 Emulator::ReadAttended<u8>(u32, bool&);
-template u16 Emulator::ReadAttended<u16>(u32, bool&);
-template u32 Emulator::ReadAttended<u32>(u32, bool&);
+template u8 Emulator::ReadAttended<u8>(u32, bool&, bool&);
+template u16 Emulator::ReadAttended<u16>(u32, bool&, bool&);
+template u32 Emulator::ReadAttended<u32>(u32, bool&, bool&);
 template void Emulator::WriteAttended<u8>(u32, u8, bool&);
 template void Emulator::WriteAttended<u16>(u32, u16, bool&);
 template void Emulator::WriteAttended<u32>(u32, u32, bool&);

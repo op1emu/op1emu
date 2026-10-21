@@ -130,6 +130,8 @@ public:
     // Reads have no effect, and acknowledging a channel's IRQ_STATUS changes
     // nothing a service would act on; any other write may (touched_).
     bool HostWorkAfterAccess(u32 offset, bool write) const override { return write && touched_; }
+    // The channels' registers change only in a service or a write.
+    bool ReadStable(u32 offset) const override { return true; }
 
     // ProcessWithInterrupt() has work at guest time nowNs: a register write
     // or a bus notice since the last call, or a running channel whose bus may

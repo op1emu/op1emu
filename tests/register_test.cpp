@@ -138,13 +138,13 @@ static void AttendedAccessesMatch(bool hook) {
     }
     for (u32 addr : {0x100u, 0xFFC000FEu, 0xFFC00100u, 0xFFC00102u, 0xFFC00104u, 0xFFC0010Cu, 0xFFC0010Du,
                      0xFFC0010Eu, 0xFFC0010Fu, 0xFFC00110u, 0xFFC00200u}) {
-        bool fastWork = false;
+        bool fastWork = false, fastStable = false;
         const std::string where = std::to_string(addr) + (hook ? " (hook)" : "");
-        Require(fast.ReadAttended<u8>(addr, fastWork) == slow.MemoryRead8(addr) &&
+        Require(fast.ReadAttended<u8>(addr, fastWork, fastStable) == slow.MemoryRead8(addr) &&
                     fastWork == slow.HostWorkAfter(addr, 1, false), "8-bit read at " + where);
-        Require(fast.ReadAttended<u16>(addr, fastWork) == slow.MemoryRead16(addr) &&
+        Require(fast.ReadAttended<u16>(addr, fastWork, fastStable) == slow.MemoryRead16(addr) &&
                     fastWork == slow.HostWorkAfter(addr, 2, false), "16-bit read at " + where);
-        Require(fast.ReadAttended<u32>(addr, fastWork) == slow.MemoryRead32(addr) &&
+        Require(fast.ReadAttended<u32>(addr, fastWork, fastStable) == slow.MemoryRead32(addr) &&
                     fastWork == slow.HostWorkAfter(addr, 4, false), "32-bit read at " + where);
         fast.WriteAttended<u8>(addr, 0x5A, fastWork);
         slow.MemoryWrite8(addr, 0x5A);

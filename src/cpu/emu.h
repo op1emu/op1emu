@@ -91,7 +91,8 @@ public:
     // MemoryRead8/16/32 and MemoryWrite8/16/32 followed by HostWorkAfter,
     // with one device lookup for both where an MMR access stays inside its
     // device: generated code's accesses outside the direct pages.
-    template <typename T> T ReadAttended(u32 addr, bool& hostWork);
+    // stable: as Device::ReadStable (plain memory: Quiet()).
+    template <typename T> T ReadAttended(u32 addr, bool& hostWork, bool& stable);
     template <typename T> void WriteAttended(u32 addr, T value, bool& hostWork);
     void RebuildDirectPages();
 
