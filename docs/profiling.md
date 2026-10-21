@@ -281,10 +281,11 @@ host registers across the loop; `--no-loop-blocks` turns them off),
 `proven` their loops given a copy with every guest memory access checked
 once at the loop's entry, `speculated` the proven copies of a saturating
 MAC sum given a speculative copy, `vectorized` the loops the vectorizer
-vectorized, and `steady` the loops given the test that skips a waiting
+vectorized, `steady` the loops given the test that skips a waiting
 loop to its last iteration (`--steady-skip`, on by default), with
 `steady_iterations` the iterations `--steady-skip dry` counts it would have
-skipped.
+skipped, and `circular` the circular DAG registers loop blocks took to stay
+in their buffers.
 
 `--profile-mark-digest` prints a `[digest]` line at every mark: hashes of the
 guest registers (by group), the CEC's IPEND, ILAT and IMASK, and every RAM

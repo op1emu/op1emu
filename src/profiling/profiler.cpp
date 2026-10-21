@@ -538,9 +538,9 @@ struct Profiler::Impl : BcoreEventSink {
         // What bcore made of the guest's loops (BcoreStats), cumulative.
         const BcoreStats loops = cpu.CoreStats();
         std::printf("[loops] %s loop_blocks=%" PRIu64 " proven=%" PRIu64 " speculated=%" PRIu64 " vectorized=%" PRIu64
-                    " steady=%" PRIu64 " steady_iterations=%" PRIu64 "\n",
+                    " steady=%" PRIu64 " steady_iterations=%" PRIu64 " circular=%" PRIu64 "\n",
                     name, loops.loop_blocks, loops.loops_proven, loops.loops_speculated, loops.loops_vectorized,
-                    loops.loops_steady, cpu.SteadyIterations());
+                    loops.loops_steady, cpu.SteadyIterations(), loops.dag_circular);
         std::fflush(stdout);
         if (census) DumpCensus(name);
         if (perfBegin == name) PerfWrite("enable\n");
