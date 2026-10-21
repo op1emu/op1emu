@@ -78,14 +78,19 @@ SPORT::SPORT(u32 baseAddr, int sportNum, const TimeSource& time)
     FIELD(SPORT_STAT, TXHRE, 6, 1, R(transmitHoldRegister.has_value()), N());
 }
 
-uint64_t SPORT::NextSampleNs(uint64_t startNs, uint64_t delivered) const {
+uint64_t SPORT::NextSampleNs(uint64_t startNs, uint64_t delivered, NextSample& memo) const {
     // DMARead/DMAWrite find floor(floor(elapsed * rate / 1e9) / slowdown)
     // samples due, which exceeds `delivered` exactly when
-    // elapsed * rate >= (delivered + 1) * slowdown * 1e9.
-    const unsigned __int128 needed = (unsigned __int128)(delivered + 1) * time_.Slowdown() * 1'000'000'000ULL;
+    // elapsed * rate >= (delivered + 1) * slowdown * 1e9. The DMA asks after
+    // every service and the answer changes once per sample: kept.
+    const uint64_t slowdown = time_.Slowdown();
+    if (memo.valid && memo.startNs == startNs && memo.delivered == delivered && memo.slowdown == slowdown)
+        return memo.at;
+    const unsigned __int128 needed = (unsigned __int128)(delivered + 1) * slowdown * 1'000'000'000ULL;
     const unsigned __int128 elapsed = (needed + sampleRateHz_ - 1) / sampleRateHz_;
     const unsigned __int128 at = startNs + elapsed;
-    return at > UINT64_MAX ? UINT64_MAX : uint64_t(at);
+    memo = {true, startNs, delivered, slowdown, at > UINT64_MAX ? UINT64_MAX : uint64_t(at)};
+    return memo.at;
 }
 
 uint64_t SPORT::DMAIdleUntil(bool toMemory, u32 length) const {
@@ -96,8 +101,8 @@ uint64_t SPORT::DMAIdleUntil(bool toMemory, u32 length) const {
     const bool stereo = toMemory ? receiveStereoFrameSync : transmitStereoFrameSync;
     const u32 frameSize = (wordLength > 16 ? 4 : 2) * (stereo ? 2 : 1);
     if (length / frameSize == 0) return UINT64_MAX;
-    if (toMemory) return dmaRxActive_ ? NextSampleNs(dmaRxStartNs_, totalRxSamplesDelivered_) : 0;
-    return dmaTxActive_ ? NextSampleNs(dmaTxStartNs_, totalTxSamplesDelivered_) : 0;
+    if (toMemory) return dmaRxActive_ ? NextSampleNs(dmaRxStartNs_, totalRxSamplesDelivered_, rxNext_) : 0;
+    return dmaTxActive_ ? NextSampleNs(dmaTxStartNs_, totalTxSamplesDelivered_, txNext_) : 0;
 }
 
 void SPORT::SetTransmitEnable() {
@@ -163,6 +168,28 @@ u32 SPORT::DMARead(int x, int y, void* dest, u32 length)
     return static_cast<u32>(available * frameSize);
 }
 
+uint64_t SPORT::TxAvailable(uint64_t requestedSamples) const
+{
+    // How many samples are due based on elapsed time?
+    uint64_t elapsedNs = time_.Nanoseconds() - dmaTxStartNs_;
+    uint64_t totalDue = (elapsedNs * sampleRateHz_) / 1'000'000'000ULL;
+    // FIXME: wall time runs the emulator slower than real time, so it divides
+    // the rate by TimeSource::kWallSlowdown; deterministic guest time does not.
+    totalDue = totalDue / time_.Slowdown();
+    uint64_t available = (totalDue > totalTxSamplesDelivered_)
+                         ? (totalDue - totalTxSamplesDelivered_) : 0;
+    return std::min(available, requestedSamples);
+}
+
+u32 SPORT::DMAWriteTake(u32 length) const
+{
+    // DMAWrite's early returns, then its available samples. Before the first
+    // transfer it only starts the clock: nothing is due yet.
+    if (!transmitEnabled || !dmaTxActive_) return 0;
+    const u32 frameSize = (transmitWordLength > 16 ? 4 : 2) * (transmitStereoFrameSync ? 2 : 1);
+    return u32(TxAvailable(length / frameSize) * frameSize);
+}
+
 u32 SPORT::DMAWrite(int x, int y, const void* source, u32 length)
 {
     if (!transmitEnabled) {
@@ -183,16 +210,7 @@ u32 SPORT::DMAWrite(int x, int y, const void* source, u32 length)
         dmaTxActive_ = true;
     }
 
-    // How many samples are due based on elapsed time?
-    uint64_t elapsedNs = time_.Nanoseconds() - dmaTxStartNs_;
-    uint64_t totalDue = (elapsedNs * sampleRateHz_) / 1'000'000'000ULL;
-    // FIXME: wall time runs the emulator slower than real time, so it divides
-    // the rate by TimeSource::kWallSlowdown; deterministic guest time does not.
-    totalDue = totalDue / time_.Slowdown();
-    uint64_t available = (totalDue > totalTxSamplesDelivered_)
-                         ? (totalDue - totalTxSamplesDelivered_) : 0;
-
-    if (available > requestedSamples) available = requestedSamples;
+    uint64_t available = TxAvailable(requestedSamples);
     if (available == 0) return 0;  // Not time yet — DMA retries next cycle
 
     if (audioOutputCallback) {

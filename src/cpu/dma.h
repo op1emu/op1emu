@@ -20,6 +20,9 @@ public:
 
     virtual u32 DMARead(int x, int y, void* dest, u32 length) = 0;
     virtual u32 DMAWrite(int x, int y, const void* source, u32 length) = 0;
+    // At most how many of `length` bytes a DMAWrite now would take (it may
+    // take fewer). The default, all of them, is always right.
+    virtual u32 DMAWriteTake(u32 length) const { return length; }
     // Discard any buffered data. MDMA's internal FIFO is flushed when a new
     // transfer starts; peripheral buses ignore this.
     virtual void DMAFlush() {}
@@ -57,6 +60,7 @@ public:
     MemorySrcDMABus() {}
     u32 DMARead(int x, int y, void* dest, u32 length) override;
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
+    u32 DMAWriteTake(u32 length) const override;
     void DMAFlush() override { head = tail = 0; }
     u32 CyclesPerElement() const override { return kSclkCyclesPerElement; }
 
@@ -72,6 +76,7 @@ public:
     MemoryDestDMABus(MemorySrcDMABus& source) : source(source) {}
     u32 DMARead(int x, int y, void* dest, u32 length) override;
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
+    u32 DMAWriteTake(u32 length) const override;
     void DMAFlush() override { source.DMAFlush(); }
     u32 CyclesPerElement() const override { return kSclkCyclesPerElement; }
 
@@ -106,13 +111,15 @@ public:
 
     void AttachDMABus(DMAPeripheralType type, const std::shared_ptr<DMABus>& bus) {
         dmaBuses[type] = bus;
+        busByType_[type & 15] = bus.get();
         bus->SetDMANotify(&touched_);
         touched_ = true;
     }
 
     void BindInterrupt(int channel, int q, InterruptHandler callback);
 
-    std::shared_ptr<DMABus> GetDMABus(DMAPeripheralType type) { return dmaBuses[type]; }
+    // Owned by the DMA (AttachDMABus); null where none is attached.
+    DMABus* GetDMABus(DMAPeripheralType type) const { return busByType_[type & 15]; }
     Emulator& GetEmulator() { return emulator; }
     const TimeSource* Time() const { return time_; }
 
@@ -144,4 +151,5 @@ protected:
     Emulator& emulator;
     std::array<std::shared_ptr<DMAChannel>, 16> channels;
     std::map<DMAPeripheralType, std::shared_ptr<DMABus>> dmaBuses;
+    std::array<DMABus*, 16> busByType_{};
 };

@@ -24,16 +24,6 @@ void Emulator::BindDevice(Device* dev)
     RebuildDirectPages();
 }
 
-void Emulator::Lock()
-{
-    mutex.lock();
-}
-
-void Emulator::Unlock()
-{
-    mutex.unlock();
-}
-
 static Device* get_device(u32 addr, const std::map<u32, Device*>& devices)
 {
     auto iter = devices.lower_bound(addr);

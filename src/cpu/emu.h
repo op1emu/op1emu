@@ -35,8 +35,6 @@ public:
     void BindFastMem(const std::shared_ptr<FastMem>& mem) { this->fastmem = mem; }
     void BindDevice(Device* dev);
 
-    void Lock();
-    void Unlock();
     void MemoryRead(u32 addr, void* buffer, int length);
     void MemoryWrite(u32 addr, const void* buffer, int length);
 
@@ -110,7 +108,6 @@ protected:
     uint64_t generation_ = 0;
 
     std::shared_ptr<FastMem> fastmem;
-    std::recursive_mutex mutex;
     std::shared_ptr<std::array<u8*, NUM_PAGE_TABLE_ENTRIES>> pageTable;
     std::map<u32, Device*> deviceSegments;
     std::vector<Device*> devices;

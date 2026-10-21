@@ -2,6 +2,7 @@
 #include "time_source.h"
 #include "utils/log.h"
 #include <stdint.h>
+#include <cassert>
 
 enum DMANextOperation {
     Stop = 0x0,
@@ -29,6 +30,9 @@ protected:
     void ProcessDescriptor();
     // The bus's pace, 0 when unpaced (see DMABus::CyclesPerElement).
     u32 CyclesPerElement(const DMABus& bus) const;
+    // ProcessTransfer() may leave the chunk's elements [from, to) (in bytes)
+    // unread: they lie in plain memory.
+    bool QuietSource(u32 from, u32 to, u32 elementBytes) const;
 
     DMA& dma;
 
@@ -91,7 +95,7 @@ DMAChannel::DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defa
         if (enabled && this->dma.Time()) pacedFrom_ = this->dma.Time()->Cycles();
         if (enabled && IsMDMASource()) {
             // A new MDMA transfer starts from an empty FIFO.
-            if (auto bus = this->dma.GetDMABus(peripheralType)) bus->DMAFlush();
+            if (auto* bus = this->dma.GetDMABus(peripheralType)) bus->DMAFlush();
         }
         ProcessDescriptor();
         // NFC DMA is an unpaced 512-byte controller transfer. Running it only
@@ -198,7 +202,7 @@ u32 DMAChannel::CyclesPerElement(const DMABus& bus) const {
 uint64_t DMAChannel::IdleUntil() const {
     if (!enabled || !running) return UINT64_MAX;
     // ProcessTransfer() logs a missing bus on every call.
-    auto bus = dma.GetDMABus(peripheralType);
+    const DMABus* bus = dma.GetDMABus(peripheralType);
     if (!bus) return 0;
     // The length ProcessTransfer() offers the bus.
     const u32 elementBytes = 1u << wordSize;
@@ -211,6 +215,21 @@ uint64_t DMAChannel::IdleUntil() const {
     // DMA is called before its row is due, and moves nothing).
     const uint64_t dueCycles = pacedFrom_ + uint64_t(length / elementBytes) * pace;
     return std::max(idle, dueCycles * 5 / 2);
+}
+
+bool DMAChannel::QuietSource(u32 from, u32 to, u32 elementBytes) const {
+    // The elements [from, to) of the chunk at currAddr: every page they lie
+    // in is plain memory, one MemoryDevice mapping all of it (a direct page,
+    // Emulator::DirectPages()), so leaving them unread changes nothing.
+    if (from >= to) return true;
+    const int64_t first = int64_t(currAddr) + int64_t(from / elementBytes) * xModify;
+    const int64_t last = int64_t(currAddr) + int64_t((to - elementBytes) / elementBytes) * xModify;
+    const int64_t lo = std::min(first, last), hi = std::max(first, last) + elementBytes - 1;
+    if (lo < 0 || hi > int64_t(UINT32_MAX)) return false;
+    u8* const* pages = dma.GetEmulator().DirectPages();
+    for (int64_t page = lo >> PAGE_BITS; page <= hi >> PAGE_BITS; ++page)
+        if (!pages[page]) return false;
+    return true;
 }
 
 bool DMAChannel::IsMDMA() const {
@@ -228,7 +247,7 @@ bool DMAChannel::IsMDMASource() const {
 u32 DMAChannel::ProcessTransfer() {
     if (!enabled || !running) return 0;
 
-    auto bus = dma.GetDMABus(peripheralType);
+    DMABus* bus = dma.GetDMABus(peripheralType);
     if (!bus) {
         LogWarn("DMA channel %s: No DMA bus attached for peripheral type %d", Name().c_str(), peripheralType);
         return 0;
@@ -242,7 +261,6 @@ u32 DMAChannel::ProcessTransfer() {
     // A paced bus moves this chunk once its elements' time has passed.
     const u32 pace = CyclesPerElement(*bus);
     if (pace && dma.Time()->Cycles() < pacedFrom_ + uint64_t(totalBytes / elementBytes) * pace) return 0;
-    dma.GetEmulator().Lock();
     if (memoryWrite) {
         totalBytes = bus->DMARead(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
         totalBytes -= totalBytes % elementBytes; // only write whole elements
@@ -256,20 +274,29 @@ u32 DMAChannel::ProcessTransfer() {
             }
         }
     } else {
-        // Memory read (memory to peripheral)
+        // Memory read (memory to peripheral): only the elements the bus will
+        // take now (DMABus::DMAWriteTake), where the rest would be read from
+        // plain memory, which no read changes. The bus is still offered the
+        // whole chunk, as its own accounting may depend on the length.
+        u32 take = totalBytes;
+        const u32 bound = bus->DMAWriteTake(totalBytes);
+        if (bound < totalBytes) {
+            const u32 rounded = (bound + elementBytes - 1) / elementBytes * elementBytes;
+            if (QuietSource(rounded, totalBytes, elementBytes)) take = rounded;
+        }
         if (xModify == elementBytes) {
-            dma.GetEmulator().MemoryRead(currAddr, buffer, totalBytes);
+            dma.GetEmulator().MemoryRead(currAddr, buffer, take);
         } else {
             u32 addr = currAddr;
-            for (u32 i = 0; i < totalBytes; i += elementBytes) {
+            for (u32 i = 0; i < take; i += elementBytes) {
                 dma.GetEmulator().MemoryRead(addr, buffer + i, elementBytes);
                 addr += xModify;
             }
         }
         totalBytes = bus->DMAWrite(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
+        assert(totalBytes <= take);
         totalBytes -= totalBytes % elementBytes; // only count whole elements accepted
     }
-    dma.GetEmulator().Unlock();
 
     u32 count = totalBytes / elementBytes;
     pacedFrom_ += uint64_t(count) * pace;
@@ -306,6 +333,13 @@ u32 DMAChannel::ProcessTransfer() {
     return count * elementBytes;
 }
 
+u32 MemorySrcDMABus::DMAWriteTake(u32 length) const {
+    // DMAWrite's room, without its rewind and compaction.
+    if (head == tail) return std::min(length, CAPACITY);
+    if (head > 0 && length > CAPACITY - tail) return std::min(length, CAPACITY - (tail - head));
+    return std::min(length, CAPACITY - tail);
+}
+
 u32 MemorySrcDMABus::DMAWrite(int x, int y, const void* source, u32 length) {
     if (head == tail) {
         head = tail = 0;                                 // empty queue: rewind to the front
@@ -332,6 +366,8 @@ u32 MemorySrcDMABus::DMARead(int x, int y, void* dest, u32 length) {
 u32 MemoryDestDMABus::DMARead(int x, int y, void* dest, u32 length) {
     return source.DMARead(x, y, dest, length);
 }
+
+u32 MemoryDestDMABus::DMAWriteTake(u32 length) const { return source.DMAWriteTake(length); }
 
 u32 MemoryDestDMABus::DMAWrite(int x, int y, const void* src, u32 length) {
     return source.DMAWrite(x, y, src, length);

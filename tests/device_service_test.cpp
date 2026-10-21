@@ -461,6 +461,36 @@ static void AudioMatchesPolling(uint32_t seed) {
     Require(services < steps / 2, "the scheduled DMA must skip calls with nothing to do: " + std::to_string(services));
 }
 
+// SPORT0 transmit through DMA reads only the samples due (DMABus::
+// DMAWriteTake): what the audio sink gets must still be the buffer's words in
+// order, for a contiguous and a strided buffer, whatever the service times.
+static void SportTransmitDeliversTheBuffer(u32 modify) {
+    AudioRig rig;
+    std::vector<uint16_t> heard;
+    rig.sport->SetAudioOutputCallback([&](const void* data, size_t samples, int channels, int) {
+        auto* words = static_cast<const uint16_t*>(data);
+        heard.insert(heard.end(), words, words + samples * channels);
+    });
+    rig.sport->Write32(0x04, 15);  // TCR2: 16-bit words
+    rig.sport->Write32(0x00, 1);   // TSPEN
+    const u32 count = 48, start = 0x1000, base = 4 * 0x40;
+    rig.dma.Write32(base + 0x04, start);
+    rig.dma.Write32(base + 0x10, count);
+    rig.dma.Write32(base + 0x14, modify);
+    rig.dma.Write32(base + 0x08, 1 | (1 << 2) | (1 << 12));  // 16-bit, autobuffer
+    std::mt19937 rng(modify);
+    for (int step = 0; step < 20000; ++step) {
+        rig.time.Retire(rng() % 3 ? rng() % 9000 + 1 : rng() % 200000 + 1);
+        rig.dma.ProcessWithInterrupt(-1);
+    }
+    Require(heard.size() > 3 * count, "the sink hears the buffer go round several times");
+    for (size_t i = 0; i < heard.size(); ++i) {
+        const u32 addr = start + (i % count) * modify;
+        Require(heard[i] == uint16_t(rig.ram.Read32(addr & ~3u) >> (addr & 2 ? 16 : 0)),
+                "sample " + std::to_string(i) + " is the buffer's word (modify " + std::to_string(modify) + ")");
+    }
+}
+
 // The SIC's outputs are levels: high while a routed pin is asserted and
 // unmasked, whatever else is published.
 static void SicLines() {
@@ -739,5 +769,7 @@ int main() {
     for (u32 irqmask : {0x1Fu, 0x17u, 0x16u, 0x00u}) NfcPioMatchesPolling(irqmask);
     for (uint32_t seed = 1; seed <= 10; ++seed) MdmaPollingMatchesPolling(seed);
     for (uint32_t seed = 1; seed <= 10; ++seed) AudioMatchesPolling(seed);
+    SportTransmitDeliversTheBuffer(2);
+    SportTransmitDeliversTheBuffer(6);
     std::puts("device-service-test: ok");
 }
