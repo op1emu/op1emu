@@ -84,6 +84,10 @@ public:
     // Core::set_loop_blocks; on by default). The same results either way.
     // Before the first Run().
     void SetLoopBlocks(bool loop);
+    // Whether an IDLE waits for a wakeup (deterministic mode, on by
+    // default) or does nothing (wall mode). Before the first Run().
+    void SetIdleWaits(bool waits);
+
 #ifdef ENABLE_PROFILING
     // Returns to the host by why the run ended (cumulative), and the dry
     // run's checks: profiling's [chain] lines.
@@ -110,6 +114,11 @@ public:
         kDueSources = kDueDma + 16
     };
     static const char* DueSourceName(unsigned source);
+    // IDLE waits so far, the guest cycles they let pass, and what woke them
+    // ([idle] lines).
+    uint64_t IdleWaits() const { return idleWaits_; }
+    uint64_t IdleCycles() const { return idleCycles_; }
+    const std::array<uint64_t, kDueSources>& IdleBy() const { return idleBy_; }
     const ChainCounts& Chains() const { return chainCounts_; }
 #endif
     // See TWI::SetSpeedup.
@@ -216,6 +225,13 @@ protected:
     void StopChaining();
     // Packets the run starting at pc may retire before the host has work.
     uint32_t ChainBudget(uint32_t pc);
+    bool HostHasWork(int ivg) const;
+    uint64_t DueCycles(int ivg);
+    // The host's work between blocks (Run()); would: the dry run's check.
+    void HostWork(bool would);
+    // After an IDLE: guest time to the next wakeup (see cpu.cpp).
+    void Wait();
+    uint8_t idleWake_ = 0;  // SIC::Wakeup(), for generated code (CpuState::idle_wake)
     bool chaining_ = false;
     // A block is running (Core::run): what a device access queues now was
     // not in the run's budget.
@@ -238,6 +254,8 @@ protected:
     void CountChain(uint32_t budget, uint32_t retired, uint32_t chained, uint64_t accessStops);
     enum ChainReason { kChainHostOnly, kChainService, kChainDue } chainReason_ = kChainDue;
     unsigned dueSource_ = kDueCap;
+    uint64_t idleWaits_ = 0, idleCycles_ = 0;
+    std::array<uint64_t, kDueSources> idleBy_{};  // waits by what woke them (DueSource)
 #endif
     // A line rose on another thread (LatchLines() left it to the CPU thread).
     std::atomic<bool> offThreadLatch_{false};

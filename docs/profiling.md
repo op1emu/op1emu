@@ -269,6 +269,11 @@ channel that came due first), cumulative:
 That is the synth phase below, start to `end`: of 5.14M deadline returns,
 4.17M wait for the next row of memory DMA 0's source.
 
+An `[idle]` line follows: the IDLE waits so far (BlackFinCpu::Wait), the
+guest cycles they let pass without a packet, and what woke them, by the
+same sources. The `[mark]` lines' `cycles` include those cycles, `packets`
+do not.
+
 A `[loops]` line follows it: what bcore made of the guest's loops so far,
 from its counters (`BcoreStats`). `loop_blocks` are the blocks compiled as
 loop blocks (blocks that run themselves again keep the guest registers in

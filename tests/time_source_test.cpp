@@ -77,15 +77,15 @@ int main() {
         // reaches a due time, for every rounding of 2.5 ns per packet.
         TimeSource time(true);
         for (uint64_t ns = 0; ns < 2000; ++ns) {
-            const uint64_t p = TimeSource::PacketsAt(ns);
-            Require(p * 5 / 2 >= ns && (p == 0 || (p - 1) * 5 / 2 < ns), "PacketsAt is the least packet count reaching ns");
+            const uint64_t p = TimeSource::CyclesAt(ns);
+            Require(p * 5 / 2 >= ns && (p == 0 || (p - 1) * 5 / 2 < ns), "CyclesAt is the least packet count reaching ns");
         }
-        Require(TimeSource::PacketsAt(UINT64_MAX) == UINT64_MAX, "never stays never");
+        Require(TimeSource::CyclesAt(UINT64_MAX) == UINT64_MAX, "never stays never");
         const auto epoch = time.SystemNow();
         Require(time.DueNs(epoch) == 0 && time.DueNs(epoch - std::chrono::seconds(1)) == 0, "due now");
         // In the clock's own ticks (1 us in libc++): just past a second.
         const auto due = epoch + std::chrono::ceil<TimeSource::SystemClock::duration>(std::chrono::nanoseconds(1000000001));
-        const uint64_t packets = TimeSource::PacketsAt(time.DueNs(due));
+        const uint64_t packets = TimeSource::CyclesAt(time.DueNs(due));
         time.Retire(packets);
         Require(time.SystemNow() >= due, "SystemNow reaches the due time");
         TimeSource before(true);

@@ -529,6 +529,12 @@ struct Profiler::Impl : BcoreEventSink {
             if (chains.deadlineBy[source])
                 std::printf(" %s=%" PRIu64, BlackFinCpu::DueSourceName(source), chains.deadlineBy[source]);
         std::printf("\n");
+        // IDLE waits (BlackFinCpu::Wait) and the guest cycles they let pass, cumulative.
+        std::printf("[idle] %s waits=%" PRIu64 " cycles=%" PRIu64, name, cpu.IdleWaits(), cpu.IdleCycles());
+        for (unsigned source = 0; source < cpu.IdleBy().size(); ++source)
+            if (cpu.IdleBy()[source])
+                std::printf(" %s=%" PRIu64, BlackFinCpu::DueSourceName(source), cpu.IdleBy()[source]);
+        std::printf("\n");
         // What bcore made of the guest's loops (BcoreStats), cumulative.
         const BcoreStats loops = cpu.CoreStats();
         std::printf("[loops] %s loop_blocks=%" PRIu64 " proven=%" PRIu64 " speculated=%" PRIu64 " vectorized=%" PRIu64

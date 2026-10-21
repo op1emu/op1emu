@@ -138,6 +138,10 @@ the host is.
   both by 10 to make up for an emulator slower than real time.
 - Panel frame sync (TE, PORTG3) is a 60 Hz guest-time oscillator instead of the
   frontend's 16 ms host poll.
+- An IDLE waits for its wakeup: guest time goes on to the host's next device or
+  event time without executing anything (CYCLES counts through it, as on
+  hardware), unless a system interrupt SIC_IWR enables is already asserted.
+  `--no-idle-wait` runs it as a NOP instead, as host-time mode always does.
 - The RTC starts at 2024-01-01 00:00 UTC; `--rtc-epoch SECONDS` sets another start
   (only with `--deterministic`).
 - A script's leading `accel`/`volume` commands are applied before the CPU starts.

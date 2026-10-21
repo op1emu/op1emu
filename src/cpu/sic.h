@@ -21,6 +21,14 @@ public:
     // a line that is high, again whenever it is high and neither latched nor
     // being serviced.
     u16 Lines() const { return lines_; }
+    // An asserted pin (SIC_ISR) enabled to wake the core from IDLE (SIC_IWR),
+    // masked or not (BF52x HRM 4-9).
+    bool Wakeup() const { return (isr[0] & iwr[0]) || (isr[1] & iwr[1]); }
+    // Kept equal to Wakeup() from now on (bcore's CpuState::idle_wake).
+    void SetWakeFlag(uint8_t* flag) {
+        wakeFlag_ = flag;
+        *wakeFlag_ = Wakeup();
+    }
 
     void SetBootMode(u8 mode) { bmode = mode; }
 
@@ -39,6 +47,7 @@ private:
     u32 isr[2] = {0};
     u32 iwr[2] = {0};
     u16 lines_ = 0;
+    uint8_t* wakeFlag_ = nullptr;
 
     std::function<void(u16 rising)> lineRaised;
 };

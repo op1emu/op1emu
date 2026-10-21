@@ -343,6 +343,12 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     // the next run would write a host clock that may lag behind, so CYCLES
     // keeps the run's first value instead.
     core_->set_host_cycles(deterministic);
+    // An IDLE waits for its wakeup (Wait()) on guest time, but not while one
+    // is already asserted (SIC::Wakeup): generated code reads the flag and
+    // runs on, as Wait() would. In wall mode, where the host's clock runs on
+    // regardless, it does nothing, as before.
+    sic->SetWakeFlag(&idleWake_);
+    core_->set_idle_waits(deterministic, &idleWake_);
 #ifndef ENABLE_PROFILING
     // Block runs are counted for the profiler only (Profiler::AfterRun).
     core_->set_count_chained(false);
@@ -448,8 +454,28 @@ HaltReason BlackFinCpu::Run() {
     const auto workBefore = hostWork_;
 #else
     (void)chained;
+    const bool would = false;
 #endif
     cpuState_->did_jump = false; // Clear jump flag set by bcore, since we handle it in the emulator loop
+    HostWork(would);
+    // An IDLE in deterministic mode waits for its wakeup (Wait()).
+    if (cpuState_->idle && time_.Deterministic()) Wait();
+#ifdef ENABLE_PROFILING
+    if (would) {
+        bool violated = false;
+        for (size_t kind = 0; kind < kWorkKinds; ++kind) {
+            if (hostWork_[kind] == workBefore[kind]) continue;
+            ++chainCounts_.violation[kind];
+            violated = true;
+        }
+        chainCounts_.violations += violated;
+    }
+#endif
+    return HaltReason::Break;
+}
+
+// The host's work between blocks, after one or after an IDLE's wait.
+void BlackFinCpu::HostWork(bool would) {
 #ifdef ENABLE_PROFILING
     if (*cpuState_->cec_pending) ++hostWork_[kWorkCec];
 #endif
@@ -463,6 +489,8 @@ HaltReason BlackFinCpu::Run() {
     ServiceDevices(ivg);
 #ifdef ENABLE_PROFILING
     if (would) CheckSkippedServices(ivg);
+#else
+    (void)would;
 #endif
     // The guest time at the end of the block: timers count to it.
     const uint64_t blockEnd = time_.Cycles();
@@ -512,18 +540,6 @@ HaltReason BlackFinCpu::Run() {
     if (*cpuState_->cec_pending) ++hostWork_[kWorkCec];
 #endif
     cec_check_pending(cpuState_.get());
-#ifdef ENABLE_PROFILING
-    if (would) {
-        bool violated = false;
-        for (size_t kind = 0; kind < kWorkKinds; ++kind) {
-            if (hostWork_[kind] == workBefore[kind]) continue;
-            ++chainCounts_.violation[kind];
-            violated = true;
-        }
-        chainCounts_.violations += violated;
-    }
-#endif
-    return HaltReason::Break;
 }
 
 // Before a run: how many packets it may retire before the host has work
@@ -545,47 +561,88 @@ uint32_t BlackFinCpu::ChainBudget(uint32_t pc) {
 #ifdef ENABLE_PROFILING
     chainReason_ = kChainService;
 #endif
-    auto& s = serviced_;
-    const uint64_t nowNs = time_.Nanoseconds();
     // Constant while the run chains: an IVG change returns.
     const int ivg = cec_current_ivg();
-    if (inboxPending_.load(std::memory_order_relaxed) || s.usb->NeedsService() || s.nfc->NeedsService() ||
-        s.rtc->NeedsTick() || s.dma->NeedsService(nowNs) ||
-        (ivg == IVG_IVTMR && s.coreTimer->InterruptPending()) ||
-        (ivg != TWI::kIvg && s.twi->NeedsService(nowNs)))
-        return 0;
+    if (HostHasWork(ivg)) return 0;
 #ifdef ENABLE_PROFILING
     chainReason_ = kChainDue;
 #endif
     if (!time_.Deterministic()) return kWallChainPackets;
+    // Packets are cycles while a run lasts: it retires one per cycle.
+    const uint64_t due = DueCycles(ivg), now = time_.Cycles();
+    return due <= now ? 0 : uint32_t(std::min<uint64_t>(due - now, kMaxChainPackets));
+}
+
+// A device the host services between blocks has work now.
+bool BlackFinCpu::HostHasWork(int ivg) const {
+    auto& s = serviced_;
+    const uint64_t nowNs = time_.Nanoseconds();
+    return inboxPending_.load(std::memory_order_relaxed) || s.usb->NeedsService() || s.nfc->NeedsService() ||
+           s.rtc->NeedsTick() || s.dma->NeedsService(nowNs) ||
+           (ivg == IVG_IVTMR && s.coreTimer->InterruptPending()) ||
+           (ivg != TWI::kIvg && s.twi->NeedsService(nowNs));
+}
+
+// Deterministic mode: the guest cycle of the host's next work between
+// blocks (a device's, an event's, the GP timers' tick, the core timer's
+// expiry), the earliest of them.
+uint64_t BlackFinCpu::DueCycles(int ivg) {
+    auto& s = serviced_;
     const uint64_t dmaNs = s.dma->IdleUntilNs();
     uint64_t dueNs = std::min({nextEventNs_, panel_.DeadlineNs(), dmaNs, time_.DueNs(s.rtc->NextChange())});
     if (ivg != TWI::kIvg) dueNs = std::min(dueNs, s.twi->NextByteNs());
-    // In packets (= cycles in deterministic mode).
     const uint64_t tick = lastTimerCycles_ + kCyclesPerTimerTick;
-    uint64_t due = std::min(TimeSource::PacketsAt(dueNs), tick);
+    uint64_t due = std::min(TimeSource::CyclesAt(dueNs), tick);
     const auto expiry = s.coreTimer->NextExpiry();
     if (expiry) due = std::min(due, *expiry);
 #ifdef ENABLE_PROFILING
     if (profiler_)
         if (const uint64_t end = profiler_->EndCycles()) due = std::min(due, end);
-#endif
-    const uint64_t now = time_.Packets();
-    const uint32_t budget = due <= now ? 0 : uint32_t(std::min<uint64_t>(due - now, kMaxChainPackets));
-#ifdef ENABLE_PROFILING
-    // What set the budget, for the [due] census of deadline returns. Ties go
-    // to the first source in this order.
+    // What set it, for the [due] census of deadline returns. Ties go to the
+    // first source in this order.
+    const uint64_t now = time_.Cycles();
     if (due > now && due - now > kMaxChainPackets) dueSource_ = kDueCap;
     else if (profiler_ && profiler_->EndCycles() == due) dueSource_ = kDueEnd;
     else if (expiry && *expiry == due) dueSource_ = kDueCoreTimer;
     else if (tick == due) dueSource_ = kDueTick;
-    else if (TimeSource::PacketsAt(dmaNs) == due) dueSource_ = kDueDma + s.dma->IdleSource();
-    else if (TimeSource::PacketsAt(nextEventNs_) == due) dueSource_ = kDueEvent;
-    else if (TimeSource::PacketsAt(panel_.DeadlineNs()) == due) dueSource_ = kDuePanel;
-    else if (TimeSource::PacketsAt(time_.DueNs(s.rtc->NextChange())) == due) dueSource_ = kDueRtc;
+    else if (TimeSource::CyclesAt(dmaNs) == due) dueSource_ = kDueDma + s.dma->IdleSource();
+    else if (TimeSource::CyclesAt(nextEventNs_) == due) dueSource_ = kDueEvent;
+    else if (TimeSource::CyclesAt(panel_.DeadlineNs()) == due) dueSource_ = kDuePanel;
+    else if (TimeSource::CyclesAt(time_.DueNs(s.rtc->NextChange())) == due) dueSource_ = kDueRtc;
     else dueSource_ = kDueTwi;
 #endif
-    return budget;
+    return due;
+}
+
+// After a block that ended at an IDLE (bcore's CpuState::idle): the core
+// waits for a wakeup, and nothing runs until the host's next work is due
+// (DueCycles), so guest time goes there at once. CYCLES counts through it,
+// as through a plain IDLE on hardware (only sleep mode stops CCLK), since it
+// follows the guest cycles (SetBfinCycles). The host then does that work, at
+// that time and before the next packet, as after a block that ended there.
+// The guest runs on past the IDLE: a wakeup that took no interrupt finds it
+// in its idle loop, which waits again.
+//
+// Not where the wakeup is now: an interrupt pending, or a system interrupt
+// asserted that SIC_IWR lets wake the core whether or not
+// SIC_IMASK passes it (the boot ROM reads NAND a byte at a time that way,
+// polling NFC_IRQSTAT after each IDLE), or host work due now. Nor for longer
+// than a run could chain (kMaxChainPackets), so that a wakeup the host does
+// not time (a PLL relock, which no device here models) comes as late as
+// after a capped run.
+void BlackFinCpu::Wait() {
+    const int ivg = cec_current_ivg();
+    if (HostHasWork(ivg) || *cpuState_->cec_pending || sic->Wakeup()) return;
+    const uint64_t now = time_.Cycles();
+    const uint64_t due = std::min(DueCycles(ivg), now + kMaxChainPackets);
+    if (due <= now) return;
+    time_.Idle(due - now);
+#ifdef ENABLE_PROFILING
+    ++idleWaits_;
+    idleCycles_ += due - now;
+    ++idleBy_[due == now + kMaxChainPackets ? kDueCap : dueSource_];
+#endif
+    HostWork(false);
 }
 
 void BlackFinCpu::SetChaining(bool chaining, bool dry) {
@@ -594,6 +651,8 @@ void BlackFinCpu::SetChaining(bool chaining, bool dry) {
 }
 
 void BlackFinCpu::SetLoopBlocks(bool loop) { core_->set_loop_blocks(loop); }
+
+void BlackFinCpu::SetIdleWaits(bool waits) { core_->set_idle_waits(waits && time_.Deterministic(), &idleWake_); }
 
 #ifdef ENABLE_PROFILING
 void BlackFinCpu::SetProfiler(Profiler* profiler) {

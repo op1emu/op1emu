@@ -60,6 +60,7 @@ SIC::SIC(u32 baseAddr) : RegisterDevice("SIC", baseAddr, 0x100) {
         };
         auto iwr_w = [this, i](u32 v) {
             iwr[i] = v;
+            if (wakeFlag_) *wakeFlag_ = Wakeup();
         };
         FIELD(IWR, IWR, 0, 32, iwr_r, iwr_w);
     }
@@ -100,5 +101,6 @@ void SIC::UpdateLines() {
     }
     const u16 rising = lines & ~lines_;
     lines_ = lines;
+    if (wakeFlag_) *wakeFlag_ = Wakeup();
     if (rising && lineRaised) lineRaised(rising);
 }

@@ -13,10 +13,10 @@
 //    core timer and SPORT pacing divide by kWallSlowdown to make up for an
 //    emulator slower than real time.
 //
-//  - Deterministic: one CCLK cycle per packet the core executed, at 400 MHz.
-//    An issue model -- no pipeline, stall, cache or PLL timing -- but it does
-//    not depend on host speed, so a boot with the same inputs does the same
-//    work on every run. It runs as fast as the host allows and needs no
+//  - Deterministic: one CCLK cycle per packet the core executed, at 400 MHz,
+//    plus the cycles it waited in IDLE (Idle()). An issue model -- no
+//    pipeline, stall, cache or PLL timing -- but it does not depend on host
+//    speed, so a boot with the same inputs does the same work on every run. It runs as fast as the host allows and needs no
 //    slowdown. For measurement and regression runs; interactive use stays on
 //    wall time until the emulator is faster than real time.
 class TimeSource {
@@ -44,6 +44,9 @@ public:
     // Packets the core has executed, in both models.
     void Retire(uint64_t packets) { packets_ += packets; }
     uint64_t Packets() const { return packets_; }
+    // Deterministic mode: cycles the core waited in IDLE, between blocks.
+    void Idle(uint64_t cycles) { idle_ += cycles; }
+    uint64_t IdleCycles() const { return idle_; }
 
     // While a block runs, the 1-based index of the packet executing in it
     // (bcore's CpuState::packets), 0 between blocks: in deterministic mode a
@@ -58,12 +61,12 @@ public:
     void SetChainedPackets(const uint32_t* chained) { chained_ = chained; }
 
     uint64_t Cycles() const {
-        if (deterministic_) return packets_ + InBlock();
+        if (deterministic_) return packets_ + idle_ + InBlock();
         return std::chrono::duration_cast<std::chrono::microseconds>(SteadyClock::now() - start_).count() * 400;
     }
     uint64_t Nanoseconds() const {
         // 2.5 ns per cycle; overflows only past ~9e9 s of guest time.
-        if (deterministic_) return (packets_ + InBlock()) * 5 / 2;
+        if (deterministic_) return (packets_ + idle_ + InBlock()) * 5 / 2;
         return std::chrono::duration_cast<std::chrono::nanoseconds>(SteadyClock::now() - start_).count();
     }
     // Divisor for device rates tuned against wall time; 1 in deterministic mode.
@@ -83,9 +86,9 @@ public:
     uint64_t DueNs(SystemClock::time_point t) const {
         return t <= epoch_ ? 0 : uint64_t(std::chrono::ceil<std::chrono::nanoseconds>(t - epoch_).count());
     }
-    // The first packet count at which Nanoseconds() reaches ns: the least p
-    // with p * 5 / 2 >= ns. UINT64_MAX for never.
-    static uint64_t PacketsAt(uint64_t ns) {
+    // The first cycle count at which Nanoseconds() reaches ns: the least c
+    // with c * 5 / 2 >= ns. UINT64_MAX for never.
+    static uint64_t CyclesAt(uint64_t ns) {
         return ns >= UINT64_MAX / 2 ? UINT64_MAX : (ns * 2 + 4) / 5;
     }
 
@@ -98,6 +101,7 @@ private:
     SteadyClock::time_point start_;
     SystemClock::time_point epoch_;
     uint64_t packets_ = 0;
+    uint64_t idle_ = 0;
     const uint32_t* blockIndex_ = nullptr;
     const uint32_t* chained_ = nullptr;
 };
