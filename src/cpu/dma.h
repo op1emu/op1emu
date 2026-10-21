@@ -143,6 +143,9 @@ public:
 protected:
     // Before when no running channel can move data (see DMABus::DMAIdleUntil).
     uint64_t IdleUntil();
+    // runnable_'s bit for a channel after something may have changed it: a
+    // register write, or its own transfer (completion, the next descriptor).
+    void Refresh(size_t channel);
 
     bool touched_ = true;
     uint64_t idleUntil_ = 0;
@@ -152,4 +155,5 @@ protected:
     std::array<std::shared_ptr<DMAChannel>, 16> channels;
     std::map<DMAPeripheralType, std::shared_ptr<DMABus>> dmaBuses;
     std::array<DMABus*, 16> busByType_{};
+    u16 runnable_ = 0;  // bit n: channel n is enabled and running (Refresh)
 };

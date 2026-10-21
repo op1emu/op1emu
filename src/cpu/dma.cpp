@@ -391,7 +391,14 @@ void DMA::Write32(u32 offset, u32 value) {
     size_t channelIndex = offset / 0x40;
     if (channelIndex < channels.size()) {
         channels[channelIndex]->Write32(offset % 0x40, value);
+        Refresh(channelIndex);
     }
+}
+
+void DMA::Refresh(size_t channel) {
+    const u16 bit = u16(1u << channel);
+    if (channels[channel]->IsEnabled() && channels[channel]->IsRunning()) runnable_ |= bit;
+    else runnable_ &= u16(~bit);
 }
 
 u32 DMA::Read32(u32 offset) {
@@ -409,9 +416,12 @@ u32 DMA::Read32(u32 offset) {
 // FLOW=Autobuffer auto-restarting the transfer indefinitely.
 static constexpr u32 MDMA_BURST_BYTES = 4096;
 
+// Only the channels that may move data (runnable_): a channel that is not
+// enabled and running moves nothing and is never due.
 uint64_t DMA::IdleUntil() {
     uint64_t until = UINT64_MAX;
-    for (const auto& channel : channels) {
+    for (u32 mask = runnable_; mask; mask &= mask - 1) {
+        const auto& channel = channels[__builtin_ctz(mask)];
         const uint64_t idle = channel->IdleUntil();
         if (idle < until) until = idle, idleSource_ = channel->GetPeripheralType();
     }
@@ -421,18 +431,23 @@ uint64_t DMA::IdleUntil() {
 void DMA::ProcessWithInterrupt(int ivg) {
     // Cleared first: a notice raised while the channels run is for the next call.
     touched_ = false;
-    for (auto& channel : channels) {
+    // In channel order, as a pass over all of them would; a transfer changes
+    // only its own channel.
+    for (u32 mask = runnable_; mask; mask &= mask - 1) {
+        const size_t index = __builtin_ctz(mask);
+        auto& channel = channels[index];
         if (!channel->IsMDMA()) {
             CountServiceWork(channel->ProcessTransfer());
-            continue;
+        } else {
+            u32 total = 0;
+            while (total < MDMA_BURST_BYTES) {
+                u32 moved = channel->ProcessTransfer();
+                if (!moved) break;
+                total += moved;
+            }
+            CountServiceWork(total);
         }
-        u32 total = 0;
-        while (total < MDMA_BURST_BYTES) {
-            u32 moved = channel->ProcessTransfer();
-            if (!moved) break;
-            total += moved;
-        }
-        CountServiceWork(total);
+        Refresh(index);
     }
     idleUntil_ = IdleUntil();
 }
