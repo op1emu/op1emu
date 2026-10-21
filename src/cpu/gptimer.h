@@ -28,4 +28,7 @@ public:
 
 private:
     std::array<std::shared_ptr<GPTimerImpl>, 8> timers;
+    // TIMER_STATUS as last read, while statusValid_.
+    u32 status_ = 0;
+    bool statusValid_ = false;
 };

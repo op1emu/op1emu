@@ -214,7 +214,10 @@ GPTimer::GPTimer(u32 baseAddr) : RegisterDevice("GPTimer", baseAddr, 0x90) {
     FIELD(TIMER_DISABLE, DISABLE, 0, 8, enable_read, disable_write);
 
     REG32(TIMER_STATUS, 0x88);
+    // Firmware polls it (one loop reads it every few packets): kept until a
+    // tick or a write can change it (Tick(), Write32()).
     auto status_read = [this]() -> u32 {
+        if (statusValid_) return status_;
         u32 status = 0;
         for (int i = 0; i < 2; i++) {
             int index = i * 4;
@@ -232,6 +235,8 @@ GPTimer::GPTimer(u32 baseAddr) : RegisterDevice("GPTimer", baseAddr, 0x90) {
             status |= timers[index + 1]->isInterruptPending() << (shift + 1);
             status |= timers[index + 0]->isInterruptPending() << (shift + 0);
         }
+        status_ = status;
+        statusValid_ = true;
         return status;
     };
     auto status_write = [this](u32 v) {
@@ -260,6 +265,7 @@ GPTimer::GPTimer(u32 baseAddr) : RegisterDevice("GPTimer", baseAddr, 0x90) {
 GPTimer::~GPTimer() = default;
 
 u32 GPTimer::Read32(u32 offset) {
+    if (offset == 0x88 && statusValid_) return status_;  // TIMER_STATUS, polled
     if (offset < 0x80) {
         int timerIndex = offset / 0x10;
         return timers[timerIndex]->Read32(offset % 0x10);
@@ -268,6 +274,7 @@ u32 GPTimer::Read32(u32 offset) {
 }
 
 void GPTimer::Write32(u32 offset, u32 value) {
+    statusValid_ = false;
     if (offset < 0x80) {
         int timerIndex = offset / 0x10;
         timers[timerIndex]->Write32(offset % 0x10, value);
@@ -283,6 +290,9 @@ void GPTimer::BindInterrupt(int id, int q, InterruptHandler callback) {
 
 void GPTimer::Tick(GPTimerClockType clockType) {
     for (auto& timer : timers) {
+        // A timer that is not running ignores the tick (GPTimerImpl::Tick).
+        if (!timer->isRunning()) continue;
+        statusValid_ = false;
         timer->Tick(clockType);
     }
 }
