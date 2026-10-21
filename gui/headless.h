@@ -58,6 +58,8 @@ private:
     bool shouldClose_ = false;
     std::string pending_;
     Clock::time_point resumeAt_{};
+    // `at MS`: later key commands are for that guest time (see Keyboard::OnKeyAt).
+    std::optional<long> guestAtMs_;
     std::optional<Pin> releaseAtResume_;
 
     Sensors sensors_;

@@ -114,7 +114,26 @@ int main() {
         frontend.PollEvents(start + 132ms);
         Require(keys == 2 && !frontend.ShouldClose(), "EOF preserves timed release and keeps emulator alive");
     }
-    for (const auto& bad : {"press missing", "release play extra", "tap play 0", "tap play -1",
+    {
+        // Guest-timed keys: `at MS` makes later key commands timed events,
+        // all queued at once, with no wait.
+        Pipe pipe;
+        HeadlessFrontend frontend(config, pipe.fds[0]);
+        std::vector<std::tuple<int, int, bool, uint64_t>> timed;
+        int immediate = 0;
+        frontend.SetKeyEventCallback([&](int, int, bool) { ++immediate; });
+        frontend.SetTimedKeyEventCallback([&](int bank, int pin, bool pressed, uint64_t ns) {
+            timed.emplace_back(bank, pin, pressed, ns);
+        });
+        pipe.Send("at 4000\npress shift\nat 4500\ntap f3# 200\nrelease shift\nwait 10\n");
+        frontend.PollEvents(start);
+        using Timed = std::tuple<int, int, bool, uint64_t>;
+        Require(timed == std::vector<Timed>{{5, 6, true, 4000000000}, {3, 13, true, 4500000000},
+                                           {3, 13, false, 4700000000}, {5, 6, false, 4500000000}} &&
+                    immediate == 0,
+                "at times key commands in guest time without waiting");
+    }
+    for (const auto& bad : {"press missing", "release play extra", "at", "at -1", "at 1.5", "at 86400001", "tap play 0", "tap play -1",
                             "tap play 1.5", "tap play 86400001", "wait nan", "wait 999999999999999999999",
                             "wait", "quit extra", "unknown", "press",
                             "accel", "accel 1 2", "accel 1 2 3 4", "accel random 1", "accel 32768 0 0",

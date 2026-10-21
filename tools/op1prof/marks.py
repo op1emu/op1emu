@@ -112,6 +112,10 @@ def parse_phase(text: str) -> Tuple[str, str]:
     return begin, end
 
 
+# Fired by --profile-end-cycles, not by the marks file.
+END_MARK = "end"
+
+
 def mark_order(marks_file: Path) -> List[str]:
     """Marks in the order a marks file lists them, the frame mark last. The
     profiler does not impose it (any armed range can fire first), so it is a
@@ -120,6 +124,8 @@ def mark_order(marks_file: Path) -> List[str]:
     order = ["start"] + [m["name"] for m in config["marks"]]
     if "frame" in config:
         order.append(config["frame"]["name"])
+    # The profiler's own mark at a packet count (--end-cycles), always last.
+    order.append(END_MARK)
     return order
 
 

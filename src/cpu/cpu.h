@@ -100,7 +100,16 @@ public:
         uint64_t would = 0;       // dry: the block would have chained
         uint64_t violations = 0;  // dry: ... but the host had work after it
         std::array<uint64_t, 8> violation{};  // by HostWork kind
+        // Deadline returns by what set the budget (DueSource; DMA by the
+        // peripheral type of the channel that came due first).
+        std::array<uint64_t, 32> deadlineBy{};
     };
+    enum DueSource : uint8_t {
+        kDueCap, kDueEnd, kDueCoreTimer, kDueTick, kDueEvent, kDuePanel, kDueRtc, kDueTwi,
+        kDueDma,  // + DMAPeripheralType, 16 of them
+        kDueSources = kDueDma + 16
+    };
+    static const char* DueSourceName(unsigned source);
     const ChainCounts& Chains() const { return chainCounts_; }
 #endif
     // See TWI::SetSpeedup.
@@ -228,6 +237,7 @@ protected:
     ChainCounts chainCounts_;
     void CountChain(uint32_t budget, uint32_t retired, uint32_t chained, uint64_t accessStops);
     enum ChainReason { kChainHostOnly, kChainService, kChainDue } chainReason_ = kChainDue;
+    unsigned dueSource_ = kDueCap;
 #endif
     // A line rose on another thread (LatchLines() left it to the CPU thread).
     std::atomic<bool> offThreadLatch_{false};

@@ -107,7 +107,7 @@ static int RunEmulator(int argc, char* argv[]) {
     // Profiling options (profiling builds only; see docs/profiling.md).
     std::string profileMarks, profileTrace, profileCensus, perfFifo, perfWindow, profileUntil;
     std::string profileChecksum, profileChecksumEvery, profileChecksumFrom, profileDumpIr, profileDumpDir;
-    std::string profileTraceEvents;
+    std::string profileTraceEvents, profileEndCycles;
     bool perfJitdump = false;
     bool profileCounters = false;
     bool noChain = false;
@@ -122,7 +122,7 @@ static int RunEmulator(int argc, char* argv[]) {
         {"--profile-checksum", &profileChecksum}, {"--profile-checksum-every", &profileChecksumEvery},
         {"--profile-checksum-from", &profileChecksumFrom},
         {"--profile-dump-ir", &profileDumpIr}, {"--profile-dump-dir", &profileDumpDir},
-        {"--profile-trace-events", &profileTraceEvents},
+        {"--profile-trace-events", &profileTraceEvents}, {"--profile-end-cycles", &profileEndCycles},
     };
     bool anyProfiling = false;
     for (int i = 1; i < argc; i++) {
@@ -200,6 +200,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --profile-trace FILE  Chrome/Perfetto trace of translations and marks\n"
                      "  --profile-census PFX  Block, edge and MMIO census at every mark (diagnostic)\n"
                      "  --profile-until MARK  Stop cleanly when MARK fires\n"
+                     "  --profile-end-cycles N  Mark 'end' at the first block boundary at or past N\n"
+                     "                        guest cycles (a phase end that keystrokes cannot name)\n"
                      "  --perf-ctl-fifo FIFO  perf record --control=fifo:FIFO\n"
                      "  --perf-window A:B     Enable perf at mark A, disable at mark B\n"
                      "  --perf-jitdump        Write LLVM jitdump for perf inject --jit\n"
@@ -217,6 +219,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --profile-trace-events N    Trace capacity in events (default 262144)\n"
                      "Headless commands (one per line):\n"
                      "  keys | press KEY | release KEY | tap KEY [MS] | wait MS | quit\n"
+                     "  at MS: later press/release/tap are for guest time MS (with --deterministic,\n"
+                     "         before the script's first wait: queued before the CPU starts)\n"
                      "  accel X Y Z | accel random | volume 0..255\n"
                      "  wait-frames N [TIMEOUT_MS] | screenshot PATH.ppm\n"
                      "Keys are button names from gui/ui.json. Tap defaults to 100ms.\n"
@@ -313,6 +317,8 @@ static int RunEmulator(int argc, char* argv[]) {
             profile.checksumEvery = count(profileChecksumEvery, "--profile-checksum-every", false);
         if (!profileChecksumFrom.empty())
             profile.checksumFrom = count(profileChecksumFrom, "--profile-checksum-from", true);
+        if (!profileEndCycles.empty())
+            profile.endCycles = count(profileEndCycles, "--profile-end-cycles", false);
         if (!profileTraceEvents.empty()) {
             if (profileTrace.empty()) throw std::runtime_error("--profile-trace-events sizes --profile-trace: add it");
             profile.traceEvents = count(profileTraceEvents, "--profile-trace-events", false);

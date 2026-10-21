@@ -130,13 +130,16 @@ public:
     bool NeedsService(uint64_t nowNs) const { return touched_ || nowNs >= idleUntil_; }
     // Untouched, NeedsService() turns true at this guest time.
     uint64_t IdleUntilNs() const { return idleUntil_; }
+    // The peripheral type of the channel that sets IdleUntilNs() (profiling).
+    unsigned IdleSource() const { return idleSource_; }
 
 protected:
     // Before when no running channel can move data (see DMABus::DMAIdleUntil).
-    uint64_t IdleUntil() const;
+    uint64_t IdleUntil();
 
     bool touched_ = true;
     uint64_t idleUntil_ = 0;
+    unsigned idleSource_ = 0;
     const TimeSource* time_;
     Emulator& emulator;
     std::array<std::shared_ptr<DMAChannel>, 16> channels;

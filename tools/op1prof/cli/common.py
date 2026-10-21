@@ -30,6 +30,12 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min-mem-gb", type=float, default=10.0, help="refuse to start below this MemAvailable")
     parser.add_argument("--force", action="store_true", help="start despite preflight problems (recorded)")
     parser.add_argument("--out", type=Path, default=None, help="results directory (default op1prof-<time>)")
+    parser.add_argument("--script", type=Path, default=None, metavar="FILE",
+                        help="headless input script for the runs (default: fixed sensors, then wait); see "
+                             "tools/op1prof/scripts/")
+    parser.add_argument("--end-cycles", type=_positive, default=None, metavar="N",
+                        help="fire the mark 'end' at the first block boundary at or past N guest cycles, for phases "
+                             "after the boot (--until end)")
     parser.add_argument("--trace-events", type=_positive, default=None, metavar="N",
                         help="trace recorder capacity in events, for runs longer than a stock boot (default 262144)")
 
@@ -103,7 +109,11 @@ def _spec(args, binary: Path) -> RunSpec:
         if not path.is_file():
             raise SystemExit(f"not a file: {path}")
     _check_args(args.arg)
-    return RunSpec(binary=binary, nand=args.nand.resolve(), otp=args.otp.resolve(),
+    script = getattr(args, "script", None)
+    if script is not None and not script.is_file():
+        raise SystemExit(f"not a file: {script}")
+    extra = {"script": script.read_text()} if script is not None else {}
+    return RunSpec(binary=binary, **extra, end_cycles=getattr(args, "end_cycles", None), nand=args.nand.resolve(), otp=args.otp.resolve(),
                    marks=args.marks.resolve(), until=args.until, args=list(args.arg),
                    timeout_s=args.timeout, progress_timeout_s=args.progress_timeout, cpu=args.cpu,
                    counters=getattr(args, "counters", False),

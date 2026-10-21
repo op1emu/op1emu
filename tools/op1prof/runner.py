@@ -129,6 +129,7 @@ class RunSpec:
     dump_pcs: List[int] = field(default_factory=list)   # --profile-dump-ir into ir/
     prefix: List[str] = field(default_factory=list)   # e.g. perf record ... --
     env: dict = field(default_factory=dict)           # added after cleaning
+    end_cycles: Optional[int] = None  # --profile-end-cycles: the "end" mark at this guest cycle
 
     def __post_init__(self) -> None:
         reserved = reserved_args(self.args)
@@ -226,6 +227,8 @@ def run(spec: RunSpec, directory: Path) -> RunResult:
         command += ["--profile-trace", "trace.json"]
         if spec.trace_events:
             command += ["--profile-trace-events", str(spec.trace_events)]
+    if spec.end_cycles:
+        command += ["--profile-end-cycles", str(spec.end_cycles)]
     if spec.census:
         command += ["--profile-census", "census"]
     if spec.counters:

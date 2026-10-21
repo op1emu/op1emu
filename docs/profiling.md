@@ -49,6 +49,7 @@ host makes the guest do more work, so two runs never execute the same thing.
 | `--profile-trace-events N` | The trace recorder's capacity (default 262144) |
 | `--profile-census PREFIX` | Per-block, block-to-block and MMIO counts at every mark (diagnostic) |
 | `--profile-until MARK` | Stop cleanly when MARK fires |
+| `--profile-end-cycles N` | A mark `end` at the first block boundary at or past N guest cycles: a phase end the firmware has no PC for (`--profile-until end`) |
 | `--perf-ctl-fifo FIFO` | Control FIFO of `perf record --control=fifo:FIFO` |
 | `--perf-window A:B` | Write `enable` to the FIFO at mark A and `disable` at mark B |
 | `--perf-jitdump` | LLVM jitdump for `perf inject --jit` (under `$JITDUMPDIR/.debug/jit/`) |
@@ -255,6 +256,18 @@ chained, with no violation; chained, the boot returns to the host 994,324
 times. Before device accesses could keep chaining it returned 11,449,265
 times, 10,926,629 of them after a device access, nearly all to an NFC or a
 DMA service with nothing to do; now 479,438.
+
+A `[due]` line follows it: the `deadline` returns by what set the budget
+(`tick` the GP timers' fixed tick, `coretimer`, `event`, `panel`, `rtc`,
+`twi`, `end`, `cap` the 2^24-packet limit, and `dma_<peripheral>` the DMA
+channel that came due first), cumulative:
+
+```
+[due] end end=1 coretimer=9863 tick=399564 event=5 panel=1000 twi=6091 dma_ppi=80625 dma_sport0tx=380940 dma_mdmad0=98849 dma_mdmas0=4165892
+```
+
+That is the synth phase below, start to `end`: of 5.14M deadline returns,
+4.17M wait for the next row of memory DMA 0's source.
 
 A `[loops]` line follows it: what bcore made of the guest's loops so far,
 from its counters (`BcoreStats`). `loop_blocks` are the blocks compiled as
@@ -535,7 +548,12 @@ empty image the guest re-entered the bootrom early and never reached `lap-begin`
 A run whose output passes 200 MiB is stopped and failed, before a runaway
 print can fill the disk. Each run also records the binary's `[build]` line;
 `--trace-events N` (on every command that runs the emulator) sizes the
-trace for a run longer than a stock boot.
+trace for a run longer than a stock boot. `--script FILE` replaces the
+default headless input (fixed sensors, then a wait) and is hashed into the
+run, and `--end-cycles N` adds the mark `end` for a phase after the boot:
+`tools/op1prof/scripts/synth-keys.txt` opens the synth page and plays three
+notes three times, paced by frames, and `--script tools/op1prof/scripts/synth-keys.txt
+--end-cycles 4000000000 --until end --phase main-frame:end` measures it.
 
 `verify --instrumentation` runs the binary once per instrumentation setting:
 marks and trace only, then with the census, the marks file's probes,

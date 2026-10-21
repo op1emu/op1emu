@@ -45,6 +45,7 @@ struct ProfilerOptions {
     std::string perfFifo;      // --perf-ctl-fifo
     std::string perfWindow;    // --perf-window BEGIN:END
     std::string until;         // --profile-until MARK
+    uint64_t endCycles = 0;    // --profile-end-cycles: mark "end" at this guest cycle (0: none)
     bool jitdump = false;      // --perf-jitdump
     bool counters = false;     // --profile-counters
     bool probes = false;       // --profile-probes: the marks file's probes
@@ -57,7 +58,7 @@ struct ProfilerOptions {
     bool Enabled() const {
         return !marksPath.empty() || !tracePath.empty() || !censusPrefix.empty() ||
                !perfFifo.empty() || jitdump || counters || !checksumPath.empty() || probes || !dumpIrPcs.empty() ||
-               markDigest;
+               markDigest || endCycles;
     }
 };
 
@@ -76,6 +77,10 @@ public:
     // or checksums count blocks, not once --profile-until fired, and not
     // from a host-only PC.
     bool ChainingAllowed(uint32_t pc) const;
+    // The guest cycle at which the "end" mark fires, while it has not: runs
+    // stop chaining there, so the mark lands on the same packet however the
+    // run is split into host returns. 0 once fired or without one.
+    uint64_t EndCycles() const;
     // Blocks at pc must start with the host: one may fire a mark.
     bool HostOnly(uint32_t pc) const;
 

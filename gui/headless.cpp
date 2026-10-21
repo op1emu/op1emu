@@ -203,12 +203,22 @@ void HeadlessFrontend::Execute(const std::string& line, Clock::time_point now) {
     } else if (command == "volume" && args.size() == 2) {
         sensors_.volume = static_cast<uint8_t>(Integer(args[1], 0, 255, "Volume"));
         ++sensorVersion_;
+    } else if (command == "at" && args.size() == 2) {
+        guestAtMs_ = Integer(args[1], 0, 86400000, "Guest time");
     } else if (((command == "press" || command == "release") && args.size() == 2) ||
                (command == "tap" && (args.size() == 2 || args.size() == 3))) {
         auto key = keys_.find(args[1]);
         if (key == keys_.end()) throw std::runtime_error("Unknown key: " + args[1]);
         int duration = command == "tap" ? (args.size() == 3 ? Duration(args[2]) : 100) : 0;
         auto [bank, index] = key->second;
+        if (guestAtMs_) {
+            // Guest-timed: queued now for guest time `at`, nothing waits.
+            const uint64_t at = uint64_t(*guestAtMs_) * 1000000;
+            OnKeyAt(bank, index, command != "release", at);
+            if (command == "tap") OnKeyAt(bank, index, false, at + uint64_t(duration) * 1000000);
+            LogInfo("Headless input queued at guest %ld ms: %s %s", *guestAtMs_, command.c_str(), args[1].c_str());
+            return;
+        }
         if (command == "release") OnKeyReleased(bank, index);
         else OnKeyPressed(bank, index);
         LogInfo("Headless input queued: %s %s", command.c_str(), args[1].c_str());

@@ -143,8 +143,10 @@ the host is.
 - A script's leading `accel`/`volume` commands are applied before the CPU starts.
   The random accelerometer feed sends one sample then (and one per later script
   change) instead of one every 16 ms, so it no longer depends on host speed.
-  Key presses, `wait` and `tap` are still host-timed, so a run that presses keys
-  is not repeatable.
+  Key presses, `wait` and `tap` are host-timed, so a run that presses keys that
+  way is not repeatable; after `at MS` they are for guest time MS instead, and
+  those before the script's first wait are queued before the CPU starts, so a
+  run that presses keys that way is (`tools/op1prof/scripts/synth-keys.txt`).
 
 Frontend regressions (including the CPU input event queue), the time model
 tests and an end-to-end smoke run of `op1emu` on a synthetic LDR (no NAND or

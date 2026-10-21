@@ -1,0 +1,28 @@
+# Synth phase: after the main display (2.9 s of guest time on the stock
+# image), open the synth page and play C4 D4 E4 three times. Every key is
+# timed in guest time (`at`) and queued before the CPU starts, so runs are
+# identical. The phase has no firmware mark: end it with --end-cycles
+# 4000000000 --until end (10 s of guest time) and --phase main-frame:end.
+accel 100 -100 500
+volume 128
+at 3500
+tap synth 100
+at 3800
+tap c4 300
+at 4300
+tap d4 300
+at 4800
+tap e4 300
+at 5300
+tap c4 300
+at 5800
+tap d4 300
+at 6300
+tap e4 300
+at 6800
+tap c4 300
+at 7300
+tap d4 300
+at 7800
+tap e4 300
+wait 86400000

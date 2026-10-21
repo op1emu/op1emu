@@ -373,9 +373,12 @@ u32 DMA::Read32(u32 offset) {
 // FLOW=Autobuffer auto-restarting the transfer indefinitely.
 static constexpr u32 MDMA_BURST_BYTES = 4096;
 
-uint64_t DMA::IdleUntil() const {
+uint64_t DMA::IdleUntil() {
     uint64_t until = UINT64_MAX;
-    for (const auto& channel : channels) until = std::min(until, channel->IdleUntil());
+    for (const auto& channel : channels) {
+        const uint64_t idle = channel->IdleUntil();
+        if (idle < until) until = idle, idleSource_ = channel->GetPeripheralType();
+    }
     return until;
 }
 

@@ -558,14 +558,34 @@ uint32_t BlackFinCpu::ChainBudget(uint32_t pc) {
     chainReason_ = kChainDue;
 #endif
     if (!time_.Deterministic()) return kWallChainPackets;
-    uint64_t dueNs = std::min({nextEventNs_, panel_.DeadlineNs(), s.dma->IdleUntilNs(),
-                               time_.DueNs(s.rtc->NextChange())});
+    const uint64_t dmaNs = s.dma->IdleUntilNs();
+    uint64_t dueNs = std::min({nextEventNs_, panel_.DeadlineNs(), dmaNs, time_.DueNs(s.rtc->NextChange())});
     if (ivg != TWI::kIvg) dueNs = std::min(dueNs, s.twi->NextByteNs());
     // In packets (= cycles in deterministic mode).
-    uint64_t due = std::min(TimeSource::PacketsAt(dueNs), lastTimerCycles_ + kCyclesPerTimerTick);
-    if (auto expiry = s.coreTimer->NextExpiry()) due = std::min(due, *expiry);
+    const uint64_t tick = lastTimerCycles_ + kCyclesPerTimerTick;
+    uint64_t due = std::min(TimeSource::PacketsAt(dueNs), tick);
+    const auto expiry = s.coreTimer->NextExpiry();
+    if (expiry) due = std::min(due, *expiry);
+#ifdef ENABLE_PROFILING
+    if (profiler_)
+        if (const uint64_t end = profiler_->EndCycles()) due = std::min(due, end);
+#endif
     const uint64_t now = time_.Packets();
-    return due <= now ? 0 : uint32_t(std::min<uint64_t>(due - now, kMaxChainPackets));
+    const uint32_t budget = due <= now ? 0 : uint32_t(std::min<uint64_t>(due - now, kMaxChainPackets));
+#ifdef ENABLE_PROFILING
+    // What set the budget, for the [due] census of deadline returns. Ties go
+    // to the first source in this order.
+    if (due > now && due - now > kMaxChainPackets) dueSource_ = kDueCap;
+    else if (profiler_ && profiler_->EndCycles() == due) dueSource_ = kDueEnd;
+    else if (expiry && *expiry == due) dueSource_ = kDueCoreTimer;
+    else if (tick == due) dueSource_ = kDueTick;
+    else if (TimeSource::PacketsAt(dmaNs) == due) dueSource_ = kDueDma + s.dma->IdleSource();
+    else if (TimeSource::PacketsAt(nextEventNs_) == due) dueSource_ = kDueEvent;
+    else if (TimeSource::PacketsAt(panel_.DeadlineNs()) == due) dueSource_ = kDuePanel;
+    else if (TimeSource::PacketsAt(time_.DueNs(s.rtc->NextChange())) == due) dueSource_ = kDueRtc;
+    else dueSource_ = kDueTwi;
+#endif
+    return budget;
 }
 
 void BlackFinCpu::SetChaining(bool chaining, bool dry) {
@@ -587,6 +607,15 @@ void BlackFinCpu::SetCoreEventSink(BcoreEventSink* sink) { core_->setEventSink(s
 
 void BlackFinCpu::SetPerfJitdump(bool enable) { core_->set_perf_jitdump(enable); }
 
+const char* BlackFinCpu::DueSourceName(unsigned source) {
+    static const char* const kNames[] = {"cap", "end", "coretimer", "tick", "event", "panel", "rtc", "twi"};
+    static const char* const kDma[] = {"dma_ppi", "dma_hostdp", "dma_nfc", "dma_sport0rx", "dma_sport0tx",
+                                       "dma_sport1rx", "dma_sport1tx", "dma_spi", "dma_uart0rx", "dma_uart0tx",
+                                       "dma_uart1rx", "dma_uart1tx", "dma_mdmad0", "dma_mdmas0", "dma_mdmad1",
+                                       "dma_mdmas1"};
+    return source < kDueDma ? kNames[source] : source < kDueSources ? kDma[source - kDueDma] : "?";
+}
+
 // Why the run returned to the host.
 void BlackFinCpu::CountChain(uint32_t budget, uint32_t retired, uint32_t chained, uint64_t accessStops) {
     auto& c = chainCounts_;
@@ -594,7 +623,7 @@ void BlackFinCpu::CountChain(uint32_t budget, uint32_t retired, uint32_t chained
     c.chained += chained;
     if (cpuState_->chain_would) ++c.would;
     else if (!budget) ++(chainReason_ == kChainHostOnly ? c.hostOnly : c.service);
-    else if (retired >= budget) ++c.deadline;
+    else if (retired >= budget) ++c.deadline, ++c.deadlineBy[dueSource_];
     else if (bcoreMemory_->ChainStops() != accessStops) ++c.access;
     else if (!cpuState_->chain_budget) ++c.cec;
     else if (*cpuState_->cec_pending) ++c.pending;
@@ -957,11 +986,17 @@ void BlackFinCpu::AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash) {
 }
 
 void BlackFinCpu::AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard) {
-    keyboard->SetKeyEventCallback([this](int bank, int index, bool pressed) {
-        this->QueueEvent([this, bank, index, pressed]() {
+    auto key = [this](int bank, int index, bool pressed) {
+        return [this, bank, index, pressed]() {
             // Map keyboard events to GPIO expander pins
             gpioExpanders[bank]->SetPinInput(index, pressed ? GPIOPinLevel::Low : GPIOPinLevel::High);
-        });
+        };
+    };
+    keyboard->SetKeyEventCallback([this, key](int bank, int index, bool pressed) {
+        this->QueueEvent(key(bank, index, pressed));
+    });
+    keyboard->SetTimedKeyEventCallback([this, key](int bank, int index, bool pressed, uint64_t delayNs) {
+        this->QueueEvent(key(bank, index, pressed), std::chrono::nanoseconds(std::max<uint64_t>(delayNs, 1)));
     });
 }
 

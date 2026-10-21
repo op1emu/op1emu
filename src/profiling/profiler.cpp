@@ -143,6 +143,7 @@ struct Profiler::Impl : BcoreEventSink {
 
     bool census = false;
     bool stopping = false;  // --profile-until fired
+    bool endFired = false;  // --profile-end-cycles
     profiling::ServiceStats* service = nullptr;  // owned by the CPU (census runs)
     profiling::MemoryCensus* memory = nullptr;   // owned by the CPU (census runs)
     // Exit census: per block, the runs after which the host was needed
@@ -206,7 +207,8 @@ struct Profiler::Impl : BcoreEventSink {
 
     int FindMark(const std::string& name) const { return marks.Find(name); }
     bool KnownMark(const std::string& name) const {
-        return name == "start" || FindMark(name) >= 0 || (hasFrame && frameMark.name == name);
+        return name == "start" || (name == "end" && options.endCycles) || FindMark(name) >= 0 ||
+               (hasFrame && frameMark.name == name);
     }
 
     void LoadMarks() {
@@ -520,6 +522,12 @@ struct Profiler::Impl : BcoreEventSink {
         static const char* const kWork[] = {"service", "tick", "expiry", "panel", "event", "latch", "cec", "quiet"};
         for (size_t kind = 0; kind < sizeof(kWork) / sizeof(kWork[0]); ++kind)
             if (chains.violation[kind]) std::printf(" violation_%s=%" PRIu64, kWork[kind], chains.violation[kind]);
+        std::printf("\n");
+        // Deadline returns by what set the budget (BlackFinCpu::DueSource), cumulative.
+        std::printf("[due] %s", name);
+        for (unsigned source = 0; source < chains.deadlineBy.size(); ++source)
+            if (chains.deadlineBy[source])
+                std::printf(" %s=%" PRIu64, BlackFinCpu::DueSourceName(source), chains.deadlineBy[source]);
         std::printf("\n");
         // What bcore made of the guest's loops (BcoreStats), cumulative.
         const BcoreStats loops = cpu.CoreStats();
@@ -861,6 +869,8 @@ bool Profiler::ChainingAllowed(uint32_t pc) const {
     return !impl.census && !impl.probesOn && !impl.checksums && !impl.stopping && !HostOnly(pc);
 }
 
+uint64_t Profiler::EndCycles() const { return impl_->endFired ? 0 : impl_->options.endCycles; }
+
 bool Profiler::HostOnly(uint32_t pc) const { return impl_->marks.InUnfired(pc); }
 
 void Profiler::BeforeRun(uint32_t pc) {
@@ -885,6 +895,10 @@ void Profiler::BeforeRun(uint32_t pc) {
     if (impl.framePending) {
         impl.framePending = false;
         impl.Fire(impl.frameMark.name.c_str(), pc);
+    }
+    if (impl.options.endCycles && !impl.endFired && impl.cpu.Time().Cycles() >= impl.options.endCycles) {
+        impl.endFired = true;
+        impl.Fire("end", pc);
     }
     if (impl.marks.Left()) {
         const int fired = impl.marks.OnBlock(pc);

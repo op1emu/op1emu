@@ -50,6 +50,8 @@ irq = int(os.environ.get("FAKE_IRQ", "3"))
 with open(opt("--profile-marks")) as f:
     config = json.load(f)
 names = ["start"] + [m["name"] for m in config["marks"]] + ([config["frame"]["name"]] if "frame" in config else [])
+if opt("--profile-end-cycles"):
+    names.append("end")
 skip = set(filter(None, os.environ.get("FAKE_SKIP", "").split(",")))
 names = [name for name in names if name not in skip]
 events, wall, cpu, insns = [], 0, 0, 0

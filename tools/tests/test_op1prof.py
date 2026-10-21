@@ -2,6 +2,7 @@
 
 Run: python3 -m pytest tools/tests
 """
+import hashlib
 import json
 import os
 import stat
@@ -1402,6 +1403,29 @@ def test_trace_events_reach_the_emulator(files, tmp_path, command):
         assert entry["command"][entry["command"].index("--profile-trace-events") + 1] == "500000"
     with pytest.raises(SystemExit):
         _cli(files, command, "--trace-events", "0", "--out", str(tmp_path / "z"))
+
+
+@pytest.mark.parametrize("command", ["run", "verify"])
+def test_script_and_end_cycles_reach_the_emulator(files, tmp_path, command):
+    script = tmp_path / "keys.txt"
+    script.write_text("press c4\nwait 10\nrelease c4\n")
+    assert _cli(files, command, "--script", str(script), "--end-cycles", "123", "--until", "end",
+                "--out", str(tmp_path / "o")) == 0
+    report = json.loads((tmp_path / "o" / "results.json").read_text())
+    runs = [report["run"]] if command == "run" else report["runs"]
+    for entry in runs:
+        assert entry["command"][entry["command"].index("--profile-end-cycles") + 1] == "123"
+        assert entry["script_sha256"] == hashlib.sha256(script.read_bytes()).hexdigest()
+        assert [m["name"] for m in entry["marks"]][-1] == "end"
+    with pytest.raises(SystemExit):
+        _cli(files, command, "--script", str(tmp_path / "missing.txt"), "--out", str(tmp_path / "z"))
+
+
+def test_end_mark_comes_last(tmp_path):
+    marks = tmp_path / "marks.json"
+    marks.write_text(json.dumps({"marks": [{"name": "a"}], "frame": {"name": "f"}}))
+    assert perf.mark_order(marks) == ["start", "a", "f", "end"]
+    assert perf.check_window(marks, ("f", "end"), "end") is None
 
 
 # ---- service census ----
