@@ -16,26 +16,60 @@ void USBIPServer::Start()
     server->on<uvw::listen_event>([this] (const uvw::listen_event&, uvw::tcp_handle& srv) {
         auto client = srv.parent().resource<uvw::tcp_handle>();
 
-        client->on<uvw::close_event>([ptr = srv.shared_from_this()] (const uvw::close_event&, uvw::tcp_handle&) { ptr->close(); });
+        // The listening handle stays open: a client that goes away (a failed or
+        // detached attach) must not stop later ones from connecting.
+        client->on<uvw::close_event>([this] (const uvw::close_event&, uvw::tcp_handle& client) { OnClientClosed(client); });
         client->on<uvw::end_event>([] (const uvw::end_event&, uvw::tcp_handle& client) { client.close(); });
         client->on<uvw::data_event>([this] (const uvw::data_event& event, uvw::tcp_handle& client) { OnClientDataEvent(event, client); });
 
         srv.accept(*client);
+        OnClientAccepted(client);
         client->read();
     });
     server->bind("0.0.0.0", USBIP_SERVER_PORT);
     server->listen();
 }
 
-void USBIPServer::ReplyImport(OP_REQ_IMPORT& req, uvw::tcp_handle& client)
+void USBIPServer::OnClientAccepted(const std::shared_ptr<uvw::tcp_handle>& client)
 {
     std::lock_guard lock(mutex);
+    ++connection;
+    state = USBIPState::WaitCommand;
+    if (buffer.size()) buffer.pop(buffer.size());
+    current = client;
+}
+
+void USBIPServer::OnClientClosed(uvw::tcp_handle& client)
+{
+    std::lock_guard lock(mutex);
+    if (current.get() != &client) return; // superseded by a newer connection
+    ++connection;
+    state = USBIPState::WaitCommand;
+    if (buffer.size()) buffer.pop(buffer.size());
+    current.reset();
+}
+
+bool USBIPServer::ReplyImport(OP_REQ_IMPORT& req, uvw::tcp_handle& client)
+{
+    std::lock_guard lock(mutex);
+    if (!device.IsConnected()) {
+        // Refuse rather than let the host's first requests go unanswered: it would
+        // give up after ~10 s, and those requests would be left in the controller.
+        LogWarn("USBIP: refusing attach, the firmware has not connected to the USB bus yet");
+        OP_REQ_HEADER rep{};
+        rep.version = req.version;
+        rep.command = 0x0003;
+        rep.status = 1;
+        client.write((char*)&rep, sizeof(rep));
+        return false;
+    }
     OP_REP_IMPORT rep{};
     rep.version = req.version;
     rep.command = 0x0003;
     strcpy(rep.busid, req.busid);
     rep.speed = 3; // High Speed
     client.write((char*)&rep, sizeof(rep));
+    return true;
 }
 
 std::size_t static GetTotalSize(USBIP_CMD_SUBMIT& req)
@@ -62,7 +96,7 @@ static void GenerateURBReply(const USBIP_CMD_SUBMIT& req, USBIP_RET_SUBMIT& repl
     reply.setup = {};
 }
 
-void USBIPServer::Reply(uvw::tcp_handle& client, const USBIP_CMD_SUBMIT& req, const void* data, std::size_t length, const USBIP_ISOC_DESC* isoc)
+void USBIPServer::Reply(uvw::tcp_handle& client, uint64_t conn, const USBIP_CMD_SUBMIT& req, const void* data, std::size_t length, const USBIP_ISOC_DESC* isoc)
 {
     USBIP_RET_SUBMIT reply;
     GenerateURBReply(req, reply);
@@ -84,12 +118,15 @@ void USBIPServer::Reply(uvw::tcp_handle& client, const USBIP_CMD_SUBMIT& req, co
         memcpy(ptr, isoc, req.number_of_packets * sizeof(USBIP_ISOC_DESC));
     }
     std::lock_guard lock(mutex);
+    if (conn != connection) return; // the client this answers has gone
     /* FIXME: currently write the buffer synchronously */
     std::size_t remain = size;
     while (remain > 0) {
         auto len = client.try_write(buffer.get() + size - remain, remain);
         if (len > 0) {
             remain -= len;
+        } else if (len != UV_EAGAIN) {
+            break; // the connection failed; retrying would never end
         }
     }
 }
@@ -104,27 +141,28 @@ static void FillIsocDesc(USBIP_ISOC_DESC* isoc, uint32_t number_of_packets, uint
 
 void USBIPServer::HandleURBRequest(USBIP_CMD_SUBMIT& req, uint8_t* data, std::size_t length, uvw::tcp_handle& client)
 {
+    const uint64_t conn = connection;
     if (req.ep == 0) { // Control Endpoint #0
-        device.HandleSetupPacket(req.setup, data, length, [req=req, &client, this] (const uint8_t* data, std::size_t length) {
-            Reply(client, req, data, length, nullptr);
+        device.HandleSetupPacket(req.setup, data, length, [req=req, &client, conn, this] (const uint8_t* data, std::size_t length) {
+            Reply(client, conn, req, data, length, nullptr);
         });
     } else if (req.direction) { // Device to Host
         std::vector<USBIP_ISOC_DESC> isoc(req.number_of_packets);
         for (int i = 0; i < req.number_of_packets; i++) {
             isoc[i] = *((USBIP_ISOC_DESC*)data + i);
         }
-        device.HandleDataRead(req.ep, req.interval, req.transfer_buffer_length, [req=req, isoc=isoc, &client, this] (const uint8_t* data, std::size_t length) {
+        device.HandleDataRead(req.ep, req.interval, req.transfer_buffer_length, [req=req, isoc=isoc, &client, conn, this] (const uint8_t* data, std::size_t length) {
             FillIsocDesc(const_cast<USBIP_ISOC_DESC*>(isoc.data()), req.number_of_packets, length);
-            Reply(client, req, data, length, isoc.data());
+            Reply(client, conn, req, data, length, isoc.data());
         });
     } else { // Host to Device
         std::vector<USBIP_ISOC_DESC> isoc(req.number_of_packets);
         for (int i = 0; i < req.number_of_packets; i++) {
             isoc[i] = *((USBIP_ISOC_DESC*)(data + req.transfer_buffer_length) + i);
         }
-        device.HandleDataWrite(req.ep, req.interval, data, req.transfer_buffer_length, [req=req, isoc=isoc, &client, this]() {
+        device.HandleDataWrite(req.ep, req.interval, data, req.transfer_buffer_length, [req=req, isoc=isoc, &client, conn, this]() {
             FillIsocDesc(const_cast<USBIP_ISOC_DESC*>(isoc.data()), req.number_of_packets, 0);
-            Reply(client, req, nullptr, req.transfer_buffer_length, isoc.data());
+            Reply(client, conn, req, nullptr, req.transfer_buffer_length, isoc.data());
         });
     }
 }
@@ -132,6 +170,7 @@ void USBIPServer::HandleURBRequest(USBIP_CMD_SUBMIT& req, uint8_t* data, std::si
 void USBIPServer::OnClientDataEvent(const uvw::data_event& event, uvw::tcp_handle& client)
 {
     static USBIP_CMD_SUBMIT urbRequest;
+    if (current.get() != &client) return; // a connection that has been replaced
     buffer.push(event.data.get(), event.length);
     USBIPState last;
     do {
@@ -151,8 +190,7 @@ void USBIPServer::OnClientDataEvent(const uvw::data_event& event, uvw::tcp_handl
                 OP_REQ_IMPORT req;
                 buffer.pop(&req, sizeof(req));
                 LogInfo("USBIP: attach device");
-                ReplyImport(req, client);
-                state = USBIPState::WaitHeader;
+                state = ReplyImport(req, client) ? USBIPState::WaitHeader : USBIPState::WaitCommand;
             }
         } else if (state == USBIPState::WaitHeader) {
             if (buffer.size() >= sizeof(USBIP_HEADER_BASIC)) {

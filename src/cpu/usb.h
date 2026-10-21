@@ -41,6 +41,9 @@ public:
     virtual void HandleSetupPacket(USBSetupBytes setup, const u8* data, std::size_t length, ReplyCallback callback) = 0;
     virtual void HandleDataWrite(int ep, int interval, const u8* data, std::size_t length, WriteDoneCallback callback) = 0;
     virtual void HandleDataRead(int ep, int interval, std::size_t limit, ReplyCallback callback) = 0;
+    // The firmware has enabled the controller and connected to the bus (SOFT_CONN).
+    // A host cannot enumerate the device before that: nothing answers its requests.
+    virtual bool IsConnected() const { return true; }
 };
 
 
@@ -102,6 +105,10 @@ public:
     void HandleSetupPacket(USBSetupBytes setup, const u8* data, std::size_t length, ReplyCallback callback) override;
     void HandleDataWrite(int ep, int interval, const u8* data, std::size_t length, WriteDoneCallback callback) override;
     void HandleDataRead(int ep, int interval, std::size_t limit, ReplyCallback callback) override;
+
+    bool IsConnected() const override {
+        return __atomic_load_n(&enabled, __ATOMIC_RELAXED) && __atomic_load_n(&connected, __ATOMIC_RELAXED);
+    }
 
     void ProcessWithInterrupt(int ivg) override;
     // ProcessWithInterrupt() has work: the USB is enabled (GLOBAL_ENA), and
