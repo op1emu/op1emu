@@ -1974,9 +1974,10 @@ def test_first_difference_judges_a_missing_counter_over_the_whole_runs():
 
 # ---- capture sets, perf diff, lost samples ----
 
-def _report(seconds, rtc, fir_self, window=("a", "b"), lost=None):
+def _report(seconds, rtc, fir_self, window=("a", "b"), lost=None, exit_s=None):
     """A perf report as report.analyze() returns it, with the parts capture_set reads."""
-    return {"window": list(window), "event": "cycles:u", "rate": ["-c", "4000000"], "call_graph": "lbr",
+    shared = {"shared_code": [{"symbol": "bcore_cp_exit", "seconds": exit_s}]} if exit_s is not None else {}
+    return {**shared, "window": list(window), "event": "cycles:u", "rate": ["-c", "4000000"], "call_graph": "lbr",
             "execution_cpu_s": seconds, "inclusive_valid": True, "record": lost,
             "samples": {"execution": {"count": 100, "weight": 100}},
             "buckets": [{"bucket": "rtc", "seconds": rtc}, {"bucket": "dma", "seconds": 1.0}],
@@ -2018,6 +2019,26 @@ def test_a_perf_diff_gives_welch_intervals_only_with_enough_captures():
         _diff_sets(caps, a, other, [_report(9.0, 1.0, 1.0, window=("a", "c"))] * 3)
     with pytest.raises(ValueError, match="both sides"):
         _diff_sets(caps, a, caps, b)
+
+
+def test_sets_and_diffs_keep_the_code_blocks_share():
+    """The generated code no block owns (bcore_cp_exit, ...) is a table of
+    its own in a report: sets and diffs aggregate it as every other (found
+    in review: they dropped it once it left the host tables)."""
+    a = [_report(10.0, 2.0, 1.0, exit_s=v) for v in (0.20, 0.21, 0.19)]
+    b = [_report(10.0, 2.0, 1.0, exit_s=v) for v in (0.10, 0.11, 0.09)]
+    caps, other = [Path(f"a{i}") for i in range(3)], [Path(f"b{i}") for i in range(3)]
+    data = capture_set.aggregate(caps, a)
+    exit_row = {r["symbol"]: r for r in data["shared_code"]}["bcore_cp_exit"]
+    assert exit_row["mean"] == pytest.approx(0.20) and exit_row["ci95"] is not None
+    assert "no block owns" in capture_set.format_set(data, 5) and "bcore_cp_exit" in capture_set.format_set(data, 5)
+    diff_data = _diff_sets(caps, a, other, b)
+    exit_diff = {r["symbol"]: r for r in diff_data["shared_code"]}["bcore_cp_exit"]
+    assert exit_diff["delta"] == pytest.approx(-0.10) and exit_diff["ci95"][1] < 0
+    assert "bcore_cp_exit" in capture_set.format_diff(diff_data, 5)
+    # Reports from before the table: no rows, no table.
+    old = capture_set.aggregate(caps, [_report(10.0, 2.0, 1.0)] * 3)
+    assert old["shared_code"] == [] and "no block owns" not in capture_set.format_set(old, 5)
 
 
 def _diff_sets(ca, a, cb, b, monkeypatch=None):

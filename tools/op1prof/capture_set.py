@@ -18,7 +18,11 @@ from .marks import workload_diff
 from . import report as perf_report
 
 SECTIONS = (("buckets", "bucket", "seconds"), ("blocks", "block", "self_s"), ("blocks_incl", "block", "incl_s"),
-            ("host_self", "symbol", "seconds"), ("host_inclusive", "symbol", "seconds"))
+            ("shared_code", "symbol", "seconds"), ("host_self", "symbol", "seconds"),
+            ("host_inclusive", "symbol", "seconds"))
+# The tables a set and a diff show, after the buckets and the blocks: the
+# generated code no block owns (report.SHARED_PREFIX), then the host's.
+SHARED_TABLE = ("generated code no block owns (self)", "shared_code", "symbol")
 MIN_FOR_INTERVAL = 3
 SET_SCHEMA = "op1prof.report-set.v1"
 DIFF_SCHEMA = "op1prof.report-diff.v1"
@@ -117,6 +121,8 @@ def format_set(data: dict, limit: int) -> str:
     tables = [("host-path bucket", "buckets", "bucket"), ("guest block (self)", "blocks", "block")]
     if data["inclusive_valid"]:
         tables += [("guest block (inclusive)", "blocks_incl", "block"), ("host symbol (inclusive)", "host_inclusive", "symbol")]
+    if data["shared_code"]:
+        tables.append(SHARED_TABLE)
     tables.append(("host symbol (self)", "host_self", "symbol"))
     for title, section, key in tables:
         lines += ["", f"{title:56s} {'seconds':>9} {'95% interval':>15} {'share':>6}"]
@@ -207,6 +213,8 @@ def format_diff(data: dict, limit: int) -> str:
     tables = [("host-path bucket", "buckets", "bucket"), ("guest block (self)", "blocks", "block")]
     if data["inclusive_valid"]:
         tables += [("guest block (inclusive)", "blocks_incl", "block"), ("host symbol (inclusive)", "host_inclusive", "symbol")]
+    if data["shared_code"]:
+        tables.append(SHARED_TABLE)
     tables.append(("host symbol (self)", "host_self", "symbol"))
     for title, section, key in tables:
         lines += ["", f"{title:50s} {'A s':>9} {'B s':>9} {'delta':>9} {'95% interval':>17}"]
