@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <atomic>
+#include <cassert>
+#include <functional>
 #include <typeinfo>
 #include "emu.h"
 #include <utils/log.h>
@@ -54,6 +56,7 @@ Device* Emulator::Find(u32 addr) const
 
 void Emulator::MemoryRead(u32 addr, void* buffer, int length)
 {
+    Watch(addr, length);
     while (length > 0) {
         Device* dev = Find(addr);
         if (!dev) {
@@ -71,6 +74,7 @@ void Emulator::MemoryRead(u32 addr, void* buffer, int length)
 
 void Emulator::MemoryWrite(u32 addr, const void* buffer, int length)
 {
+    Watch(addr, length);
     while (length > 0) {
         Device* dev = Find(addr);
         if (!dev) {
@@ -108,6 +112,7 @@ u16 Emulator::MemoryRead16(u32 vaddr)
 
 u32 Emulator::MemoryRead32(u32 vaddr)
 {
+    Watch(vaddr, 4);
     if (readHooks.find(vaddr) != readHooks.end()) {
         return readHooks[vaddr](vaddr);
     } else {
@@ -140,6 +145,7 @@ void Emulator::MemoryWrite16(u32 vaddr, u16 value)
 
 void Emulator::MemoryWrite32(u32 vaddr, u32 value)
 {
+    Watch(vaddr, 4);
     if (writeHooks.find(vaddr) != writeHooks.end()) {
         writeHooks[vaddr](vaddr, value);
     } else {
@@ -158,6 +164,7 @@ void Emulator::MemoryWrite64(u32 vaddr, u64 value)
 
 bool Emulator::MemoryWriteExclusive32(u32 vaddr, u32 value, u32 expected)
 {
+    Watch(vaddr, 4);
     auto atomic = (std::atomic<u32>*)MemoryMap(vaddr);
     return atomic->compare_exchange_strong(expected, value);
 }
@@ -199,9 +206,44 @@ void Emulator::RebuildDirectPages()
             directPages[page >> PAGE_BITS] = static_cast<u8*>(dev->Map(first - dev->BaseAddress()));
         }
     }
+    for (size_t i = 0; i < watched_.size(); ++i) {
+        watchedDirect_[i] = directPages[watched_[i]];
+        directPages[watched_[i]] = nullptr;
+    }
+}
+
+void Emulator::WatchPages(PageWatcher* watcher, std::vector<u32> pages)
+{
+    assert(std::adjacent_find(pages.begin(), pages.end(), std::greater_equal<u32>()) == pages.end());
+    for (size_t i = 0; i < watched_.size(); ++i) directPages[watched_[i]] = watchedDirect_[i];
+    watched_ = std::move(pages);
+    watchedDirect_.resize(watched_.size());
+    for (size_t i = 0; i < watched_.size(); ++i) {
+        watchedDirect_[i] = directPages[watched_[i]];
+        directPages[watched_[i]] = nullptr;
+    }
+    watcher_ = watched_.empty() ? nullptr : watcher;
+}
+
+bool Emulator::Watched(u32 addr) const
+{
+    return watcher_ && std::binary_search(watched_.begin(), watched_.end(), addr >> PAGE_BITS);
+}
+
+void Emulator::WatchAccess(u32 addr, u32 length)
+{
+    if (!length || addr >= 0xFFC00000) return;
+    const u32 last = u32(std::min<u64>(u64(addr) + length - 1, 0xFFBFFFFF));
+    const auto first = std::lower_bound(watched_.begin(), watched_.end(), addr >> PAGE_BITS);
+    if (first != watched_.end() && *first <= last >> PAGE_BITS) watcher_->BeforeAccess();
 }
 
 bool Emulator::Quiet(u32 addr) const
+{
+    return Plain(addr) && !Watched(addr);
+}
+
+bool Emulator::Plain(u32 addr) const
 {
     constexpr u32 kPageSize = 1u << PAGE_BITS;
     if (addr >= 0xFFC00000) return false;
@@ -214,7 +256,7 @@ bool Emulator::Quiet(u32 addr) const
 
 bool Emulator::HostWorkAfter(u32 addr, u32 length, bool write) const
 {
-    if (addr < 0xFFC00000) return !Quiet(addr);
+    if (addr < 0xFFC00000) return !Plain(addr) || (Watched(addr) && watcher_->HostWorkAfterAccess());
     const Device* dev = Find(addr);
     if (!dev || uint64_t(addr) + length - 1 > dev->EndAddress()) return true;
     if (readHooks.count(addr) || writeHooks.count(addr)) return true;

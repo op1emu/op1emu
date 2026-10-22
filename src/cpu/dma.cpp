@@ -2,6 +2,7 @@
 #include "time_source.h"
 #include "utils/log.h"
 #include <stdint.h>
+#include <algorithm>
 #include <cassert>
 
 enum DMANextOperation {
@@ -37,6 +38,10 @@ public:
     // No earlier than this guest cycle has it moved `bytes` more (paced).
     uint64_t CyclesToMove(uint64_t bytes) const;
     bool ToMemory() const { return memoryWrite; }
+    // Appends the pages below the MMR space the rest of its transfer reads
+    // or writes: the current row's rest, then the rows after it; all of it
+    // where it starts again (autobuffer).
+    void Pages(std::vector<u32>& pages) const;
     bool IsMDMA() const;
     bool IsMDMASource() const;
     DMAPeripheralType GetPeripheralType() const { return peripheralType; }
@@ -282,6 +287,32 @@ bool DMAChannel::QuietSource(u32 from, u32 to, u32 elementBytes) const {
     return true;
 }
 
+void DMAChannel::Pages(std::vector<u32>& pages) const {
+    if (!currXCount) return;
+    int64_t lo = currAddr, hi = currAddr;
+    const auto row = [&](int64_t start, u32 elements) {
+        const int64_t end = start + int64_t(elements - 1) * xModify;
+        lo = std::min({lo, start, end});
+        hi = std::max({hi, start, end});
+    };
+    row(currAddr, currXCount);
+    // As ProcessTransfer() steps: a row's last element, then yModify.
+    const int64_t stride = int64_t(xCount - 1) * xModify + yModify;
+    if (mode2D && currYCount > 1 && xCount) {
+        const int64_t second = int64_t(currAddr) + int64_t(currXCount - 1) * xModify + yModify;
+        row(second, xCount);
+        row(second + int64_t(currYCount - 2) * stride, xCount);
+    }
+    if (next == DMANextOperation::Autobuffer && xCount) {
+        row(startAddr, xCount);
+        if (mode2D && yCount > 1) row(int64_t(startAddr) + int64_t(yCount - 1) * stride, xCount);
+    }
+    hi += (1 << wordSize) - 1;
+    lo = std::max<int64_t>(lo, 0);
+    hi = std::min<int64_t>(hi, 0xFFBFFFFF);
+    for (int64_t page = lo >> PAGE_BITS; page <= hi >> PAGE_BITS; ++page) pages.push_back(u32(page));
+}
+
 bool DMAChannel::IsMDMA() const {
     return peripheralType >= DMAPeripheralMDMADest0 && peripheralType <= DMAPeripheralMDMASrc1;
 }
@@ -434,12 +465,26 @@ DMA::DMA(u32 baseAddr, Emulator& emu, const TimeSource* time)
     }
 }
 
+namespace {
+// The DMA's own code runs for the scope (DMA::busy_, servicing_).
+class Raise {
+public:
+    explicit Raise(bool& flag) : flag_(flag), was_(flag) { flag = true; }
+    ~Raise() { flag_ = was_; }
+
+private:
+    bool& flag_;
+    bool was_;
+};
+}  // namespace
+
 // Offset of a channel's IRQ_STATUS: DMA_DONE and DMA_ERR are W1C (the level
 // is published here), DMA_RUN is read-only. Neither what a channel moves nor
 // DMA::IdleUntil() depends on them.
 static constexpr u32 kIrqStatus = 0x28;
 
 void DMA::Write32(u32 offset, u32 value) {
+    Raise busy(busy_);
     if (offset % 0x40 != kIrqStatus) {
         // The rows due by now move first, as they would have before it.
         if (settling_) Settle(Now());
@@ -477,6 +522,7 @@ u32 DMA::Read32(u32 offset) {
     // inside the read, as levels an access changes are; the run stops after
     // it (HostWorkAfterAccess).
     if (SettlesOnRead(offset)) Settle(Now());
+    Raise busy(busy_);
     size_t channelIndex = offset / 0x40;
     if (channelIndex < channels.size()) {
         return channels[channelIndex]->Read32(offset % 0x40);
@@ -550,6 +596,7 @@ uint64_t DMA::EventBound(size_t index, uint64_t now) const {
 // empty or full) waits in blocked_ until another moves; the pass after one
 // that moved anything is at the next cycle, as the next service would be.
 void DMA::Settle(uint64_t until) {
+    Raise busy(busy_);
     while (settling_) {
         uint64_t at = UINT64_MAX;
         for (u32 mask = settling_ & ~blocked_; mask; mask &= mask - 1)
@@ -566,6 +613,8 @@ void DMA::Settle(uint64_t until) {
             const uint64_t events = channel.Events();
             if (Pump(channel, at)) moved = true;
             else waiting |= u16(1u << index);
+            // Outside a service, an event is the next one's work.
+            if (channel.Events() != events && !servicing_) touched_ = true;
             CountServiceWork(channel.Events() - events);
             Refresh(index);
         }
@@ -575,7 +624,22 @@ void DMA::Settle(uint64_t until) {
     nextPass_ = UINT64_MAX;
 }
 
+void DMA::BeforeAccess() {
+    if (!busy_ && settling_) Settle(Now());
+}
+
+void DMA::Watch() {
+    std::vector<u32> pages;
+    for (u32 mask = settling_; mask; mask &= mask - 1) channels[__builtin_ctz(mask)]->Pages(pages);
+    std::sort(pages.begin(), pages.end());
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+    if (pages == watched_) return;
+    watched_ = pages;
+    emulator.WatchPages(this, std::move(pages));
+}
+
 void DMA::ProcessWithInterrupt(int ivg) {
+    Raise busy(busy_), servicing(servicing_);
     // Cleared first: a notice raised while the channels run is for the next call.
     touched_ = false;
     const uint64_t now = Now();
@@ -593,6 +657,7 @@ void DMA::ProcessWithInterrupt(int ivg) {
     // A channel the loop made settle (a descriptor) gets its next pass.
     if (settling_) Settle(now);
     idleUntil_ = IdleUntil();
+    Watch();
 }
 
 void DMA::BindInterrupt(int channel, int q, InterruptHandler callback) {

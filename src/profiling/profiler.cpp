@@ -727,6 +727,7 @@ struct Profiler::Impl : BcoreEventSink {
                                  cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_ILAT),
                                  cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_IMASK)};
         uint64_t memory = 0xcbf29ce484222325ull;
+        cpu.GetEmulator().SettleWatched();
         for (Device* device : cpu.GetEmulator().Devices())
             if (typeid(*device) == typeid(MemoryDevice))
                 memory = hash(device->Map(0), device->Size(), memory);

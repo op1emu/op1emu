@@ -118,7 +118,7 @@ enum DMAPeripheralType {
 };
 
 class DMAChannel;
-class DMA : public RegisterDevice {
+class DMA : public RegisterDevice, public PageWatcher {
 public:
     // Without a time source no bus is paced (CyclesPerElement is ignored).
     DMA(u32 baseAddr, Emulator& emu, const TimeSource* time = nullptr);
@@ -159,15 +159,28 @@ public:
     // on a bus that Settles() moves its rows when something could see them
     // -- a service at a row whose end the guest is told of (an interrupt,
     // the transfer's end), a register write, a read of its current address
-    // or counts -- not at each row's time. Each row moves as a service at
-    // its own cycle would have moved it, so the transfer is the one a
-    // service every cycle makes; but memory is read and written later: a
-    // guest store to a source row past its cycle is copied, a guest load of
-    // a destination row past its cycle sees it unwritten, until the next of
-    // those. A service moves the rows before the other channels' (a PPI or
-    // SPORT reading what memory DMA wrote sees it written). Off, every row
-    // is due on its own (the test's reference).
+    // or counts, an access to memory its transfer has yet to read or write
+    // -- not at each row's time. Each row moves as a service at its own
+    // cycle would have moved it, so the transfer is the one a service every
+    // cycle makes, and every access sees memory as it would then. For
+    // memory the service watches the pages the rest of each transfer lies
+    // in (Emulator::WatchPages()), from the service after the write that
+    // starts it: until then the block that wrote it sees them as before,
+    // as a channel that does not settle shows its first row only at that
+    // service. So for the next descriptor of a transfer that ends inside an
+    // access: its pages are watched from the service after that block. A
+    // service moves the rows before the other channels' (a PPI
+    // or SPORT reading what memory DMA wrote sees it written). Off, every
+    // row is due on its own (the test's reference).
     void SetSettling(bool on) { settleRows_ = on; }
+
+    // PageWatcher: the rows due by now move first, but where the DMA itself
+    // reads or writes memory. A row end the guest is told of (an interrupt,
+    // a transfer's end) comes inside the access, as at a read of a current
+    // count, and gives the host work: a service, which also watches the
+    // pages of a transfer it began.
+    void BeforeAccess() override;
+    bool HostWorkAfterAccess() const override { return touched_; }
 
     // ProcessWithInterrupt() has work at guest time nowNs: a register write
     // or a bus notice since the last call, or a running channel whose bus may
@@ -193,6 +206,9 @@ protected:
     // runnable_'s bit for a channel after something may have changed it: a
     // register write, or its own transfer (completion, the next descriptor).
     void Refresh(size_t channel);
+    // At the end of a service: the pages the settling channels' transfers
+    // have yet to reach, watched (SetSettling()).
+    void Watch();
 
     bool touched_ = true;
     uint64_t idleUntil_ = 0;
@@ -211,4 +227,9 @@ protected:
     u16 blocked_ = 0;
     uint64_t passFloor_ = 0;
     uint64_t nextPass_ = UINT64_MAX;
+    // The DMA's own code runs (its memory accesses need no settling); a
+    // service runs (an event in it is its own work, not the next one's).
+    bool busy_ = false;
+    bool servicing_ = false;
+    std::vector<u32> watched_;  // as last given to Emulator::WatchPages()
 };

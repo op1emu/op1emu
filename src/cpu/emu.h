@@ -27,6 +27,19 @@ public:
     virtual u32 PC() = 0;
 };
 
+// Sees every access to the guest pages it watches before it happens
+// (Emulator::WatchPages): memory DMA, whose rows lag behind their cycles
+// (DMA::SetSettling), moves the ones due first.
+class PageWatcher {
+public:
+    virtual ~PageWatcher() {}
+    // Before an access to a watched page: generated code's or the host's.
+    virtual void BeforeAccess() = 0;
+    // After generated code's access to one: whether the host may have work
+    // between blocks (as Device::HostWorkAfterAccess).
+    virtual bool HostWorkAfterAccess() const = 0;
+};
+
 class Emulator {
 public:
     Emulator();
@@ -75,18 +88,32 @@ public:
     // changes; binding a device or adding a hook rebuilds it in place.
     u8* const* DirectPages() const { return directPages.data(); }
 
+    // The guest pages (addr >> PAGE_BITS, sorted, unique, below the MMR
+    // space) the watcher sees each access to first: the host's through
+    // MemoryRead* and MemoryWrite*, and generated code's, which these pages
+    // stop being direct for. Replaces the last set; an empty one ends the
+    // watch. Only while no compiled block runs: one may hold a page's entry
+    // for its run (bcore's Memory::page_table()). The watcher outlives every
+    // access after it (the Emulator's own teardown makes none).
+    void WatchPages(PageWatcher* watcher, std::vector<u32> pages);
+    // Before the host reads a page another way (Map(), as the profiler's
+    // digest does): the watcher brings every watched page up to date.
+    void SettleWatched() { if (watcher_) watcher_->BeforeAccess(); }
+
     void PatchSoftwareBreak(u32 addr, u8 num);
     void RemoveSoftwareBreak(u32 addr);
 
     bool IsMemoryValid(u32 addr);
     // An access at addr has no effect but on memory: a plain MemoryDevice
-    // (see DirectPages()) below the MMR space and no hook in its page.
-    // Anything else may give the host work between blocks.
+    // (see DirectPages()) below the MMR space, no hook in its page and no
+    // watch on it (WatchPages()). Anything else may give the host work
+    // between blocks.
     bool Quiet(u32 addr) const;
     // After a guest access of length bytes at addr: whether it may have given
-    // the host work between blocks. No below the MMR space where Quiet(), and
-    // in the MMR space when the one device it reached says so
-    // (Device::HostWorkAfterAccess); yes anywhere else.
+    // the host work between blocks. No below the MMR space where Quiet(), or
+    // in plain memory a watcher watches when it says so; in the MMR space
+    // when the one device it reached says so (Device::HostWorkAfterAccess);
+    // yes anywhere else.
     bool HostWorkAfter(u32 addr, u32 length, bool write) const;
     // MemoryRead8/16/32 and MemoryWrite8/16/32 followed by HostWorkAfter,
     // with one device lookup for both where an MMR access stays inside its
@@ -107,6 +134,15 @@ protected:
     // for the device map it was looked up in (generation_).
     Device* Find(u32 addr) const;
     uint64_t generation_ = 0;
+    // Quiet() but for a watch.
+    bool Plain(u32 addr) const;
+    bool Watched(u32 addr) const;
+    // Before an access of length bytes at addr: the watcher, if it watches
+    // a page of it.
+    void Watch(u32 addr, u32 length) {
+        if (watcher_) WatchAccess(addr, length);
+    }
+    void WatchAccess(u32 addr, u32 length);
 
     std::shared_ptr<FastMem> fastmem;
     std::shared_ptr<std::array<u8*, NUM_PAGE_TABLE_ENTRIES>> pageTable;
@@ -115,4 +151,9 @@ protected:
     std::map<u32, std::function<u32(u32)>> readHooks;
     std::map<u32, std::function<void(u32, u32)>> writeHooks;
     std::vector<u8*> directPages;
+    // WatchPages(): the watcher (null while it watches nothing), its pages,
+    // and what each page's DirectPages() entry is without the watch.
+    PageWatcher* watcher_ = nullptr;
+    std::vector<u32> watched_;
+    std::vector<u8*> watchedDirect_;
 };

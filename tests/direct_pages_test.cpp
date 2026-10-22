@@ -51,6 +51,35 @@ int main() {
         emulator.AddWriteHook(0x12ffc, [](u32, u32) {});
         check(!Page(emulator, 0x12000), "so does a write hook");
 
+        // A watch (WatchPages) takes its pages out while it lasts, sees
+        // the host's accesses to them first and makes them not quiet; a
+        // rebuild in between keeps them out.
+        struct Counter : PageWatcher {
+            int seen = 0;
+            void BeforeAccess() override { ++seen; }
+            bool HostWorkAfterAccess() const override { return false; }
+        } watcher;
+        MemoryDevice watched("watched RAM", 0x50000, 0x3000);
+        emulator.BindDevice(&watched);
+        emulator.WatchPages(&watcher, {0x51});
+        check(!Page(emulator, 0x51000) && Page(emulator, 0x50000) && Page(emulator, 0x52000), "a watch takes its page out");
+        check(!emulator.Quiet(0x51000) && emulator.Quiet(0x50000), "a watched page is not quiet");
+        check(!emulator.HostWorkAfter(0x51000, 4, false), "the watcher says whether an access gives the host work");
+        emulator.MemoryRead32(0x50ffc);
+        check(watcher.seen == 0, "an access elsewhere is not seen");
+        emulator.MemoryRead32(0x51000);
+        u8 bytes[8];
+        emulator.MemoryRead(0x50ffc, bytes, sizeof(bytes));  // across into the watched page
+        emulator.MemoryWrite8(0x51fff, 1);
+        check(watcher.seen == 3, "the host's accesses to it are seen first");
+        emulator.AddReadHook(0x50004, [](u32) { return 0u; });
+        check(!Page(emulator, 0x51000) && !Page(emulator, 0x50000) && Page(emulator, 0x52000), "a rebuild keeps the watch");
+        emulator.WatchPages(&watcher, {});
+        check(Page(emulator, 0x51000) == static_cast<u8*>(watched.Map(0x1000)) && !Page(emulator, 0x50000),
+              "the watch's end gives its page back");
+        emulator.MemoryRead32(0x51000);
+        check(watcher.seen == 3 && emulator.Quiet(0x51000), "and nothing is seen any more");
+
         check(emulator.DirectPages() == table, "the table never moves");
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";

@@ -273,7 +273,11 @@ now settles its rows (`DMA::Settle`; `--no-dma-settle` turns it off): each
 moves as a service at its own cycle would have moved it, but only when
 something could see it -- a row end that interrupts or the transfer's end
 (the deadline), a write to the DMA, a read of the channel's current address
-or counts. The guest's own reads of the memory see the rows later. Every
+or counts, an access to memory the transfer has yet to reach: from the
+service after the write that starts it, the pages the rest of the transfer
+lies in are watched (`Emulator::WatchPages`, not direct for generated code),
+so every load and store, the guest's or the host's, sees memory as at its
+own cycle. Every
 mark's counters and digests are as before but for `mmio_r` (the poll of the
 channel's IRQ_STATUS now waits in one run); of 389,458 deadline returns,
 16,145 are memory DMA 0's.

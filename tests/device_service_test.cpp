@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <algorithm>
 #include <chrono>
 #include <memory>
@@ -342,6 +343,7 @@ struct MdmaRig {
     struct Shape {
         u32 from, to, x1, y1, x2, y2;
         bool destFirst, interrupt, eachRow, autobuffer;
+        int16_t ymod1 = 4, ymod2 = 4;  // Y_MODIFY: 4 is contiguous rows
     };
     void Arm(const Shape& t, bool second = false) {
         const u32 flow = t.autobuffer ? 0x1000 : 0;
@@ -355,12 +357,12 @@ struct MdmaRig {
         dma.Write32(0x350, t.x1);
         dma.Write32(0x354, 4);
         dma.Write32(0x358, t.y1);
-        dma.Write32(0x35C, 4);
+        dma.Write32(0x35C, u16(t.ymod1));
         dma.Write32(0x304, t.to);
         dma.Write32(0x310, t.x2);
         dma.Write32(0x314, 4);
         dma.Write32(0x318, t.y2);
-        dma.Write32(0x31C, 4);
+        dma.Write32(0x31C, u16(t.ymod2));
         dma.Write32(t.destFirst ? 0x308 : 0x348, t.destFirst ? dest : source);
     }
 };
@@ -403,18 +405,41 @@ static void MdmaPollingMatchesPolling(uint32_t seed) {
                                        std::to_string(services) + " of " + std::to_string(kSteps));
 }
 
+// A 32-bit guest load or store as generated code makes it: straight to the
+// page where DirectPages() has it, else through the Emulator.
+static u32 GuestRead(Emulator& emulator, u32 addr) {
+    if (u8* page = emulator.DirectPages()[addr >> PAGE_BITS]) {
+        u32 value;
+        std::memcpy(&value, page + (addr & ((1u << PAGE_BITS) - 1)), 4);
+        return value;
+    }
+    bool hostWork, stable;
+    return emulator.ReadAttended<u32>(addr, hostWork, stable);
+}
+
+static void GuestWrite(Emulator& emulator, u32 addr, u32 value) {
+    if (u8* page = emulator.DirectPages()[addr >> PAGE_BITS]) {
+        std::memcpy(page + (addr & ((1u << PAGE_BITS) - 1)), &value, 4);
+        return;
+    }
+    bool hostWork;
+    emulator.WriteAttended<u32>(addr, value, hostWork);
+}
+
 // A memory DMA settles its rows (DMA::SetSettling): serviced only at the
 // cycles NeedsService() says, it moves the same bytes, interrupts at the
-// same cycles and shows the same status and counts at every guest access as
-// the DMA that moves each row when it is due, serviced every cycle -- with a
-// service about once a transfer, not once a row. Like the synth's copy (8-byte
-// source rows into 99-word ones), with transfers aborted now and then.
+// same cycles and shows the same status, counts and memory at every guest
+// access -- loads and stores of what it copies included, by generated code
+// or the host -- as the DMA that moves each row when it is due, serviced
+// every cycle; with a service about once a transfer, not once a row. Like
+// the synth's copy (8-byte source rows into 99-word ones), with rows apart
+// or backwards, and transfers aborted now and then.
 static void MdmaSettlesLikeEveryCycle(uint32_t seed) {
     MdmaRig every, settled;
     every.dma.SetSettling(false);
     std::mt19937 rng(seed);
     uint64_t services = 0, rows = 0;
-    int transfers = 0, reads = 0;
+    int transfers = 0, reads = 0, accesses = 0;
     bool autobuffer = false;
     std::optional<std::pair<MdmaRig::Shape, uint64_t>> second;  // the side armed later, and when
     constexpr int kSteps = 20000;
@@ -449,6 +474,9 @@ static void MdmaSettlesLikeEveryCycle(uint32_t seed) {
             t.interrupt = rng() % 4 != 0;
             t.eachRow = rng() % 4 == 0;
             t.autobuffer = autobuffer = rng() % 8 == 0;
+            if (rng() % 3 == 0) t.ymod1 = 12;
+            if (rng() % 3 == 0) t.ymod2 = rng() % 2 ? 12 : int16_t(4 - 8 * int(t.x2));
+            if (t.ymod2 < 0) t.to += 0x800;
             every.Arm(t);
             settled.Arm(t);
             second.emplace(t, every.time.Cycles() + (rng() % 2 ? 0 : rng() % 100));
@@ -471,14 +499,30 @@ static void MdmaSettlesLikeEveryCycle(uint32_t seed) {
                 ++services;
             }
             Require(every.level == settled.level, "settling MDMA: levels differ, " + where(step));
+            if (rng() % 8 == 0) {
+                const u32 addr = (rng() % 2 ? rng() % 0x600 : 0x800 + rng() % 0x800) * 4;
+                const bool host = rng() % 4 == 0;
+                if (rng() % 3 == 0) {
+                    const u32 value = rng();
+                    for (auto* rig : {&every, &settled}) {
+                        if (host) rig->emulator.MemoryWrite32(addr, value);
+                        else GuestWrite(rig->emulator, addr, value);
+                    }
+                } else {
+                    const u32 a = host ? every.emulator.MemoryRead32(addr) : GuestRead(every.emulator, addr);
+                    const u32 b = host ? settled.emulator.MemoryRead32(addr) : GuestRead(settled.emulator, addr);
+                    Require(a == b, "settling MDMA: memory at " + std::to_string(addr) + " differs, " + where(step));
+                }
+                ++accesses;
+            }
         }
     }
-    // Rows no access has asked for yet are still to move: memory is behind
-    // until a service, the guest's only view of them not being through the DMA.
-    settled.dma.ProcessWithInterrupt(-1);
+    // Read as the host does, which moves the rows due first.
     for (u32 i = 0; i < 0x4000; i += 4)
-        Require(every.ram.Read32(i) == settled.ram.Read32(i), "seed " + std::to_string(seed) + ": settled memory differs");
-    Require(transfers > 100 && reads > 1000, "the guest ran transfers and read their counts");
+        Require(every.ram.Read32(i) == settled.emulator.MemoryRead32(i),
+                "seed " + std::to_string(seed) + ": settled memory differs");
+    Require(transfers > 100 && reads > 1000 && accesses > 1000,
+            "the guest ran transfers, read their counts and accessed memory");
     // Destination rows that interrupt (DI_SEL) need theirs: no closer bound.
     Require(services < rows, "settling MDMA: fewer services than source rows");
 }
