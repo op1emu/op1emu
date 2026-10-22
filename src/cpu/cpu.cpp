@@ -655,6 +655,8 @@ void BlackFinCpu::SetLoopBlocks(bool loop) { core_->set_loop_blocks(loop); }
 
 void BlackFinCpu::SetSteadySkip(int mode) { core_->set_steady_skip(mode); }
 
+void BlackFinCpu::SetDmaSettling(bool on) { serviced_.dma->SetSettling(on); }
+
 uint64_t BlackFinCpu::SteadyIterations() const { return cpuState_->steady_iterations; }
 
 void BlackFinCpu::SetIdleWaits(bool waits) { core_->set_idle_waits(waits && time_.Deterministic(), &idleWake_); }

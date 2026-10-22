@@ -269,13 +269,14 @@ channel that came due first), cumulative:
 
 That is the synth phase below, start to `end`, as it was: of 5.14M deadline
 returns, 4.17M waited for the next row of memory DMA 0's source. Memory DMA
-now settles its rows (`DMA::Settle`): each moves as a service at its own
-cycle would have moved it, but only when something could see it -- a row
-end that interrupts or the transfer's end (the deadline), a write to the
-DMA, a read of the channel's current address or counts. The guest's own
-reads of the memory see the rows later. Every mark's counters and digests
-are as before but for `mmio_r` (the poll of the channel's IRQ_STATUS
-now waits in one run); of 389,458 deadline returns, 16,145 are memory DMA 0's.
+now settles its rows (`DMA::Settle`; `--no-dma-settle` turns it off): each
+moves as a service at its own cycle would have moved it, but only when
+something could see it -- a row end that interrupts or the transfer's end
+(the deadline), a write to the DMA, a read of the channel's current address
+or counts. The guest's own reads of the memory see the rows later. Every
+mark's counters and digests are as before but for `mmio_r` (the poll of the
+channel's IRQ_STATUS now waits in one run); of 389,458 deadline returns,
+16,145 are memory DMA 0's.
 
 An `[idle]` line follows: the IDLE waits so far (BlackFinCpu::Wait), the
 guest cycles they let pass without a packet, and what woke them, by the

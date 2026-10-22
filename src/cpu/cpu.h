@@ -90,6 +90,10 @@ public:
     // Loop blocks that wait skip to their last iteration (bcore's
     // Core::set_steady_skip: 0 off, 1 dry, 2 on). Before the first Run().
     void SetSteadySkip(int mode);
+    // Whether memory DMA moves its rows only when something could see them
+    // (DMA::SetSettling; on by default) or at each row's time. Before the
+    // first Run().
+    void SetDmaSettling(bool on);
     // Steady iterations dry mode counted (CpuState::steady_iterations).
     uint64_t SteadyIterations() const;
 

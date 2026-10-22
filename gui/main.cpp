@@ -113,6 +113,7 @@ static int RunEmulator(int argc, char* argv[]) {
     bool noChain = false;
     bool noLoopBlocks = false;
     bool noIdleWait = false;
+    bool noDmaSettle = false;
     int steadySkip = 2;
     bool chainDry = false;
     bool markDigest = false;
@@ -137,6 +138,7 @@ static int RunEmulator(int argc, char* argv[]) {
         else if (options && arg == "--no-chain") noChain = true;
         else if (options && arg == "--no-loop-blocks") noLoopBlocks = true;
         else if (options && arg == "--no-idle-wait") noIdleWait = true;
+        else if (options && arg == "--no-dma-settle") noDmaSettle = true;
         else if (options && arg == "--steady-skip") {
             if (++i == argc) throw std::runtime_error("--steady-skip requires off, dry or on");
             const std::string mode = argv[i];
@@ -206,6 +208,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --steady-skip MODE    on (default), dry or off: a loop whose iteration changed\n"
                      "                        nothing but its counters goes to its last iteration\n"
                      "                        (dry: only counts the iterations it would skip)\n"
+                     "  --no-dma-settle       Move each memory DMA row at its own time instead of\n"
+                     "                        when something could see it (same transfers, slower)\n"
                      "  --no-loop-blocks      Keep a guest loop's registers in memory across it\n"
                      "                        (bcore loop blocks off; same results, slower)\n"
                      "  --twi-speedup N       Run the I2C bus N times faster than programmed\n"
@@ -292,6 +296,7 @@ static int RunEmulator(int argc, char* argv[]) {
     if (noLoopBlocks) cpu.SetLoopBlocks(false);
     if (noIdleWait) cpu.SetIdleWaits(false);
     cpu.SetSteadySkip(steadySkip);
+    if (noDmaSettle) cpu.SetDmaSettling(false);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
 #ifdef ENABLE_PROFILING
     std::unique_ptr<Profiler> profiler;
