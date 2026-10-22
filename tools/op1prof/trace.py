@@ -15,6 +15,10 @@ SCHEMAS = ("op1.trace.v2", "op1.trace.v3", "op1.trace.v4")
 # JIT work: compiling a block, and flushing the cache (which destroys the
 # compiled code and builds a new JIT). Everything outside them is execution.
 JIT_SPANS = ("translate", "invalidate")
+# A promotion's IR pipeline and backend on bcore's worker thread
+# (Core::set_tier_background): JIT work too, but on another thread, so never
+# part of the CPU thread's time.
+BG_SPAN = "translate-bg"
 
 
 class TraceError(ValueError):
@@ -36,6 +40,13 @@ class Phase:
     insns: Optional[int] = None             # CPU thread's user-space instructions (--profile-counters)
     compile_insns: Optional[int] = None     # instructions inside translate spans
     host_cycles: Optional[int] = None
+    bg_compile_cpu_ms: float = 0.0  # the worker's CPU in translate-bg spans begun in the window
+    bg_translations: int = 0
+
+    @property
+    def jit_cpu_ms(self) -> float:
+        """All JIT CPU: the CPU thread's compilation and the worker's."""
+        return self.compile_cpu_ms + self.bg_compile_cpu_ms
 
     @property
     def noncompile_cpu_ms(self) -> float:
@@ -57,7 +68,7 @@ class Phase:
     def other_threads_cpu_ms(self) -> Optional[float]:
         """CPU of the process's other threads (frontend, USB/IP loop): they
         can compete with the CPU thread for its core."""
-        return None if self.process_cpu_ms is None else self.process_cpu_ms - self.cpu_ms
+        return None if self.process_cpu_ms is None else self.process_cpu_ms - self.cpu_ms - self.bg_compile_cpu_ms
 
     @property
     def noncompile_insns(self) -> Optional[int]:
@@ -72,7 +83,8 @@ class Phase:
                 "invalidate_cpu_ms": self.invalidate_cpu_ms, "process_cpu_ms": self.process_cpu_ms,
                 "other_threads_cpu_ms": self.other_threads_cpu_ms, "insns": self.insns,
                 "compile_insns": self.compile_insns, "noncompile_insns": self.noncompile_insns,
-                "host_cycles": self.host_cycles}
+                "host_cycles": self.host_cycles, "bg_compile_cpu_ms": self.bg_compile_cpu_ms,
+                "bg_translations": self.bg_translations, "jit_cpu_ms": self.jit_cpu_ms}
 
 
 def load(path: str) -> dict:
@@ -130,13 +142,17 @@ def phase(trace: dict, begin: str, end: str) -> Phase:
         spans.append((start, finish))
         compile_cpu_ns += event["args"]["cpu_ns"]
         if event["name"] == "translate":
-            translations += 1
+            # A background promotion's lift (part "lift") has no code of its own.
+            translations += event["args"].get("part") != "lift"
         else:
             invalidations += 1
             invalidate_cpu_ns += event["args"]["cpu_ns"]
         if counted:
             compile_insns += event["args"]["insns"]
+    bg = [e for e in trace["traceEvents"] if e.get("name") == BG_SPAN and e.get("ph") == "X" and lo <= e["ts"] < hi]
     return Phase(
+        bg_compile_cpu_ms=sum(e["args"]["cpu_ns"] for e in bg) / 1e6,
+        bg_translations=len(bg),
         wall_ms=(b["args"]["wall_ns"] - a["args"]["wall_ns"]) / 1e6,
         cpu_ms=(b["args"]["thread_cpu_ns"] - a["args"]["thread_cpu_ns"]) / 1e6,
         compile_wall_ms=_union(spans) / 1e3,

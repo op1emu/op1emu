@@ -16,6 +16,11 @@
 #include "usb.h"
 #include "sport.h"
 #include "emu.h"
+#include <pthread.h>
+#include <sched.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #ifdef ENABLE_PROFILING
 #include "profiling/profiler.h"
 #include "profiling/memory_census.h"
@@ -361,6 +366,7 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     core_->set_count_chained(false);
 #endif
     SetChaining(false);
+    SetTierBackground(true);
 
     time_.StartWallClock();
 }
@@ -664,6 +670,21 @@ void BlackFinCpu::SetLoopBlocks(bool loop) { core_->set_loop_blocks(loop); }
 void BlackFinCpu::SetSteadySkip(int mode) { core_->set_steady_skip(mode); }
 
 void BlackFinCpu::SetTiering(uint32_t threshold) { core_->set_tiering(threshold); }
+
+void BlackFinCpu::SetTierBackground(bool background, uint64_t publishAfter, int jitCpu) {
+    if (!publishAfter) publishAfter = kTierPublishAfter;
+    core_->set_tier_background(background, time_.Deterministic() ? publishAfter : 0, [jitCpu] {
+        // Behind the CPU thread, whose time is the guest's.
+        setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 10);
+        if (jitCpu >= 0) {
+            cpu_set_t set;
+            CPU_ZERO(&set);
+            CPU_SET(jitCpu, &set);
+            if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0)
+                LogError("Cannot pin the JIT worker to CPU %d", jitCpu);
+        }
+    });
+}
 
 void BlackFinCpu::SetDmaSettling(bool on) { serviced_.dma->SetSettling(on); }
 

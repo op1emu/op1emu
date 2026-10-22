@@ -150,7 +150,20 @@ microseconds, the clock `perf record -k mono` uses.
 - With tiered compilation (bcore's `Core::set_tiering`, `--tier-threshold`,
   on by default at 1000) every block is compiled at tier 0 first and again
   at tier 1 once it started that many times; `args.tier` says which (absent
-  untiered). A `[tier]` line after every mark counts the promotions.
+  untiered). A promotion compiled on bcore's worker thread
+  (`Core::set_tier_background`, on by default; `--no-tier-background`)
+  makes two `translate` spans on the CPU thread, `args.part` `lift` (the
+  module, no code yet: it counts as compile time, not as a translation) and
+  `link` (loading the worker's code, with its metrics), and one
+  `translate-bg` span (tid 2, `args.cpu_ns` the worker's CPU, `args.discarded`
+  when its code was not used). The worker's time is never the CPU thread's:
+  it is reported apart, as `bg_compile_cpu_ms` (spans begun in a phase), and
+  `jit_cpu_ms` adds it to `compile_cpu_ms`. In deterministic mode a
+  promotion's code is used `--tier-publish-after` packets (default 2^23)
+  after it was asked for, the CPU thread waiting for the worker if need be
+  (off-CPU time), so that every run does the same; in wall mode as soon as
+  the worker is done. `--jit-cpu N` puts the worker on CPU N (`op1prof`
+  pins the whole process to `--cpu` otherwise, worker included).
 - Marks (category `mark`) are instant events carrying the same counters as the
   `[mark]` line (including `invalidations`, the cache flushes so far), with `args.thread_cpu_ns`, `args.process_cpu_ns`,
   `args.irq_levels` (entries per IVG level, 0 = EMU ... 15 = IVG15) and
@@ -614,7 +627,8 @@ with a 95% interval over whole pairs and a practical threshold `--min-effect`
 four pairs a bootstrap can never reach past the smallest and largest delta,
 so alone it is too narrow. Each metric also reports how many pairs the new
 side won and the exact sign-test p value (four of four is p = 0.125, not
-evidence by itself). Compile CPU is reported beside it. Wall-clock
+evidence by itself). Compile CPU is reported beside it, and with a
+worker's promotions all JIT CPU (`jit_cpu_ms`) too. Wall-clock
 execution is reported only over clean pairs (both runs: wall at most 1.05x
 CPU and at most 1 s off-CPU). The gate compares `irq` and `irq_latched`
 only when both sides report them, so a binary older than either can still be
@@ -932,7 +946,8 @@ and blocks, compile CPU with its median, 95th percentile and maximum per
 translation, the blocks translated again (the cache is flushed whenever the
 boot ROM is re-entered) and what that cost, the stage proportions, the IR and
 machine code produced, and the blocks that cost most to compile with their IR
-size and compile time per IR instruction. A tiered run adds a line per tier;
+size and compile time per IR instruction. A tiered run adds a line per tier,
+and one for the worker's promotions (their CPU and how many were discarded);
 "translated again" leaves promotions out.
 
 `run` prints a table of every phase between consecutive marks (CPU,

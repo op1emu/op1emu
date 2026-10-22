@@ -116,6 +116,9 @@ static int RunEmulator(int argc, char* argv[]) {
     bool noDmaSettle = false;
     int steadySkip = 2;
     long long tierThreshold = BlackFinCpu::kTierThreshold;
+    bool tierBackground = true;
+    long long tierPublishAfter = 0;
+    long long jitCpu = -1;
     bool chainDry = false;
     bool markDigest = false;
     bool profileProbes = false;
@@ -156,6 +159,16 @@ static int RunEmulator(int argc, char* argv[]) {
             if (used == 0 || argv[i][used] != '\0' || tierThreshold < 0 || tierThreshold > UINT32_MAX)
                 throw std::runtime_error(std::string("Invalid --tier-threshold: ") + argv[i]);
         }
+        else if (options && (arg == "--tier-publish-after" || arg == "--jit-cpu")) {
+            if (++i == argc) throw std::runtime_error(arg + " requires a number");
+            size_t used = 0;
+            long long value = -1;
+            try { value = std::stoll(argv[i], &used); } catch (const std::exception&) {}
+            if (used == 0 || argv[i][used] != '\0' || value < 0)
+                throw std::runtime_error("Invalid " + arg + ": " + argv[i]);
+            (arg == "--jit-cpu" ? jitCpu : tierPublishAfter) = value;
+        }
+        else if (options && arg == "--no-tier-background") tierBackground = false;
         else if (options && arg == "--profile-chain-dry") chainDry = anyProfiling = true;
         else if (options && arg == "--profile-mark-digest") markDigest = anyProfiling = true;
         else if (options && arg == "--rtc-epoch") {
@@ -222,6 +235,12 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --tier-threshold N    Compile a block with the whole pipeline once it\n"
                      "                        started N times, cheaply before (default 1000;\n"
                      "                        0: every block once, with the whole pipeline)\n"
+                     "  --no-tier-background  Compile those blocks again on the CPU thread, not on\n"
+                     "                        a thread of their own\n"
+                     "  --tier-publish-after N  With --deterministic, use such a block's second\n"
+                     "                        compilation N packets after it was asked for\n"
+                     "                        (default 8388608; the CPU thread waits for it)\n"
+                     "  --jit-cpu N           Run the second compilations on CPU N\n"
                      "  --no-loop-blocks      Keep a guest loop's registers in memory across it\n"
                      "                        (bcore loop blocks off; same results, slower)\n"
                      "  --twi-speedup N       Run the I2C bus N times faster than programmed\n"
@@ -309,6 +328,7 @@ static int RunEmulator(int argc, char* argv[]) {
     if (noIdleWait) cpu.SetIdleWaits(false);
     cpu.SetSteadySkip(steadySkip);
     cpu.SetTiering(static_cast<uint32_t>(tierThreshold));
+    cpu.SetTierBackground(tierBackground, static_cast<uint64_t>(tierPublishAfter), static_cast<int>(jitCpu));
     if (noDmaSettle) cpu.SetDmaSettling(false);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
 #ifdef ENABLE_PROFILING

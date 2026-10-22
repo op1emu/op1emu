@@ -334,6 +334,10 @@ def summarize(report: dict, min_effect_pct: float, allow_workload_change: bool, 
     report["workload_changed"] = bool(workload_changed)
     summary = {}
     metrics = ["noncompile_cpu_ms", "compile_cpu_ms", "cpu_ms"]
+    # The worker's JIT CPU (bcore's background promotions), beside the CPU
+    # thread's: a change that moves compilation off the thread shows in both.
+    if any(p[side]["metrics"].get("bg_compile_cpu_ms") for p in pairs for side in ("base", "new")):
+        metrics.append("jit_cpu_ms")
     # Host instructions (--counters) barely vary between runs, so they can
     # show a change too small for CPU time; they are work, not time, and
     # never decide the status.

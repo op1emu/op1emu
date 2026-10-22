@@ -99,6 +99,7 @@ struct Profiler::Impl : BcoreEventSink {
         BcoreCompileMetrics shape{};  // translate spans: the code compiled (zero on failure)
         uint32_t pc = 0;
         bool ok = true;
+        bool discarded = false;  // translate-bg: its code was not used
         bool mark = false;
         uint32_t counters = 0;  // index into markCounters for a mark
     };
@@ -409,6 +410,19 @@ struct Profiler::Impl : BcoreEventSink {
         pendingDumps.clear();
     }
     void onCompileMetrics(uint32_t, const BcoreCompileMetrics& metrics) override { pendingShape = metrics; }
+    // The worker's part of a background promotion: a span of its own, on
+    // its own track (tid 2), with the worker's CPU, never the CPU thread's.
+    void onBackgroundCompile(uint32_t pc, const BcoreBackgroundCompile& work) override {
+        Event event;
+        event.name = "translate-bg";
+        event.begin = work.begin_ns;
+        event.end = work.end_ns;
+        event.cpu_ns = work.cpu_ns;
+        event.pc = pc;
+        event.ok = work.ok;
+        event.discarded = work.discarded;
+        Add(event);
+    }
     void onTranslateEnd(uint32_t pc, uint64_t) override { Translated(pc, true); }
     void onTranslateFailure(uint32_t pc, uint64_t) override { Translated(pc, false); }
     void onCompileStage(uint32_t pc, const char* stage, uint64_t begin, uint64_t end, bool ok) override {
@@ -542,10 +556,12 @@ struct Profiler::Impl : BcoreEventSink {
                     name, loops.loop_blocks, loops.loops_proven, loops.loops_speculated, loops.loops_vectorized,
                     loops.loops_steady, cpu.SteadyIterations(), loops.dag_circular);
         // Tiered compilation (bcore's Core::set_tiering): blocks compiled
-        // again at tier 1, given up, and the runs that asked for more
-        // promotions than bcore's table holds.
-        std::printf("[tier] %s promoted=%" PRIu64 " dropped=%" PRIu64 " overflows=%" PRIu64 "\n",
-                    name, loops.blocks_promoted, loops.promotions_dropped, loops.tier_request_overflows);
+        // again at tier 1, given up (dropped) or not used (discarded), and
+        // how long the CPU thread waited for the worker.
+        std::printf("[tier] %s promoted=%" PRIu64 " dropped=%" PRIu64 " discarded=%" PRIu64 " overflows=%" PRIu64
+                    " wait_ms=%.3f\n",
+                    name, loops.blocks_promoted, loops.promotions_dropped, loops.promotions_discarded,
+                    loops.tier_request_overflows, loops.tier_wait_ns / 1e6);
         std::fflush(stdout);
         if (census) DumpCensus(name);
         if (perfBegin == name) PerfWrite("enable\n");
@@ -803,7 +819,9 @@ struct Profiler::Impl : BcoreEventSink {
         std::fputs("\"traceEvents\":[", file);
         for (size_t i = 0; i < used; ++i) {
             const auto& e = events[i];
-            std::fprintf(file, "%s{\"name\":\"%s\",\"pid\":1,\"tid\":1,\"ts\":%.3f,", i ? "," : "", e.name, e.begin / 1000.0);
+            const bool background = std::strcmp(e.name, "translate-bg") == 0;
+            std::fprintf(file, "%s{\"name\":\"%s\",\"pid\":1,\"tid\":%d,\"ts\":%.3f,", i ? "," : "", e.name,
+                         background ? 2 : 1, e.begin / 1000.0);
             if (e.mark) {
                 const auto& c = markCounters[e.counters];
                 std::fprintf(file, "\"cat\":\"mark\",\"ph\":\"i\",\"s\":\"g\",\"args\":{\"pc\":%u,\"wall_ns\":%" PRIu64
@@ -841,8 +859,14 @@ struct Profiler::Impl : BcoreEventSink {
                     if (e.ok && e.shape.terminator) std::fprintf(file, ",\"terminator\":\"%s\"", e.shape.terminator);
                     // Tiered compilation (bcore's Core::set_tiering): 0 or 1.
                     if (e.ok && e.shape.tier >= 0) std::fprintf(file, ",\"tier\":%d", e.shape.tier);
+                    // A promotion compiled on the worker: its lift, then its load.
+                    if (e.ok && e.shape.background)
+                        std::fprintf(file, ",\"part\":\"%s\"", e.shape.background == 1 ? "lift" : "link");
                 }
                 if (invalidate) std::fprintf(file, ",\"cpu_ns\":%" PRIu64, e.cpu_ns);
+                if (background)
+                    std::fprintf(file, ",\"cpu_ns\":%" PRIu64 ",\"discarded\":%s", e.cpu_ns,
+                                 e.discarded ? "true" : "false");
                 if ((translate || invalidate) && counted) std::fprintf(file, ",\"insns\":%" PRIu64, e.insns);
                 std::fputs("}}", file);
             }

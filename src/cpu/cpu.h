@@ -96,6 +96,14 @@ public:
     // way. Before the first Run().
     static constexpr uint32_t kTierThreshold = 1000;
     void SetTiering(uint32_t threshold);
+    // Whether those second compilations run on a thread of their own (on by
+    // default), at a lower priority, on jitCpu if not -1. In deterministic
+    // mode each one's code takes the cheap one's place publishAfter packets
+    // after it was asked for (the CPU thread waits for it if need be), so
+    // that every run does the same; 0 picks kTierPublishAfter. Before the
+    // first Run().
+    static constexpr uint64_t kTierPublishAfter = uint64_t(1) << 23;
+    void SetTierBackground(bool background, uint64_t publishAfter = 0, int jitCpu = -1);
     // Whether memory DMA moves its rows only when something could see them
     // (DMA::SetSettling; on by default) or at each row's time. Before the
     // first Run().

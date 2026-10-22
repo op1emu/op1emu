@@ -23,6 +23,9 @@ class Translation:
     object_hash: Optional[str]
     # bcore's Core::set_tiering: 0 a tier-0 block, 1 its promotion; None untiered.
     tier: Optional[int] = None
+    # A background promotion (Core::set_tier_background) is two spans on the
+    # CPU thread: "lift" (no code yet) and "link" (the worker's code loaded).
+    part: Optional[str] = None
 
 
 def translations(trace_data: dict, window: Optional[Tuple[str, str]] = None) -> List[Translation]:
@@ -34,7 +37,8 @@ def translations(trace_data: dict, window: Optional[Tuple[str, str]] = None) -> 
         args = e["args"]
         out.append(Translation(pc=args["pc"], begin_us=e["ts"], cpu_ns=args["cpu_ns"], ok=args.get("ok", True),
                                ir_insns=args.get("ir_insns"), object_bytes=args.get("object_bytes"),
-                               object_hash=args.get("object_hash"), tier=args.get("tier")))
+                               object_hash=args.get("object_hash"), tier=args.get("tier"),
+                               part=args.get("part")))
     return out
 
 
@@ -65,7 +69,7 @@ UNKNOWN_HASH = "0" * 16  # bcore's 0: no code map, the hash could not be compute
 def has_shape(spans: List[Translation]) -> bool:
     """Every successful translation carries a known code hash, and there is
     at least one: anything less cannot vouch for what was compiled."""
-    compiled = [t for t in spans if t.ok]
+    compiled = [t for t in spans if t.ok and t.part != "lift"]
     return bool(compiled) and all(t.object_hash not in (None, UNKNOWN_HASH) for t in compiled)
 
 
@@ -73,11 +77,12 @@ def codegen(spans: List[Translation]) -> dict:
     """What was compiled, independent of host addresses and timing: one
     digest over every distinct (pc, code hash). Two configurations with the
     same digest generated the same machine code for the same blocks."""
-    compiled = sorted({(t.pc, t.object_hash) for t in spans if t.ok and t.object_hash})
+    compiled = sorted({(t.pc, t.object_hash) for t in spans if t.ok and t.object_hash and t.part != "lift"})
     digest = hashlib.sha256("".join(f"{pc:08x}:{h}\n" for pc, h in compiled).encode()).hexdigest()
-    return {"translations": len(spans), "distinct_code": len(compiled),
-            "ir_insns": sum(t.ir_insns or 0 for t in spans if t.ok),
-            "object_bytes": sum(t.object_bytes or 0 for t in spans if t.ok),
+    made = [t for t in spans if t.ok and t.part != "lift"]
+    return {"translations": len(made), "distinct_code": len(compiled),
+            "ir_insns": sum(t.ir_insns or 0 for t in made),
+            "object_bytes": sum(t.object_bytes or 0 for t in made),
             "digest": digest}
 
 
@@ -110,8 +115,16 @@ def report(trace_data: dict, window: Optional[Tuple[str, str]], limit: int, symb
              f"translations, {again_ms / 1e3:.3f} s CPU (the cache is flushed when the boot ROM is re-entered)"]
     tiers = defaultdict(list)
     for t in spans:
-        if t.tier is not None:
+        if t.tier is not None and t.part != "lift":  # a background lift is no translation of its own
             tiers[t.tier].append(t)
+    bg = [e for e in trace_data["traceEvents"] if e.get("name") == trace.BG_SPAN and e.get("ph") == "X"
+          and _bounds(trace_data, window)[0] <= e["ts"] < _bounds(trace_data, window)[1]]
+    if bg:
+        lifts = [t for t in spans if t.part == "lift"]
+        discarded = sum(1 for e in bg if e["args"].get("discarded"))
+        lines.append(f"background: {len(bg)} promotions on the worker, {sum(e['args']['cpu_ns'] for e in bg) / 1e9:.3f} s "
+                     f"of its CPU ({discarded} discarded); on this thread {len(lifts)} lifts, "
+                     f"{sum(t.cpu_ns for t in lifts) / 1e9:.3f} s, and their loads below")
     if tiers:
         lines.append("tiered: " + "; ".join(
             f"tier {tier} {len(ts)} translations, {sum(t.cpu_ns for t in ts) / 1e9:.3f} s CPU"
