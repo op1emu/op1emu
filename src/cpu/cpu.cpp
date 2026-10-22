@@ -459,8 +459,10 @@ HaltReason BlackFinCpu::Run() {
 #endif
     cpuState_->did_jump = false; // Clear jump flag set by bcore, since we handle it in the emulator loop
     HostWork(would);
-    // An IDLE in deterministic mode waits for its wakeup (Wait()).
-    if (cpuState_->idle && time_.Deterministic()) Wait();
+    // An IDLE in deterministic mode waits for its wakeup (Wait()), unless
+    // HostWork() just took an interrupt: that was it (it cleared the pending
+    // flag Wait() looks at).
+    if (cpuState_->idle && time_.Deterministic() && !cpuState_->did_jump) Wait();
 #ifdef ENABLE_PROFILING
     if (would) {
         bool violated = false;

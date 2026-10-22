@@ -8,6 +8,7 @@
 #include "cpu/nand.h"
 #include "cpu_state.h"
 #include "mmr.h"
+#include "../ext/bcore/src/cec.h"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -158,12 +159,42 @@ static Outcome Scenario(bool chain, Loop loop, uint64_t dueNs, bool timer) {
             runs};
 }
 
+// An IDLE whose wakeup the host's work after the block delivers -- an
+// interrupt raised straight at the CEC, which no SIC wakeup shows -- does not
+// wait any more: the ISR runs at the cycle it was raised, not at the next due
+// time (BlackFinCpu::Wait).
+static void IdleTakesItsInterrupt() {
+    TestCpu cpu(true);
+    auto& emu = cpu.GetEmulator();
+    Write(emu, kCode, kPrologue);
+    constexpr uint32_t kIdle = 0xFFA00300;
+    auto entry = kIvg15Entry;  // then JUMP.S kIdle
+    entry.push_back(uint16_t(0x2000 | (((kIdle - (kIvg15 + 2 * entry.size())) / 2) & 0xfff)));
+    Write(emu, kIvg15, entry);
+    Write(emu, kIdle, {0x0020, 0x2000});  // IDLE; JUMP.S 0
+    Write(emu, kIsr, {0x640b, 0x2000});   // R3 += 1; JUMP.S 0
+    evt_write(EVT_BASE + 4 * 15, kIvg15);
+    evt_write(EVT_BASE + 4 * 7, kIsr);
+    cec_mmr_write(&cpu.State(), CEC_MMR_BASE + 4 * CEC_IDX_IMASK, 0xffff);
+    emu.MemoryWrite32(0xFFC00124, 0);  // SIC_IWR0
+    emu.MemoryWrite32(0xFFC00164, 0);  // SIC_IWR1
+    cpu.SetPC(kCode);
+    for (unsigned i = 0; cpu.State().pc != kIdle && i < 10; ++i) cpu.Run();
+    Require(cpu.State().pc == kIdle, "the guest reaches its IDLE");
+    uint64_t raised = 0;
+    cpu.QueueEvent([&] { raised = cpu.Time().Cycles(); cec_raise(&cpu.State(), 7); }, std::chrono::nanoseconds(1));
+    cpu.Run();
+    Require(raised && cpu.State().pc == kIsr, "the host's event raises IVG7, and its ISR is next");
+    Require(cpu.Time().Cycles() == raised, "an IDLE woken by the interrupt taken after its block waits no more");
+}
+
 int main() {
     // Isolate OTP creation performed by BlackFinCpu's constructor.
     char directory[] = "/tmp/op1-cpu-chain-test-XXXXXX";
     Require(mkdtemp(directory) != nullptr, "create isolated CPU directory");
     auto original = std::filesystem::current_path();
     std::filesystem::current_path(directory);
+    IdleTakesItsInterrupt();
     unsigned pairs = 0;
     uint64_t plainRuns = 0, chainedRuns = 0, plainLoopRuns = 0, chainedLoopRuns = 0;
     uint64_t plainQuietRuns = 0, chainedQuietRuns = 0;
