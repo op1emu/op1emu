@@ -157,7 +157,9 @@ microseconds, the clock `perf record -k mono` uses.
   `link` (loading the worker's code, with its metrics), and one
   `translate-bg` span (tid 2, `args.cpu_ns` the worker's CPU, `args.discarded`
   when its code was not used). The worker's time is never the CPU thread's:
-  it is reported apart, as `bg_compile_cpu_ms` (spans begun in a phase), and
+  it is reported apart, as `bg_compile_cpu_ms` (the difference of the
+  worker thread's CPU clock, recorded at every mark as `jit_worker_cpu_ns`;
+  without it, each span's CPU split by how much of it lies in the phase), and
   `jit_cpu_ms` adds it to `compile_cpu_ms`. In deterministic mode a
   promotion's code is used `--tier-publish-after` packets (default 2^23)
   after it was asked for, the CPU thread waiting for the worker if need be
@@ -490,7 +492,8 @@ to those blocks' compile CPU in the trace. `run --dump-pc PC` and
 
 `annotate CAPTURE --pc PC` shows `perf annotate` of that block's generated
 code from a perf capture (the first `--lines` lines, default 120, of each
-part: the block and its `.cold` part, whichever have samples), beside the
+part: the block, its careful and promoted versions (`.careful`, `.t1`) and
+their `.cold` parts, whichever have samples), beside the
 IR files of the same run. It refuses a
 non-precise event, which cannot rank instructions, unless
 `--allow-imprecise`:
