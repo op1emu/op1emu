@@ -44,8 +44,9 @@ def cmd_run(args) -> int:
         print(f"{p['begin']} -> {p['end']}: execution {p['noncompile_insns']:,} host instructions, "
               f"compile {p['compile_insns']:,}")
     if p.get("bg_compile_cpu_ms"):
+        estimate = "" if p.get("bg_exact", True) else " (an estimate: the trace has no per-mark worker clock)"
         print(f"{p['begin']} -> {p['end']}: the JIT worker compiled {p['bg_translations']} promotions in "
-              f"{p['bg_compile_cpu_ms'] / 1e3:.3f} s of its CPU; all JIT CPU {p['jit_cpu_ms'] / 1e3:.3f} s")
+              f"{p['bg_compile_cpu_ms'] / 1e3:.3f} s of its CPU{estimate}; all JIT CPU {p['jit_cpu_ms'] / 1e3:.3f} s")
     other = p.get("other_threads_cpu_ms")
     if other is not None and other > OTHER_THREADS_WARN * p["noncompile_cpu_ms"]:
         print(f"warning: other threads of the emulator used {other / 1e3:.3f} s of CPU, more than "

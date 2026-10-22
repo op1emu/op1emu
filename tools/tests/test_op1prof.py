@@ -1861,7 +1861,9 @@ def test_diff_compile_takes_a_background_lift_for_no_code(tmp_path):
 
 
 def test_the_jit_workers_time_is_split_at_marks():
-    # A translate-bg span across a mark, 0.5 ms on each side: half each.
+    # Without the emulator's per-mark count, a translate-bg span across a mark
+    # is split by its overlap: an estimate (the worker need not have run
+    # evenly through it), so the other threads' CPU is unknown there.
     bg = {"name": "translate-bg", "cat": "jit", "ph": "X", "tid": 2, "ts": 500.0, "dur": 1000.0,
           "args": {"pc": 1, "ok": True, "cpu_ns": 1_000_000}}
     mark = lambda name, ts, process, **extra: {"name": name, "cat": "mark", "ph": "i", "ts": ts, "args": {
@@ -1869,7 +1871,10 @@ def test_the_jit_workers_time_is_split_at_marks():
     t = _trace([mark("a", 0, 0), bg, mark("b", 1000, 500_000), mark("c", 2000, 1_000_000)])
     for begin, end in (("a", "b"), ("b", "c")):
         p = trace.phase(t, begin, end)
-        assert p.bg_compile_cpu_ms == pytest.approx(0.5) and p.other_threads_cpu_ms == pytest.approx(0.0)
+        assert p.bg_compile_cpu_ms == pytest.approx(0.5) and not p.bg_exact and p.other_threads_cpu_ms is None
+    # A span wholly inside the phase is exact.
+    p = trace.phase(t, "a", "c")
+    assert p.bg_exact and p.bg_compile_cpu_ms == pytest.approx(1.0) and p.other_threads_cpu_ms == pytest.approx(0.0)
     # The emulator's per-mark count of the worker's CPU, where it has one.
     t = _trace([mark("a", 0, 0, jit_worker_cpu_ns=100), bg, mark("b", 1000, 500_000, jit_worker_cpu_ns=300_100),
                 mark("c", 2000, 1_000_000, jit_worker_cpu_ns=1_000_100)])

@@ -159,7 +159,9 @@ microseconds, the clock `perf record -k mono` uses.
   when its code was not used). The worker's time is never the CPU thread's:
   it is reported apart, as `bg_compile_cpu_ms` (the difference of the
   worker thread's CPU clock, recorded at every mark as `jit_worker_cpu_ns`;
-  without it, each span's CPU split by how much of it lies in the phase), and
+  without it, the CPU of its spans in the phase, exact only where each lies
+  wholly inside: one that crosses a mark is split by its overlap, an estimate
+  (`bg_exact` false, and the phase's `other_threads_cpu_ms` unknown)), and
   `jit_cpu_ms` adds it to `compile_cpu_ms`. In deterministic mode a
   promotion's code is used `--tier-publish-after` packets (default 2^23)
   after it was asked for, the CPU thread waiting for the worker if need be

@@ -40,8 +40,9 @@ class Phase:
     insns: Optional[int] = None             # CPU thread's user-space instructions (--profile-counters)
     compile_insns: Optional[int] = None     # instructions inside translate spans
     host_cycles: Optional[int] = None
-    bg_compile_cpu_ms: float = 0.0  # the JIT worker's CPU in the window (bg_cpu)
+    bg_compile_cpu_ms: float = 0.0  # the JIT worker's CPU in the window (bg_cpu_ms)
     bg_translations: int = 0
+    bg_exact: bool = True  # False: bg_compile_cpu_ms is an estimate (bg_cpu_ms)
 
     @property
     def jit_cpu_ms(self) -> float:
@@ -67,8 +68,11 @@ class Phase:
     @property
     def other_threads_cpu_ms(self) -> Optional[float]:
         """CPU of the process's other threads (frontend, USB/IP loop): they
-        can compete with the CPU thread for its core."""
-        return None if self.process_cpu_ms is None else self.process_cpu_ms - self.cpu_ms - self.bg_compile_cpu_ms
+        can compete with the CPU thread for its core. Unknown where the JIT
+        worker's share is only an estimate."""
+        if self.process_cpu_ms is None or not self.bg_exact:
+            return None
+        return self.process_cpu_ms - self.cpu_ms - self.bg_compile_cpu_ms
 
     @property
     def noncompile_insns(self) -> Optional[int]:
@@ -84,7 +88,7 @@ class Phase:
                 "other_threads_cpu_ms": self.other_threads_cpu_ms, "insns": self.insns,
                 "compile_insns": self.compile_insns, "noncompile_insns": self.noncompile_insns,
                 "host_cycles": self.host_cycles, "bg_compile_cpu_ms": self.bg_compile_cpu_ms,
-                "bg_translations": self.bg_translations, "jit_cpu_ms": self.jit_cpu_ms}
+                "bg_translations": self.bg_translations, "bg_exact": self.bg_exact, "jit_cpu_ms": self.jit_cpu_ms}
 
 
 def load(path: str) -> dict:
@@ -150,8 +154,10 @@ def phase(trace: dict, begin: str, end: str) -> Phase:
         if counted:
             compile_insns += event["args"]["insns"]
     bg = [e for e in trace["traceEvents"] if e.get("name") == BG_SPAN and e.get("ph") == "X" and lo <= e["ts"] < hi]
+    bg_ms, bg_exact = bg_cpu_ms(trace, a, b)
     return Phase(
-        bg_compile_cpu_ms=bg_cpu_ms(trace, a, b),
+        bg_compile_cpu_ms=bg_ms,
+        bg_exact=bg_exact,
         bg_translations=len(bg),
         wall_ms=(b["args"]["wall_ns"] - a["args"]["wall_ns"]) / 1e6,
         cpu_ms=(b["args"]["thread_cpu_ns"] - a["args"]["thread_cpu_ns"]) / 1e6,
@@ -167,24 +173,28 @@ def phase(trace: dict, begin: str, end: str) -> Phase:
     )
 
 
-def bg_cpu_ms(trace: dict, a: dict, b: dict) -> float:
-    """The JIT worker's CPU between two marks: the difference of its thread
-    CPU time at them, which the emulator records at every mark. Without it,
-    each translate-bg span's CPU split by how much of the span lies between
-    them: a span that crosses a mark is not the phase's alone."""
+def bg_cpu_ms(trace: dict, a: dict, b: dict) -> Tuple[float, bool]:
+    """The JIT worker's CPU between two marks, and whether it is exact: the
+    difference of its thread CPU time at them, which the emulator records at
+    every mark. Without it, the CPU of the translate-bg spans in the phase:
+    exact where each lies wholly inside it; where one crosses a mark, its CPU
+    split by how much of the span lies in the phase, an estimate (the worker
+    need not have run evenly through it)."""
     if "jit_worker_cpu_ns" in a["args"] and "jit_worker_cpu_ns" in b["args"]:
-        return max(0, b["args"]["jit_worker_cpu_ns"] - a["args"]["jit_worker_cpu_ns"]) / 1e6
+        return max(0, b["args"]["jit_worker_cpu_ns"] - a["args"]["jit_worker_cpu_ns"]) / 1e6, True
     lo, hi = a["ts"], b["ts"]
-    total = 0.0
+    total, exact = 0.0, True
     for e in trace["traceEvents"]:
         if e.get("name") != BG_SPAN or e.get("ph") != "X":
             continue
         start, finish = e["ts"], e["ts"] + e["dur"]
         if finish <= lo or start >= hi:
             continue
+        if start < lo or finish > hi:
+            exact = False
         share = 1.0 if finish <= start else (min(finish, hi) - max(start, lo)) / (finish - start)
         total += e["args"]["cpu_ns"] * share
-    return total / 1e6
+    return total / 1e6, exact
 
 
 def _delta(a: dict, b: dict, key: str, scale: Optional[float] = None):
