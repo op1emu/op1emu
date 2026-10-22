@@ -92,6 +92,7 @@ struct Profiler::Impl : BcoreEventSink {
         uint64_t irq = 0, irqLevels[16] = {};
         uint64_t irqLatched = 0, irqLatchedLevels[16] = {};
         uint64_t hostInsns = 0, hostCycles = 0;  // with --profile-counters
+        int64_t jitWorkerCpuNs = -1;  // the JIT worker thread's CPU time; -1 unknown
     };
     struct Event {
         const char* name = nullptr;  // points into marks/frameMark or a literal
@@ -440,6 +441,10 @@ struct Profiler::Impl : BcoreEventSink {
         c.wall_ns = wall - startWall;
         c.cpu_ns = cpuNs - startCpu;
         c.process_cpu_ns = ProcessCpuNs() - startProcessCpu;
+        // Its whole CPU time: the thread may start after the start mark (it
+        // compiles nothing before the first promotion), and only differences
+        // between marks are read.
+        c.jitWorkerCpuNs = cpu.JitWorkerCpuNs();
         c.runs = runs;
         c.packets = cpu.Time().Packets();
         c.cycles = cpu.Time().Cycles();
@@ -836,6 +841,9 @@ struct Profiler::Impl : BcoreEventSink {
                 for (int level = 0; level < 16; ++level)
                     std::fprintf(file, "%s%" PRIu64, level ? "," : "", c.irqLevels[level]);
                 std::fputs("]", file);
+                // The JIT worker's CPU at the mark: its time in a phase exactly,
+                // where translate-bg spans that cross a mark cannot say it.
+                if (c.jitWorkerCpuNs >= 0) std::fprintf(file, ",\"jit_worker_cpu_ns\":%" PRId64, c.jitWorkerCpuNs);
                 std::fprintf(file, ",\"irq_latched\":%" PRIu64 ",\"irq_latched_levels\":[", c.irqLatched);
                 for (int level = 0; level < 16; ++level)
                     std::fprintf(file, "%s%" PRIu64, level ? "," : "", c.irqLatchedLevels[level]);

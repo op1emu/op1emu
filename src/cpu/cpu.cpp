@@ -17,6 +17,7 @@
 #include "sport.h"
 #include "emu.h"
 #include <pthread.h>
+#include <time.h>
 #ifdef __linux__
 #include <sched.h>
 #include <sys/resource.h>
@@ -677,7 +678,8 @@ void BlackFinCpu::SetTiering(uint32_t threshold) { core_->set_tiering(threshold)
 
 void BlackFinCpu::SetTierBackground(bool background, uint64_t publishAfter, int jitCpu) {
     if (!publishAfter) publishAfter = kTierPublishAfter;
-    core_->set_tier_background(background, time_.Deterministic() ? publishAfter : 0, [jitCpu] {
+    workerClockSet_.store(false, std::memory_order_release);  // the worker it names stops here
+    core_->set_tier_background(background, time_.Deterministic() ? publishAfter : 0, [this, jitCpu] {
         // Behind the CPU thread, whose time is the guest's.
 #ifdef __linux__
         setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 10);
@@ -694,7 +696,25 @@ void BlackFinCpu::SetTierBackground(bool background, uint64_t publishAfter, int 
 #endif
         if (jitCpu >= 0) LogError("--jit-cpu: this platform cannot pin a thread to a CPU");
 #endif
+#ifdef __linux__
+        clockid_t clock;
+        if (pthread_getcpuclockid(pthread_self(), &clock) == 0) {
+            workerClock_.store(clock, std::memory_order_relaxed);
+            workerClockSet_.store(true, std::memory_order_release);
+        }
+#endif
     });
+}
+
+int64_t BlackFinCpu::JitWorkerCpuNs() const {
+#ifdef __linux__
+    if (!workerClockSet_.load(std::memory_order_acquire)) return -1;
+    timespec ts{};
+    if (clock_gettime(workerClock_.load(std::memory_order_relaxed), &ts) != 0) return -1;
+    return int64_t(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+#else
+    return -1;
+#endif
 }
 
 void BlackFinCpu::SetDmaSettling(bool on) { serviced_.dma->SetSettling(on); }

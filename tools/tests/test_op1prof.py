@@ -1257,6 +1257,7 @@ def test_annotate_shows_a_blocks_cold_part(monkeypatch, tmp_path):
         _annotate_with(monkeypatch, tmp_path / "none", set())
 
 
+
 # ---- gate and run hygiene ----
 
 def test_events_are_shape_and_latched_interrupts_are_work():
@@ -1832,6 +1833,23 @@ def test_diff_compile_does_not_call_recompiled_code_unchanged(tmp_path):
     # replaced before the phase began never ran in it.
     _versioned_run(tmp_path / "C", [(10, "9" * 16), (20, "1" * 16), (500, "3" * 16)])
     assert diff.compile_diff(tmp_path / "A", tmp_path / "C", ("a", "b"))["blocks"][0]["state"] == "same"
+
+
+def test_the_jit_workers_time_is_split_at_marks():
+    # A translate-bg span across a mark, 0.5 ms on each side: half each.
+    bg = {"name": "translate-bg", "cat": "jit", "ph": "X", "tid": 2, "ts": 500.0, "dur": 1000.0,
+          "args": {"pc": 1, "ok": True, "cpu_ns": 1_000_000}}
+    mark = lambda name, ts, process, **extra: {"name": name, "cat": "mark", "ph": "i", "ts": ts, "args": {
+        "wall_ns": int(ts * 1000), "thread_cpu_ns": 0, "process_cpu_ns": process, **extra}}
+    t = _trace([mark("a", 0, 0), bg, mark("b", 1000, 500_000), mark("c", 2000, 1_000_000)])
+    for begin, end in (("a", "b"), ("b", "c")):
+        p = trace.phase(t, begin, end)
+        assert p.bg_compile_cpu_ms == pytest.approx(0.5) and p.other_threads_cpu_ms == pytest.approx(0.0)
+    # The emulator's per-mark count of the worker's CPU, where it has one.
+    t = _trace([mark("a", 0, 0, jit_worker_cpu_ns=100), bg, mark("b", 1000, 500_000, jit_worker_cpu_ns=300_100),
+                mark("c", 2000, 1_000_000, jit_worker_cpu_ns=1_000_100)])
+    assert trace.phase(t, "a", "b").bg_compile_cpu_ms == pytest.approx(0.3)
+    assert trace.phase(t, "b", "c").bg_compile_cpu_ms == pytest.approx(0.7)
 
 
 @pytest.mark.parametrize("phase,match", [(("nowhere", "b"), "not in the trace"), (("b", "a"), "empty"),

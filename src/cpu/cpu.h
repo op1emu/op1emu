@@ -10,6 +10,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <time.h>
 #include <tuple>
 
 // Forward declarations for bcore types (headers included in cpu.cpp only)
@@ -107,6 +108,9 @@ public:
     // first Run().
     static constexpr uint64_t kTierPublishAfter = uint64_t(1) << 23;
     void SetTierBackground(bool background, uint64_t publishAfter = 0, int jitCpu = -1);
+    // The JIT worker's CPU time so far (the profiler's per-mark count), or -1
+    // where there is none or the platform cannot tell.
+    int64_t JitWorkerCpuNs() const;
     // Whether memory DMA moves its rows only when something could see them
     // (DMA::SetSettling; on by default) or at each row's time. Before the
     // first Run().
@@ -285,6 +289,9 @@ protected:
 #endif
     // A line rose on another thread (LatchLines() left it to the CPU thread).
     std::atomic<bool> offThreadLatch_{false};
+    // The JIT worker's CPU clock (SetTierBackground), once it has started.
+    std::atomic<bool> workerClockSet_{false};
+    std::atomic<clockid_t> workerClock_{};
 #ifdef ENABLE_PROFILING
     Profiler* profiler_ = nullptr;
     uint64_t eventsDelivered_ = 0;
