@@ -17,10 +17,14 @@
 #include "sport.h"
 #include "emu.h"
 #include <pthread.h>
+#ifdef __linux__
 #include <sched.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <pthread/qos.h>
+#endif
 #ifdef ENABLE_PROFILING
 #include "profiling/profiler.h"
 #include "profiling/memory_census.h"
@@ -675,6 +679,7 @@ void BlackFinCpu::SetTierBackground(bool background, uint64_t publishAfter, int 
     if (!publishAfter) publishAfter = kTierPublishAfter;
     core_->set_tier_background(background, time_.Deterministic() ? publishAfter : 0, [jitCpu] {
         // Behind the CPU thread, whose time is the guest's.
+#ifdef __linux__
         setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 10);
         if (jitCpu >= 0) {
             cpu_set_t set;
@@ -683,6 +688,12 @@ void BlackFinCpu::SetTierBackground(bool background, uint64_t publishAfter, int 
             if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0)
                 LogError("Cannot pin the JIT worker to CPU %d", jitCpu);
         }
+#else
+#ifdef __APPLE__
+        pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#endif
+        if (jitCpu >= 0) LogError("--jit-cpu: this platform cannot pin a thread to a CPU");
+#endif
     });
 }
 
