@@ -180,8 +180,10 @@ microseconds, the clock `perf record -k mono` uses.
   `bb_0x<pc>` as LLVM's tier-0 blocks are) to a jitdump of its own beside
   LLVM's, in `.debug/jit/bcore-cp-*`, with the code each arena shares:
   `bcore_cp_exit`, the chain exit of every such block, and
-  `bcore_cp_jump_<helper>`, its calls' jumps to the helpers (both in the
-  `generated code` bucket).
+  `bcore_cp_jump_<helper>`, its calls' jumps to the helpers. `op1prof
+  report` counts both as generated code (the bucket and the `generated
+  code (self)` share) in a table of their own, `generated code no block
+  owns`, not as host symbols.
 - Marks (category `mark`) are instant events carrying the same counters as the
   `[mark]` line (including `invalidations`, the cache flushes so far), with `args.thread_cpu_ns`, `args.process_cpu_ns`,
   `args.irq_levels` (entries per IVG level, 0 = EMU ... 15 = IVG15) and

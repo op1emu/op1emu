@@ -525,6 +525,25 @@ def test_report_withholds_inclusive_tables_for_broken_chains(tmp_path):
                             samples=perf_report.parse_samples(_script(*broken)))
 
 
+def test_code_blocks_share_counts_as_generated_code(tmp_path):
+    """bcore's copy-and-patch blocks share code in each arena (bcore_cp_exit,
+    bcore_cp_jump_<helper>): generated code, in no block, and no host
+    symbol (found in review: it was counted as host)."""
+    capture = _capture(tmp_path, _perf_trace())
+    samples = [(42, "10.000000100", 30, ["bb_0x01a5e27e (/j.so)", RUN]),
+               (42, "10.000000200", 20, ["bcore_cp_exit (/j.so)", RUN]),
+               (42, "10.000000300", 10, ["bcore_cp_jump_mem_read32 (/j.so)", RUN]),
+               (42, "10.000000400", 40, ["memcpy (/lib/libc.so.6)", RUN])]
+    data = perf_report.analyze(capture, Categories.load(), perf_report.Labels(),
+                               samples=perf_report.parse_samples(_script(*samples)))
+    assert data["generated_code_pct"] == pytest.approx(60.0)
+    assert {row["bucket"]: row["pct"] for row in data["buckets"]}["generated code"] == pytest.approx(60.0)
+    assert [row["symbol"] for row in data["shared_code"]] == ["bcore_cp_exit", "bcore_cp_jump_mem_read32"]
+    assert all("bcore_cp_" not in row["symbol"] for row in data["host_self"] + data["host_inclusive"])
+    assert [row["block"] for row in data["blocks"]] == ["bb_0x01a5e27e"]
+    assert "no block owns" in perf_report.format_report(data, 10)
+
+
 def _mark_entry(name, packets):
     return {"name": name, "pc": 0, "wall_ms": 0.0, "cpu_ms": 0.0, "runs": 1, "packets": packets, "cycles": packets,
             "translated": 1, "mmio_r": 0, "mmio_w": 0, "events": 0}

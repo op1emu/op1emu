@@ -22,6 +22,10 @@ SCHEMA = "op1prof.report.v1"
 # CPU loop, inclusive (caller) numbers would silently undercount.
 MIN_COMPLETE_PCT = 95.0
 BLOCK_PREFIX = "bb_0x"
+# Generated code that is no block's: what bcore's copy-and-patch blocks
+# share in each arena (bcore_cp_exit, their chain exit, and
+# bcore_cp_jump_<helper>, their calls' jumps to the helpers).
+SHARED_PREFIX = "bcore_cp_"
 
 HEADER = re.compile(r"^\s*(?P<tid>\d+)\s+(?P<time>\d+\.\d+):\s+(?P<period>\d+)\s*$")
 FRAME = re.compile(r"^\s+(?P<ip>[0-9a-f]+)\s+(?P<sym>.*)\s+\((?P<dso>[^()]*)\)\s*$")
@@ -112,6 +116,11 @@ def block_pc(symbol: str) -> Optional[int]:
         return None
 
 
+def shared_code(symbol: str) -> bool:
+    """Generated code that belongs to no block (SHARED_PREFIX)."""
+    return symbol.startswith(SHARED_PREFIX)
+
+
 @dataclass(frozen=True)
 class PcRange:
     name: str
@@ -151,6 +160,7 @@ class Attribution:
     complete: int = 0                                    # execution weight with a whole chain
     self_blocks: Counter = field(default_factory=Counter)
     incl_blocks: Counter = field(default_factory=Counter)
+    shared_code: Counter = field(default_factory=Counter)  # leaf in generated code no block owns
     self_symbols: Counter = field(default_factory=Counter)
     incl_symbols: Counter = field(default_factory=Counter)
     buckets: Counter = field(default_factory=Counter)
@@ -224,6 +234,8 @@ def _execution(out: Attribution, sample: Sample, categories: Categories, labels:
     leaf_pc = block_pc(symbols[0]) if symbols else None
     if leaf_pc is not None:
         out.self_blocks[labels(leaf_pc)] += weight
+    elif symbols and shared_code(symbols[0]):
+        out.shared_code[symbols[0]] += weight
     elif sample.frames:
         out.self_symbols[f"{sample.frames[0][0]} ({dso_label(sample.frames[0][1])})"] += weight
     # A block's inclusive time covers what it calls (memory callbacks,
@@ -234,7 +246,7 @@ def _execution(out: Attribution, sample: Sample, categories: Categories, labels:
     if not categories.complete(symbols):
         return
     out.complete += weight
-    for symbol in set(s for s in symbols if block_pc(s) is None):
+    for symbol in set(s for s in symbols if block_pc(s) is None and not shared_code(s)):
         out.incl_symbols[symbol] += weight
     if callers_of:
         for depth, symbol in enumerate(symbols):
@@ -367,7 +379,10 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
         "sampled_over_trace": (execution / 1e6 / phase.noncompile_cpu_ms
                                if is_software_event(event) and phase.noncompile_cpu_ms else None),
         "chain_complete_pct": complete_pct, "inclusive_valid": inclusive,
-        "generated_code_pct": sum(result.self_blocks.values()) / execution * 100 if execution else 0.0,
+        # Blocks and the code they share: all of the generated code.
+        "generated_code_pct": (sum(result.self_blocks.values()) + sum(result.shared_code.values())) / execution * 100
+        if execution else 0.0,
+        "shared_code": _rows(result.shared_code, execution, per_weight, "symbol") if execution else [],
         "buckets": _rows(result.buckets, execution, per_weight, "bucket") if execution else [],
         # Without whole chains a block's callees may be missing from its
         # inclusive time, so only self time is reported then.
@@ -434,6 +449,8 @@ def format_report(data: dict, limit: int, sort: str = "seconds", min_runs: int =
     for row in data["blocks"][:limit]:
         incl = f"{row['incl_s']:9.3f} {row['incl_pct']:5.1f}%" if row["incl_s"] is not None else f"{'-':>9} {'-':>6}"
         lines.append(f"{row['block'][:40]:40s} {row['self_s']:9.3f} {row['self_pct']:5.1f}% {incl}")
+    if data.get("shared_code"):
+        lines += _table("generated code no block owns (self)", data["shared_code"], "symbol", limit)
     lines += _table("host symbol (self)", data["host_self"], "symbol", limit)
     if data["host_inclusive"]:
         lines += _table("host symbol (inclusive)", data["host_inclusive"], "symbol", limit)
@@ -456,7 +473,7 @@ def _census_lines(joined: dict, limit: int, sort: str, min_runs: int = 1000) -> 
     rows = sorted(rows, key=lambda row: -row[key])
     lines = ["", f"census join over {joined['runs']} runs: sampled estimates, not exact costs; "
                  "their error comes from repeated captures, not from sample counts",
-             f"outside guest blocks (dispatch, devices, event queue, CPU loop): "
+             f"outside guest blocks (dispatch and the blocks' shared code, devices, event queue, CPU loop): "
              f"{joined['outside_blocks_s']:.3f} s = {joined['outside_blocks_ns_per_run']:.1f} ns per run; "
              f"sampled in blocks the census did not run: {joined['sampled_not_in_census_s']:.3f} s",
              *([f"{left_out} blocks that ran fewer than {min_runs} times are left out of this order (--min-runs)"]
