@@ -184,7 +184,10 @@ uint64_t SPORT::TxAvailable(uint64_t requestedSamples) const
 u32 SPORT::DMAWriteTake(u32 length) const
 {
     // DMAWrite's early returns, then its available samples. Before the first
-    // transfer it only starts the clock: nothing is due yet.
+    // transfer it only starts the clock: nothing is due yet. In wall mode
+    // time moves on between this and the DMAWrite after it, which may then
+    // take more: no bound.
+    if (!time_.Deterministic()) return length;
     if (!transmitEnabled || !dmaTxActive_) return 0;
     const u32 frameSize = (transmitWordLength > 16 ? 4 : 2) * (transmitStereoFrameSync ? 2 : 1);
     return u32(TxAvailable(length / frameSize) * frameSize);

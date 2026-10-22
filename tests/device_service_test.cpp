@@ -17,10 +17,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 static void Require(bool ok, const std::string& message) {
@@ -627,6 +629,48 @@ static void SportTransmitDeliversTheBuffer(u32 modify) {
     }
 }
 
+// In wall mode the SPORT's clock moves between DMAWriteTake and the
+// DMAWrite after it -- here the host is away 20 ms in between -- so the DMA
+// must read the whole chunk: the sink hears the buffer's words, never the
+// staging buffer's unread ones.
+static void WallSportTransmitReadsWhatItSends() {
+    class SlowSport : public SPORT {
+    public:
+        using SPORT::SPORT;
+        u32 DMAWrite(int x, int y, const void* source, u32 length) override {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            return SPORT::DMAWrite(x, y, source, length);
+        }
+    };
+    TimeSource time(false);
+    Emulator emulator;
+    MemoryDevice ram{"SDRAM", 0, 0x10000};
+    DMA dma(0xFFC00C00, emulator, &time);
+    emulator.BindDevice(&ram);
+    auto sport = std::make_shared<SlowSport>(0xFFC00800, 0, time);
+    dma.AttachDMABus(DMAPeripheralSPORT0Tx, sport);
+    size_t heard = 0, wrong = 0;
+    sport->SetAudioOutputCallback([&](const void* data, size_t samples, int channels, int) {
+        auto* words = static_cast<const uint16_t*>(data);
+        heard += samples * channels;
+        for (size_t i = 0; i < samples * channels; ++i) wrong += words[i] != 0x3333;
+    });
+    for (u32 i = 0; i < 0x10000; i += 4) ram.Write32(i, 0x33333333);
+    sport->Write32(0x04, 15);  // TCR2: 16-bit words
+    sport->Write32(0x00, 1);   // TSPEN
+    const u32 base = 4 * 0x40;
+    dma.Write32(base + 0x04, 0x1000);
+    dma.Write32(base + 0x10, 2048);
+    dma.Write32(base + 0x14, 2);
+    dma.Write32(base + 0x08, 1 | (1 << 2));  // 16-bit, stop
+    dma.ProcessWithInterrupt(-1);  // starts the SPORT's clock
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    dma.ProcessWithInterrupt(-1);
+    Require(heard > 0, "wall SPORT: the sink hears samples");
+    Require(wrong == 0, "wall SPORT: " + std::to_string(wrong) + " of " + std::to_string(heard) +
+                            " samples are not the buffer's");
+}
+
 // The SIC's outputs are levels: high while a routed pin is asserted and
 // unmasked, whatever else is published.
 static void SicLines() {
@@ -909,5 +953,6 @@ int main() {
     for (uint32_t seed = 1; seed <= 10; ++seed) AudioMatchesPolling(seed);
     SportTransmitDeliversTheBuffer(2);
     SportTransmitDeliversTheBuffer(6);
+    WallSportTransmitReadsWhatItSends();
     std::puts("device-service-test: ok");
 }

@@ -22,7 +22,8 @@ public:
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
     // Samples come due at the sample rate, counted from the first transfer.
     uint64_t DMAIdleUntil(bool toMemory, u32 length) const override;
-    // What DMAWrite would take now (DMABus::DMAWriteTake): the samples due.
+    // What DMAWrite would take now (DMABus::DMAWriteTake): the samples due,
+    // in deterministic mode (guest time stands still between the calls).
     u32 DMAWriteTake(u32 length) const override;
 
     void Write32(u32 offset, u32 value) override {

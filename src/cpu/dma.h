@@ -21,7 +21,9 @@ public:
     virtual u32 DMARead(int x, int y, void* dest, u32 length) = 0;
     virtual u32 DMAWrite(int x, int y, const void* source, u32 length) = 0;
     // At most how many of `length` bytes a DMAWrite now would take (it may
-    // take fewer). The default, all of them, is always right.
+    // take fewer), also when the DMA reads its source in between: a bus
+    // whose take may grow meanwhile (a clock that moves) must not bound it.
+    // The default, all of them, is always right.
     virtual u32 DMAWriteTake(u32 length) const { return length; }
     // At most how many bytes a DMARead now would give. The default, any
     // number, is always right.
