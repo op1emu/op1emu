@@ -1253,9 +1253,19 @@ def test_annotate_shows_a_blocks_cold_part(monkeypatch, tmp_path):
     # Both sampled: hot part first, then the cold part.
     text = _annotate_with(monkeypatch, tmp_path / "both", {"bb_0x01a5e27e", "bb_0x01a5e27e.cold"})
     assert text.index("code of bb_0x01a5e27e\n") < text.index("code of bb_0x01a5e27e.cold")
-    with pytest.raises(ValueError, match=r"no samples in bb_0x01a5e27e or bb_0x01a5e27e\.cold"):
+    with pytest.raises(ValueError, match=r"no samples in bb_0x01a5e27e or its variants"):
         _annotate_with(monkeypatch, tmp_path / "none", set())
 
+
+def test_annotate_shows_a_blocks_other_versions(monkeypatch, tmp_path):
+    # A block promoted from tier 0, or compiled again careful, is a symbol of
+    # its own: its samples are the block's, whichever versions have them.
+    text = _annotate_with(monkeypatch, tmp_path / "t1", {"bb_0x01a5e27e.t1"})
+    assert "code of bb_0x01a5e27e.t1" in text
+    text = _annotate_with(monkeypatch, tmp_path / "all", {"bb_0x01a5e27e", "bb_0x01a5e27e.t1",
+                                                          "bb_0x01a5e27e.careful.t1.cold"})
+    assert text.index("code of bb_0x01a5e27e\n") < text.index("code of bb_0x01a5e27e.t1\n") \
+        < text.index("code of bb_0x01a5e27e.careful.t1.cold")
 
 
 # ---- gate and run hygiene ----

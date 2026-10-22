@@ -75,9 +75,12 @@ def annotate(capture: Path, pc: int, allow_imprecise: bool, lines: int) -> str:
                          "--event cycles:upp (or pass --allow-imprecise to see it anyway)")
     symbol = f"bb_0x{pc:08x}"
     # The block's rarely run paths are a symbol of their own, which the report
-    # counts as the block (report.block_pc): each part that has samples.
+    # counts as the block (report.block_pc), and so are its other versions:
+    # compiled again careful after a loop-bottom guard miss, and promoted from
+    # tier 0 (bcore's Core::set_tiering). Each part that has samples.
     parts, errors = [], []
-    for part in (symbol, f"{symbol}.cold"):
+    variants = [symbol + v for v in ("", ".careful", ".t1", ".careful.t1")]
+    for part in [p for v in variants for p in (v, f"{v}.cold")]:
         result = subprocess.run([*perf_command(capture), "annotate", "-i", str(capture / "perf.jit.data"),
                                  "--stdio", "-s", part],
                                 capture_output=True, text=True)
@@ -88,7 +91,8 @@ def annotate(capture: Path, pc: int, allow_imprecise: bool, lines: int) -> str:
         parts += [f"perf annotate {part} ({info['event']}, window {' -> '.join(info['window'])})"]
         parts += text[:lines] + ([f"... {len(text) - lines} more lines"] if len(text) > lines else [])
     if not parts:
-        raise ValueError(f"perf annotate found no samples in {symbol} or {symbol}.cold: {errors[0]}")
+        raise ValueError(f"perf annotate found no samples in {symbol} or its variants (.careful, .t1, .cold): "
+                         f"{errors[0]}")
     head = []
     if not info["precise"]:
         head.append("not a precise event: shares are where the timer landed, not where the time went")
