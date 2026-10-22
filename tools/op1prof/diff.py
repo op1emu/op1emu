@@ -154,7 +154,9 @@ def _versions(trace_data: dict, window: Optional[Tuple[str, str]]) -> Dict[int, 
     lo, hi = _bounds(trace_data, window)
     out: Dict[int, List[compilation.Translation]] = {}
     for t in sorted(compilation.translations(trace_data), key=lambda t: t.begin_us):
-        if not t.ok or t.begin_us >= hi:
+        # A background promotion's lift made no code: its link (loading the
+        # worker's code) is where the block's code changes.
+        if not t.ok or t.begin_us >= hi or t.part == "lift":
             continue
         if t.begin_us < lo:
             out[t.pc] = [t]       # an earlier version replaced before the phase

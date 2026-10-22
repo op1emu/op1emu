@@ -1835,6 +1835,21 @@ def test_diff_compile_does_not_call_recompiled_code_unchanged(tmp_path):
     assert diff.compile_diff(tmp_path / "A", tmp_path / "C", ("a", "b"))["blocks"][0]["state"] == "same"
 
 
+def test_diff_compile_takes_a_background_lift_for_no_code(tmp_path):
+    # Tier-0 code before the phase; a promotion lifted before it, loaded on
+    # the worker's return after it: the phase ran the tier-0 code.
+    def run(path, h):
+        path.mkdir()
+        span = lambda ts, digest, **extra: {**_translate(ts, 1, 1000), "args": {
+            "pc": 0x100, "ok": True, "cpu_ns": 1000, "ir_insns": 10, "object_bytes": 40, "object_hash": digest, **extra}}
+        (path / "trace.json").write_text(json.dumps(_trace([
+            span(10, h, tier=0), span(20, "0" * 16, tier=1, part="lift"), _mark("a", 100, 0, 0), _mark("b", 1000, 0, 0),
+            span(2000, "9" * 16, tier=1, part="link")])))
+    run(tmp_path / "A", "1" * 16)
+    run(tmp_path / "B", "1" * 16)
+    assert diff.compile_diff(tmp_path / "A", tmp_path / "B", ("a", "b"))["counts"]["same"] == 1
+
+
 def test_the_jit_workers_time_is_split_at_marks():
     # A translate-bg span across a mark, 0.5 ms on each side: half each.
     bg = {"name": "translate-bg", "cat": "jit", "ph": "X", "tid": 2, "ts": 500.0, "dur": 1000.0,
