@@ -20,11 +20,29 @@ public:
     // What ProcessTransfer() would do next: nothing until the returned guest
     // time (0: it may do something now).
     uint64_t IdleUntil() const;
+    // Whether its rows may move late (DMA::Settle): paced, on a bus that
+    // Settles(), with counts EventCycles() can go by.
+    bool Settles() const;
+    // The guest cycle from which ProcessTransfer() moves the chunk it is at.
+    uint64_t DueCycles() const;
+    // No earlier than this guest cycle does the channel next do something
+    // the guest is told of: end a row that interrupts, or its transfer (its
+    // status changes; a descriptor or the next transfer starts). Each of the
+    // elements before it takes its time from pacedFrom_.
+    uint64_t EventCycles() const;
+    // Row and transfer ends so far (profiling: the work a settling service did).
+    uint64_t Events() const { return events_; }
+    // The bytes it moves up to the end EventCycles() bounds.
+    uint64_t EventBytes() const;
+    // No earlier than this guest cycle has it moved `bytes` more (paced).
+    uint64_t CyclesToMove(uint64_t bytes) const;
+    bool ToMemory() const { return memoryWrite; }
     bool IsMDMA() const;
     bool IsMDMASource() const;
     DMAPeripheralType GetPeripheralType() const { return peripheralType; }
 
-    u32 ProcessTransfer();
+    // At guest cycle `now`, as a service then.
+    u32 ProcessTransfer(uint64_t now);
 
 protected:
     void ProcessDescriptor();
@@ -66,6 +84,7 @@ protected:
     u16 currYCount = 0;     // 0x38
     // A paced bus: the guest cycle from which the next element accrues.
     u64 pacedFrom_ = 0;
+    uint64_t events_ = 0;
 };
 
 DMAChannel::DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defaultPeripheralType)
@@ -105,7 +124,7 @@ DMAChannel::DMAChannel(const std::string& name, u32 baseAddr, DMA& dma, u16 defa
         // arrives after the NAND column has moved into OOB. Complete it at the
         // CONFIG write, matching the hardware DMA/controller handshake.
         if (enabled && peripheralType == DMAPeripheralNFC) {
-            ProcessTransfer();
+            ProcessTransfer(this->dma.Now());
         }
     };
 
@@ -217,6 +236,37 @@ uint64_t DMAChannel::IdleUntil() const {
     return std::max(idle, dueCycles * 5 / 2);
 }
 
+bool DMAChannel::Settles() const {
+    const DMABus* bus = dma.GetDMABus(peripheralType);
+    return dma.Settling() && bus && bus->Settles() && CyclesPerElement(*bus) && xCount && (!mode2D || yCount);
+}
+
+// DueCycles(), EventCycles(): of a channel that Settles(), so its bus is
+// there (DMA::Refresh runs after every PERIPHERAL_MAP write).
+uint64_t DMAChannel::DueCycles() const {
+    // ProcessTransfer()'s chunk and pace check.
+    const u32 elementBytes = 1u << wordSize;
+    const u32 length = std::min(u32(currXCount) * elementBytes, 4096u);
+    return pacedFrom_ + uint64_t(length / elementBytes) * CyclesPerElement(*dma.GetDMABus(peripheralType));
+}
+
+uint64_t DMAChannel::EventBytes() const {
+    // A 2D transfer that interrupts only at its end tells of no row before
+    // its last.
+    const bool rowsSilent = mode2D && !(dataInterruptEnabled && mode2DInterruptEachRow);
+    const uint64_t elements = currXCount + (rowsSilent && currYCount ? uint64_t(currYCount - 1) * xCount : 0);
+    return elements << wordSize;
+}
+
+uint64_t DMAChannel::CyclesToMove(uint64_t bytes) const {
+    // Moving n elements needs n paces from pacedFrom_ (each chunk waits for
+    // its own), however the rows split into chunks.
+    const u32 elementBytes = 1u << wordSize;
+    return pacedFrom_ + (bytes + elementBytes - 1) / elementBytes * CyclesPerElement(*dma.GetDMABus(peripheralType));
+}
+
+uint64_t DMAChannel::EventCycles() const { return CyclesToMove(EventBytes()); }
+
 bool DMAChannel::QuietSource(u32 from, u32 to, u32 elementBytes) const {
     // The elements [from, to) of the chunk at currAddr: every page they lie
     // in is plain memory, one MemoryDevice mapping all of it (a direct page,
@@ -244,7 +294,7 @@ bool DMAChannel::IsMDMASource() const {
 // idle, unattached, or blocked). MDMA channels are ordinary DMA channels
 // bound to a MemorySrcDMABus/MemoryDestDMABus pair (see dma.h) rather than a
 // special-cased transfer path.
-u32 DMAChannel::ProcessTransfer() {
+u32 DMAChannel::ProcessTransfer(uint64_t now) {
     if (!enabled || !running) return 0;
 
     DMABus* bus = dma.GetDMABus(peripheralType);
@@ -260,7 +310,7 @@ u32 DMAChannel::ProcessTransfer() {
     totalBytes = std::min(totalBytes, (u32)sizeof(buffer));
     // A paced bus moves this chunk once its elements' time has passed.
     const u32 pace = CyclesPerElement(*bus);
-    if (pace && dma.Time()->Cycles() < pacedFrom_ + uint64_t(totalBytes / elementBytes) * pace) return 0;
+    if (pace && now < pacedFrom_ + uint64_t(totalBytes / elementBytes) * pace) return 0;
     if (memoryWrite) {
         totalBytes = bus->DMARead(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
         totalBytes -= totalBytes % elementBytes; // only write whole elements
@@ -316,11 +366,14 @@ u32 DMAChannel::ProcessTransfer() {
         if (dataInterruptEnabled) {
             if (!mode2D || mode2DInterruptEachRow) {
                 TriggerInterrupt(1);
+                ++events_;
             } else if (currYCount == 0) {
                 TriggerInterrupt(1);
+                ++events_;
             }
         }
         if (transferComplete) {
+            ++events_;
             completed = true;
             running = false;
             if (next != DMANextOperation::Stop) {
@@ -387,7 +440,12 @@ DMA::DMA(u32 baseAddr, Emulator& emu, const TimeSource* time)
 static constexpr u32 kIrqStatus = 0x28;
 
 void DMA::Write32(u32 offset, u32 value) {
-    if (offset % 0x40 != kIrqStatus) touched_ = true;
+    if (offset % 0x40 != kIrqStatus) {
+        // The rows due by now move first, as they would have before it.
+        if (settling_) Settle(Now());
+        blocked_ = 0;
+        touched_ = true;
+    }
     size_t channelIndex = offset / 0x40;
     if (channelIndex < channels.size()) {
         channels[channelIndex]->Write32(offset % 0x40, value);
@@ -399,9 +457,26 @@ void DMA::Refresh(size_t channel) {
     const u16 bit = u16(1u << channel);
     if (channels[channel]->IsEnabled() && channels[channel]->IsRunning()) runnable_ |= bit;
     else runnable_ &= u16(~bit);
+    if ((runnable_ & bit) && channels[channel]->Settles()) settling_ |= bit;
+    else settling_ &= u16(~bit);
+}
+
+uint64_t DMA::Now() const { return time_ ? time_->Cycles() : 0; }
+
+// CURR_ADDR, CURR_X_COUNT, CURR_Y_COUNT: what a settling channel changes
+// at a row it moves late. Its other registers change only at its events,
+// which a service makes when they are due (IdleUntil()).
+bool DMA::SettlesOnRead(u32 offset) const {
+    const u32 index = offset / 0x40, reg = offset % 0x40;
+    return index < channels.size() && (settling_ >> index & 1) && (reg == 0x24 || reg == 0x30 || reg == 0x38);
 }
 
 u32 DMA::Read32(u32 offset) {
+    // The rows due by now, as for a write. An event they reach (a channel
+    // that waited past its bound for the FIFO's other side) is published
+    // inside the read, as levels an access changes are; the run stops after
+    // it (HostWorkAfterAccess).
+    if (SettlesOnRead(offset)) Settle(Now());
     size_t channelIndex = offset / 0x40;
     if (channelIndex < channels.size()) {
         return channels[channelIndex]->Read32(offset % 0x40);
@@ -420,35 +495,103 @@ static constexpr u32 MDMA_BURST_BYTES = 4096;
 // enabled and running moves nothing and is never due.
 uint64_t DMA::IdleUntil() {
     uint64_t until = UINT64_MAX;
+    const uint64_t now = Now();
     for (u32 mask = runnable_; mask; mask &= mask - 1) {
-        const auto& channel = channels[__builtin_ctz(mask)];
-        const uint64_t idle = channel->IdleUntil();
+        const size_t index = __builtin_ctz(mask);
+        const auto& channel = channels[index];
+        uint64_t idle;
+        if (settling_ >> index & 1) {
+            const uint64_t cycles = EventBound(index, now);
+            idle = cycles == UINT64_MAX ? UINT64_MAX : cycles * 5 / 2;
+        } else {
+            idle = channel->IdleUntil();
+        }
         if (idle < until) until = idle, idleSource_ = channel->GetPeripheralType();
     }
     return until;
 }
 
+// One channel's turn in a pass at guest cycle `now`.
+static u32 Pump(DMAChannel& channel, uint64_t now) {
+    if (!channel.IsMDMA()) return channel.ProcessTransfer(now);
+    u32 total = 0;
+    while (total < MDMA_BURST_BYTES) {
+        u32 moved = channel.ProcessTransfer(now);
+        if (!moved) break;
+        total += moved;
+    }
+    return total;
+}
+
+uint64_t DMA::EventBound(size_t index, uint64_t now) const {
+    const DMAChannel& channel = *channels[index];
+    uint64_t bound = channel.EventCycles();
+    // What its FIFO lacks for it (bytes for the destination, room for the
+    // source) the other side has to move first, at its own pace; a pass
+    // runs the lower channel first, which then moves at the next one.
+    const DMABus& bus = *GetDMABus(channel.GetPeripheralType());
+    const uint64_t bytes = channel.EventBytes();
+    const uint64_t ready = channel.ToMemory() ? bus.DMAReadTake() : bus.DMAWriteTake(UINT32_MAX);
+    if (bytes > ready && channel.IsMDMA()) {
+        const unsigned other = channel.GetPeripheralType() ^ 1;  // MDMA source <-> destination
+        for (u32 mask = runnable_; mask; mask &= mask - 1) {
+            const size_t side = __builtin_ctz(mask);
+            if (channels[side]->GetPeripheralType() == other)
+                bound = std::max(bound, channels[side]->CyclesToMove(bytes - ready) + (side > index));
+        }
+    }
+    // Past it, the event waits on something no pace bounds: the next pass.
+    return bound > now ? bound : nextPass_;
+}
+
+// A pass at each cycle some settling channel's chunk is due, in channel
+// order: what a service at every cycle would do, without the cycles at which
+// nothing can move. A channel that was due and could not move (its FIFO side
+// empty or full) waits in blocked_ until another moves; the pass after one
+// that moved anything is at the next cycle, as the next service would be.
+void DMA::Settle(uint64_t until) {
+    while (settling_) {
+        uint64_t at = UINT64_MAX;
+        for (u32 mask = settling_ & ~blocked_; mask; mask &= mask - 1)
+            at = std::min(at, channels[__builtin_ctz(mask)]->DueCycles());
+        nextPass_ = at == UINT64_MAX ? at : std::max(at, passFloor_);
+        if (nextPass_ > until) return;
+        at = nextPass_;
+        bool moved = false;
+        u16 waiting = 0;
+        for (u32 mask = settling_; mask; mask &= mask - 1) {
+            const size_t index = __builtin_ctz(mask);
+            auto& channel = *channels[index];
+            if (channel.DueCycles() > at) continue;
+            const uint64_t events = channel.Events();
+            if (Pump(channel, at)) moved = true;
+            else waiting |= u16(1u << index);
+            CountServiceWork(channel.Events() - events);
+            Refresh(index);
+        }
+        blocked_ = moved ? 0 : waiting;
+        passFloor_ = at + 1;
+    }
+    nextPass_ = UINT64_MAX;
+}
+
 void DMA::ProcessWithInterrupt(int ivg) {
     // Cleared first: a notice raised while the channels run is for the next call.
     touched_ = false;
-    // In channel order, as a pass over all of them would; a transfer changes
-    // only its own channel.
-    for (u32 mask = runnable_; mask; mask &= mask - 1) {
+    const uint64_t now = Now();
+    // The settling channels' rows first: what they wrote is in memory for
+    // the others. The rest in channel order, as a pass over all of them
+    // would; a transfer changes only its own channel.
+    if (settling_) Settle(now);
+    for (u32 mask = runnable_ & ~settling_; mask; mask &= mask - 1) {
         const size_t index = __builtin_ctz(mask);
-        auto& channel = channels[index];
-        if (!channel->IsMDMA()) {
-            CountServiceWork(channel->ProcessTransfer());
-        } else {
-            u32 total = 0;
-            while (total < MDMA_BURST_BYTES) {
-                u32 moved = channel->ProcessTransfer();
-                if (!moved) break;
-                total += moved;
-            }
-            CountServiceWork(total);
-        }
+        const u32 moved = Pump(*channels[index], now);
+        if (moved) blocked_ = 0;  // a FIFO's side that does not settle
+        CountServiceWork(moved);
         Refresh(index);
     }
+    // A channel the loop made settle (a descriptor) gets its next pass.
+    if (settling_) Settle(now);
     idleUntil_ = IdleUntil();
 }
 

@@ -23,6 +23,9 @@ public:
     // At most how many of `length` bytes a DMAWrite now would take (it may
     // take fewer). The default, all of them, is always right.
     virtual u32 DMAWriteTake(u32 length) const { return length; }
+    // At most how many bytes a DMARead now would give. The default, any
+    // number, is always right.
+    virtual u32 DMAReadTake() const { return UINT32_MAX; }
     // Discard any buffered data. MDMA's internal FIFO is flushed when a new
     // transfer starts; peripheral buses ignore this.
     virtual void DMAFlush() {}
@@ -37,6 +40,11 @@ public:
     // it moves a row (or 4096 bytes) once that many cycles per element have
     // passed since the last one. 0: as fast as the bus accepts.
     virtual u32 CyclesPerElement() const { return 0; }
+    // Whether DMARead and DMAWrite depend only on the bytes moved so far, not
+    // on when they are called: a paced channel on such a bus may move its
+    // rows late, each as at its own time (DMA::Settle). Memory DMA's FIFO;
+    // not a peripheral, whose data is due at times of its own.
+    virtual bool Settles() const { return false; }
     // The DMA controller's flag NotifyDMA() raises.
     void SetDMANotify(bool* flag) { dmaNotify_ = flag; }
 
@@ -63,6 +71,8 @@ public:
     u32 DMAWriteTake(u32 length) const override;
     void DMAFlush() override { head = tail = 0; }
     u32 CyclesPerElement() const override { return kSclkCyclesPerElement; }
+    bool Settles() const override { return true; }
+    u32 Held() const { return tail - head; }
 
 protected:
     static constexpr u32 CAPACITY = 4096; // matches ProcessTransfer's staging buffer
@@ -77,8 +87,10 @@ public:
     u32 DMARead(int x, int y, void* dest, u32 length) override;
     u32 DMAWrite(int x, int y, const void* source, u32 length) override;
     u32 DMAWriteTake(u32 length) const override;
+    u32 DMAReadTake() const override { return source.Held(); }
     void DMAFlush() override { source.DMAFlush(); }
     u32 CyclesPerElement() const override { return kSclkCyclesPerElement; }
+    bool Settles() const override { return true; }
 
 protected:
     MemorySrcDMABus& source;
@@ -122,16 +134,38 @@ public:
     DMABus* GetDMABus(DMAPeripheralType type) const { return busByType_[type & 15]; }
     Emulator& GetEmulator() { return emulator; }
     const TimeSource* Time() const { return time_; }
+    // The guest cycle now (0 without a time source).
+    uint64_t Now() const;
+    bool Settling() const { return settleRows_; }
 
     u32 Read32(u32 offset) override;
     void Write32(u32 offset, u32 value) override;
 
     void ProcessWithInterrupt(int ivg) override;
-    // Reads have no effect, and acknowledging a channel's IRQ_STATUS changes
-    // nothing a service would act on; any other write may (touched_).
-    bool HostWorkAfterAccess(u32 offset, bool write) const override { return write && touched_; }
-    // The channels' registers change only in a service or a write.
-    bool ReadStable(u32 offset) const override { return true; }
+    // Acknowledging a channel's IRQ_STATUS changes nothing a service would
+    // act on; any other write may (touched_). A read has no effect but where
+    // it settles a channel's rows (SettlesOnRead): it moved guest memory,
+    // and may have ended a row.
+    bool HostWorkAfterAccess(u32 offset, bool write) const override {
+        return write ? touched_ : SettlesOnRead(offset);
+    }
+    // The channels' registers change only in a service or a write, but for
+    // the current address and counts of a channel that settles its rows.
+    bool ReadStable(u32 offset) const override { return !SettlesOnRead(offset); }
+
+    // Settling (the default; set before any channel runs): a paced channel
+    // on a bus that Settles() moves its rows when something could see them
+    // -- a service at a row whose end the guest is told of (an interrupt,
+    // the transfer's end), a register write, a read of its current address
+    // or counts -- not at each row's time. Each row moves as a service at
+    // its own cycle would have moved it, so the transfer is the one a
+    // service every cycle makes; but memory is read and written later: a
+    // guest store to a source row past its cycle is copied, a guest load of
+    // a destination row past its cycle sees it unwritten, until the next of
+    // those. A service moves the rows before the other channels' (a PPI or
+    // SPORT reading what memory DMA wrote sees it written). Off, every row
+    // is due on its own (the test's reference).
+    void SetSettling(bool on) { settleRows_ = on; }
 
     // ProcessWithInterrupt() has work at guest time nowNs: a register write
     // or a bus notice since the last call, or a running channel whose bus may
@@ -143,8 +177,17 @@ public:
     unsigned IdleSource() const { return idleSource_; }
 
 protected:
-    // Before when no running channel can move data (see DMABus::DMAIdleUntil).
+    // Before when no running channel can move data (see DMABus::DMAIdleUntil)
+    // or, settling, do something the guest is told of.
     uint64_t IdleUntil();
+    // Moves the settling channels' rows due by guest cycle `until`: at each
+    // cycle a row is due, a pass over them as a service then would make.
+    void Settle(uint64_t until);
+    // A read of the current address or counts of a channel that settles.
+    bool SettlesOnRead(u32 offset) const;
+    // No earlier than this guest cycle does settling channel `index`'s next
+    // event come, as of the last Settle, at guest cycle `now`.
+    uint64_t EventBound(size_t index, uint64_t now) const;
     // runnable_'s bit for a channel after something may have changed it: a
     // register write, or its own transfer (completion, the next descriptor).
     void Refresh(size_t channel);
@@ -158,4 +201,12 @@ protected:
     std::map<DMAPeripheralType, std::shared_ptr<DMABus>> dmaBuses;
     std::array<DMABus*, 16> busByType_{};
     u16 runnable_ = 0;  // bit n: channel n is enabled and running (Refresh)
+    // Settling (Settle): the channels of runnable_ that settle; those that
+    // could not move at the last pass (until another moves); the cycle
+    // after the last pass; the next pass's cycle, as of the last Settle.
+    bool settleRows_ = true;
+    u16 settling_ = 0;
+    u16 blocked_ = 0;
+    uint64_t passFloor_ = 0;
+    uint64_t nextPass_ = UINT64_MAX;
 };

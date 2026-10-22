@@ -192,7 +192,8 @@ host would have nothing to do after it; only then does it return to
 the host would continue, so a chained block is a host round trip without the
 host. Before each run the host computes the run's budget in packets
 (`BlackFinCpu::ChainBudget`), the earliest guest time at which it would act
-after a block: an event, the panel's TE edge, a DMA channel's next element,
+after a block: an event, the panel's TE edge, a DMA channel's next element
+(memory DMA: the next row end the guest is told of; see below),
 the next TWI byte, the RTC's next calendar change, the core timer's expiry or
 the next GP timer tick. It is 0 when a device it services already has work, and
 at PCs where the host must see the block start: 0xFFA00000 (which drops every
@@ -266,8 +267,15 @@ channel that came due first), cumulative:
 [due] end end=1 coretimer=9863 tick=399564 event=5 panel=1000 twi=6091 dma_ppi=80625 dma_sport0tx=380940 dma_mdmad0=98849 dma_mdmas0=4165892
 ```
 
-That is the synth phase below, start to `end`: of 5.14M deadline returns,
-4.17M wait for the next row of memory DMA 0's source.
+That is the synth phase below, start to `end`, as it was: of 5.14M deadline
+returns, 4.17M waited for the next row of memory DMA 0's source. Memory DMA
+now settles its rows (`DMA::Settle`): each moves as a service at its own
+cycle would have moved it, but only when something could see it -- a row
+end that interrupts or the transfer's end (the deadline), a write to the
+DMA, a read of the channel's current address or counts. The guest's own
+reads of the memory see the rows later. Every mark's counters and digests
+are as before but for `mmio_r` (the poll of the channel's IRQ_STATUS
+now waits in one run); of 389,458 deadline returns, 16,145 are memory DMA 0's.
 
 An `[idle]` line follows: the IDLE waits so far (BlackFinCpu::Wait), the
 guest cycles they let pass without a packet, and what woke them, by the
@@ -366,6 +374,7 @@ neither latched nor in service, when it rises and after every block.
   only); `published` interrupt levels and the `transitions` among them (a
   level that differs from the pin's last one); events `queued`, apart from
   the interrupt `raises` queued; `work`, the data a device moved (DMA: bytes,
+  but the row and transfer ends of memory DMA, which settles its rows,
   reported through `Device::CountServiceWork`); and `productive` calls,
   those that changed a level, queued an event other than a raise, or moved
   data. Devices report what they move or complete through

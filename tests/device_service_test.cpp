@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -332,6 +333,34 @@ struct MdmaRig {
         dma.Write32(0x348, 0x09);         // DMAEN, 32-bit
         dma.Write32(0x308, 0x8B);         // DMAEN, WNR, 32-bit, DI_EN
     }
+    // Rows of x words, y of them, contiguous (2D where y > 1), armed in
+    // either order (Arm, then Arm(second) later or at once); the destination
+    // interrupts at its end, at each row (DI_SEL) or not at all; both restart
+    // at their ends (autobuffer) or stop.
+    struct Shape {
+        u32 from, to, x1, y1, x2, y2;
+        bool destFirst, interrupt, eachRow, autobuffer;
+    };
+    void Arm(const Shape& t, bool second = false) {
+        const u32 flow = t.autobuffer ? 0x1000 : 0;
+        const u32 source = 0x09 | (t.y1 > 1 ? 0x10 : 0) | flow;
+        const u32 dest = 0x0B | (t.y2 > 1 ? 0x10 : 0) | (t.interrupt ? 0x80 : 0) | (t.eachRow ? 0x40 : 0) | flow;
+        if (second) {
+            dma.Write32(t.destFirst ? 0x348 : 0x308, t.destFirst ? source : dest);
+            return;
+        }
+        dma.Write32(0x344, t.from);
+        dma.Write32(0x350, t.x1);
+        dma.Write32(0x354, 4);
+        dma.Write32(0x358, t.y1);
+        dma.Write32(0x35C, 4);
+        dma.Write32(0x304, t.to);
+        dma.Write32(0x310, t.x2);
+        dma.Write32(0x314, 4);
+        dma.Write32(0x318, t.y2);
+        dma.Write32(0x31C, 4);
+        dma.Write32(t.destFirst ? 0x308 : 0x348, t.destFirst ? dest : source);
+    }
 };
 
 static void MdmaPollingMatchesPolling(uint32_t seed) {
@@ -370,6 +399,113 @@ static void MdmaPollingMatchesPolling(uint32_t seed) {
     Require(transfers > 100, "the guest ran transfers");
     Require(services * 2 < kSteps, "the polled MDMA is serviced when a row is due, not at every poll: " +
                                        std::to_string(services) + " of " + std::to_string(kSteps));
+}
+
+// A memory DMA settles its rows (DMA::SetSettling): serviced only at the
+// cycles NeedsService() says, it moves the same bytes, interrupts at the
+// same cycles and shows the same status and counts at every guest access as
+// the DMA that moves each row when it is due, serviced every cycle -- with a
+// service about once a transfer, not once a row. Like the synth's copy (8-byte
+// source rows into 99-word ones), with transfers aborted now and then.
+static void MdmaSettlesLikeEveryCycle(uint32_t seed) {
+    MdmaRig every, settled;
+    every.dma.SetSettling(false);
+    std::mt19937 rng(seed);
+    uint64_t services = 0, rows = 0;
+    int transfers = 0, reads = 0;
+    bool autobuffer = false;
+    std::optional<std::pair<MdmaRig::Shape, uint64_t>> second;  // the side armed later, and when
+    constexpr int kSteps = 20000;
+    const auto where = [&](int step) { return "seed " + std::to_string(seed) + " step " + std::to_string(step); };
+    for (int step = 0; step < kSteps; ++step) {
+        const u32 status = every.dma.Read32(0x328);
+        Require(status == settled.dma.Read32(0x328), "settling MDMA: MDMA_D0_IRQ_STATUS differs, " + where(step));
+        if (rng() % 3 == 0) {
+            static constexpr u32 kCurrent[] = {0x24, 0x30, 0x38};
+            const u32 reg = (rng() % 2 ? 0x300 : 0x340) + kCurrent[rng() % 3];
+            Require(every.dma.Read32(reg) == settled.dma.Read32(reg), "settling MDMA: current registers differ, " + where(step));
+            ++reads;
+        }
+        if (status & 1) {
+            every.dma.Write32(0x328, 1);
+            settled.dma.Write32(0x328, 1);
+        }
+        if ((status & 8) && rng() % (autobuffer ? 40 : 400) == 0) {
+            for (auto* rig : {&every, &settled}) rig->dma.Write32(0x308, 0), rig->dma.Write32(0x348, 0);
+            second.reset();
+        } else if (!(status & 8) && !second && rng() % 4 == 0) {
+            MdmaRig::Shape t{};
+            t.x1 = 1 + rng() % 8;
+            t.y1 = 1 + rng() % 60;
+            const u32 total = t.x1 * t.y1;
+            t.x2 = 1 + rng() % total;
+            while (total % t.x2) --t.x2;
+            t.y2 = total / t.x2;
+            t.from = (rng() % 0x400) * 4;
+            t.to = 0x2000 + (rng() % 0x200) * 4;
+            t.destFirst = rng() % 2;
+            t.interrupt = rng() % 4 != 0;
+            t.eachRow = rng() % 4 == 0;
+            t.autobuffer = autobuffer = rng() % 8 == 0;
+            every.Arm(t);
+            settled.Arm(t);
+            second.emplace(t, every.time.Cycles() + (rng() % 2 ? 0 : rng() % 100));
+            ++transfers;
+            rows += t.y1;
+        }
+        // Cycle by cycle: the reference is serviced at each, the settling
+        // DMA where it asks to be, and their interrupt levels agree at each.
+        for (uint64_t i = 1 + rng() % 200; i; --i) {
+            if (second && every.time.Cycles() >= second->second) {
+                every.Arm(second->first, true);
+                settled.Arm(second->first, true);
+                second.reset();
+            }
+            every.time.Retire(1);
+            every.dma.ProcessWithInterrupt(-1);
+            settled.time.Retire(1);
+            if (settled.dma.NeedsService(settled.time.Nanoseconds())) {
+                settled.dma.ProcessWithInterrupt(-1);
+                ++services;
+            }
+            Require(every.level == settled.level, "settling MDMA: levels differ, " + where(step));
+        }
+    }
+    // Rows no access has asked for yet are still to move: memory is behind
+    // until a service, the guest's only view of them not being through the DMA.
+    settled.dma.ProcessWithInterrupt(-1);
+    for (u32 i = 0; i < 0x4000; i += 4)
+        Require(every.ram.Read32(i) == settled.ram.Read32(i), "seed " + std::to_string(seed) + ": settled memory differs");
+    Require(transfers > 100 && reads > 1000, "the guest ran transfers and read their counts");
+    // Destination rows that interrupt (DI_SEL) need theirs: no closer bound.
+    Require(services < rows, "settling MDMA: fewer services than source rows");
+}
+
+// The synth's copy, as the firmware makes it: the destination armed first
+// (99-word rows, 40 of them, an interrupt at the end), then the source
+// (2-word rows) 60 cycles later, IRQ_STATUS polled every few cycles and
+// acknowledged. A transfer takes four services -- after each arming write,
+// at the source's end and at the destination's -- not one per source row.
+static void MdmaSynthCopyServices() {
+    MdmaRig rig;
+    uint64_t services = 0;
+    constexpr int kTransfers = 20;
+    for (int n = 0; n < kTransfers; ++n) {
+        const MdmaRig::Shape copy{0, 0x8000, 2, 1980, 99, 40, true, true, false, false};
+        rig.Arm(copy);
+        for (int cycles = 0; !(rig.dma.Read32(0x328) & 1); cycles += 5) {
+            if (cycles == 60) rig.Arm(copy, true);
+            rig.time.Retire(5);
+            if (rig.dma.NeedsService(rig.time.Nanoseconds())) {
+                rig.dma.ProcessWithInterrupt(-1);
+                ++services;
+            }
+        }
+        Require(rig.level == 1, "synth copy: the transfer's interrupt");
+        rig.dma.Write32(0x328, 1);
+    }
+    for (u32 i = 0; i < 3960 * 4; i += 4) Require(rig.ram.Read32(0x8000 + i) == rig.ram.Read32(i), "synth copy: the copy");
+    Require(services <= 4 * kTransfers, "synth copy: services per transfer: " + std::to_string(services));
 }
 
 // SPORT0 audio through DMA channels 3 (receive) and 4 (transmit), autobuffer.
@@ -768,6 +904,8 @@ int main() {
     for (uint32_t seed = 1; seed <= 20; ++seed) NfcMatchesPolling(seed);
     for (u32 irqmask : {0x1Fu, 0x17u, 0x16u, 0x00u}) NfcPioMatchesPolling(irqmask);
     for (uint32_t seed = 1; seed <= 10; ++seed) MdmaPollingMatchesPolling(seed);
+    for (uint32_t seed = 1; seed <= 10; ++seed) MdmaSettlesLikeEveryCycle(seed);
+    MdmaSynthCopyServices();
     for (uint32_t seed = 1; seed <= 10; ++seed) AudioMatchesPolling(seed);
     SportTransmitDeliversTheBuffer(2);
     SportTransmitDeliversTheBuffer(6);
