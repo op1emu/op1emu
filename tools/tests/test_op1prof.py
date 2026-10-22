@@ -956,6 +956,44 @@ def test_compile_report_ranks_blocks_and_counts_retranslations():
     assert compilation.codegen(compilation.translations(other))["digest"] != shape["digest"]
 
 
+def _tiered_trace():
+    """A tier-0 translation, a promotion on the CPU thread, and one on the
+    JIT worker: its lift and load on the CPU thread, its work on tid 2."""
+    t = lambda pc, ts, cpu, h, **args: {"name": "translate", "ph": "X", "ts": ts, "dur": 1.0,
+                                        "args": {"pc": pc, "ok": True, "cpu_ns": cpu, "ir_insns": 10, "ir_blocks": 1,
+                                                 "object_bytes": 40, "object_hash": h, **args}}
+    return {"schema": "op1.trace.v4", "dropped": 0, "traceEvents": [
+        {"name": "a", "cat": "mark", "ts": 0.0, "args": {"wall_ns": 0, "thread_cpu_ns": 0, "process_cpu_ns": 0}},
+        t(0x100, 1.0, 1_000_000, "aa", tier=0),
+        t(0x200, 3.0, 1_000_000, "bb", tier=0),
+        t(0x100, 5.0, 4_000_000, "cc", tier=1),                       # promoted on the CPU thread
+        t(0x200, 7.0, 500_000, "0000000000000000", tier=1, part="lift"),
+        {"name": "translate-bg", "cat": "jit", "ph": "X", "pid": 1, "tid": 2, "ts": 8.0, "dur": 5.0,
+         "args": {"pc": 0x200, "ok": True, "cpu_ns": 5_000_000, "discarded": False}},
+        t(0x200, 14.0, 250_000, "dd", tier=1, part="link"),
+        {"name": "b", "cat": "mark", "ts": 20.0,
+         "args": {"wall_ns": 20_000, "thread_cpu_ns": 10_000_000, "process_cpu_ns": 16_000_000}},
+    ]}
+
+
+def test_a_jit_worker_is_reported_apart_from_the_cpu_thread():
+    from op1prof import compilation
+    data = _tiered_trace()
+    p = trace.phase(data, "a", "b")
+    assert p.compile_cpu_ms == pytest.approx(6.75)       # every translate span on the CPU thread, the lift included
+    assert p.translations == 4                            # a background lift is no translation of its own
+    assert p.bg_compile_cpu_ms == pytest.approx(5.0) and p.bg_translations == 1
+    assert p.jit_cpu_ms == pytest.approx(11.75)
+    assert p.other_threads_cpu_ms == pytest.approx(1.0)   # process - CPU thread - worker
+    shape = compilation.codegen(compilation.translations(data))
+    assert shape["translations"] == 4 and shape["distinct_code"] == 4   # the lift made no code
+    assert compilation.has_shape(compilation.translations(data))
+    text = compilation.report(data, None, 10, census.Symbols(None))
+    assert "background: 1 promotions on the worker, 0.005 s" in text
+    assert "tier 0 2 translations" in text and "tier 1 2 translations" in text
+    assert "translated again: 0 blocks" in text           # promotions are no retranslations
+
+
 def test_unknown_hashes_and_failed_translations_give_no_fingerprint():
     from op1prof import compilation
     spans = lambda *hashes: [compilation.Translation(pc=i, begin_us=i, cpu_ns=1, ok=h != "failed", ir_insns=1,
