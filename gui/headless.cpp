@@ -232,9 +232,6 @@ void HeadlessFrontend::Execute(const std::string& line, Clock::time_point now) {
 }
 
 void HeadlessFrontend::PollEvents(Clock::time_point now) {
-    // This callback drives PORTG3 frame sync; removing it can leave guest
-    // display code waiting forever even though we do not render its pixels.
-    if (frameCallback_) frameCallback_(*this);
     if (now < resumeAt_ || shouldClose_) return;
     if (releaseAtResume_) {
         OnKeyReleased(releaseAtResume_->first, releaseAtResume_->second);

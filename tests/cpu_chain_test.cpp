@@ -10,9 +10,12 @@
 #include "mmr.h"
 #include "../ext/bcore/src/cec.h"
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <thread>
@@ -42,7 +45,7 @@ struct NoFlash : NandFlash {
 
 class TestCpu : public BlackFinCpu {
 public:
-    explicit TestCpu(bool chain) : BlackFinCpu(true) {
+    explicit TestCpu(bool chain, bool deterministic = true) : BlackFinCpu(deterministic) {
         cpuThread_.store(std::this_thread::get_id());
         AttachNandFlash(std::make_shared<NoFlash>());
         SetChaining(chain);
@@ -102,8 +105,9 @@ struct Outcome {
     unsigned runs;
 };
 
-static Outcome Scenario(bool chain, Loop loop, uint64_t dueNs, bool timer) {
-    TestCpu cpu(chain);
+static Outcome Scenario(bool chain, Loop loop, uint64_t dueNs, bool timer, bool deterministic = true,
+                        const std::function<void(TestCpu&)>& started = {}) {
+    TestCpu cpu(chain, deterministic);
     auto& emu = cpu.GetEmulator();
     Write(emu, kCode, kPrologue);
     Write(emu, kIvg15, kIvg15Entry);
@@ -141,6 +145,7 @@ static Outcome Scenario(bool chain, Loop loop, uint64_t dueNs, bool timer) {
     bool done = false;
     cpu.QueueEvent([&] { done = true; }, std::chrono::nanoseconds(dueNs));
     cpu.SetPC(kCode);
+    if (started) started(cpu);
     unsigned runs = 0;
     while (!done && runs < 20000000) {
         cpu.Run();
@@ -188,6 +193,35 @@ static void IdleTakesItsInterrupt() {
     Require(cpu.Time().Cycles() == raised, "an IDLE woken by the interrupt taken after its block waits no more");
 }
 
+// Real-time mode (BlackFinCpu(false)) runs the guest as deterministic mode
+// does, but no faster than the host's clock: an idle loop's 30 ms of guest
+// time take 30 ms. A key from another thread meanwhile reaches the guest at
+// about the guest time of its wall time, not after a wait it was queued in
+// (it ends that wait early, as a wakeup without an interrupt would).
+static void RealTimeIdleKeepsToTheHostClock() {
+    using Clock = std::chrono::steady_clock;
+    constexpr uint64_t kDueNs = 30000000, kKeyNs = 10000000;
+    const auto deterministic = Scenario(true, Loop::Idle, kDueNs, false);
+    Clock::time_point start;
+    const auto paced = Scenario(true, Loop::Idle, kDueNs, false, false, [&](TestCpu&) { start = Clock::now(); });
+    const auto took = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count();
+    Require(took >= int64_t(kDueNs) - 2000000, "30 ms of guest time take about 30 ms on the host's clock");
+    Require(paced.state == deterministic.state, "real-time mode executes what deterministic mode does");
+
+    std::thread key;
+    std::atomic<int64_t> keyedNs{-1};
+    Scenario(true, Loop::Idle, kDueNs, false, false, [&](TestCpu& cpu) {
+        start = Clock::now();
+        key = std::thread([&] {
+            std::this_thread::sleep_until(start + std::chrono::nanoseconds(kKeyNs));
+            cpu.QueueEvent([&] { keyedNs = int64_t(cpu.Time().Nanoseconds()); });
+        });
+        // A late key thread holds the CPU up here rather than outliving it.
+        cpu.QueueEvent([&] { key.join(); }, std::chrono::nanoseconds(kDueNs - 1000000));
+    });
+    Require(keyedNs >= 0 && keyedNs < int64_t(kKeyNs) + 6000000, "the key arrives within a few ms of its wall time");
+}
+
 int main() {
     // Isolate OTP creation performed by BlackFinCpu's constructor.
     char directory[] = "/tmp/op1-cpu-chain-test-XXXXXX";
@@ -195,6 +229,7 @@ int main() {
     auto original = std::filesystem::current_path();
     std::filesystem::current_path(directory);
     IdleTakesItsInterrupt();
+    RealTimeIdleKeepsToTheHostClock();
     unsigned pairs = 0;
     uint64_t plainRuns = 0, chainedRuns = 0, plainLoopRuns = 0, chainedLoopRuns = 0;
     uint64_t plainQuietRuns = 0, chainedQuietRuns = 0;

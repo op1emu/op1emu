@@ -11,9 +11,9 @@ public:
         keyEventCallback = callback;
     }
 
-    // A key event for guest time delayNs after the CPU next looks (with
-    // --deterministic, one queued before the CPU starts is exactly that far
-    // into the run). Without a timed callback, at once.
+    // A key event for guest time delayNs after the CPU next looks (one queued
+    // before the CPU starts is exactly that far into the run). Without a timed
+    // callback, at once.
     void SetTimedKeyEventCallback(const std::function<void(int, int, bool, uint64_t)>& callback) {
         timedKeyEventCallback = callback;
     }

@@ -62,9 +62,6 @@ public:
     // Display interface
     void Initialize(int rows, int lines) override;
     void UpdateRowBuffer(int x, int y, const void* data, int length) override;
-    void SetOnFrameStartCallback(const std::function<void(Display&)>& callback) override {
-        onFrameStartCallback_ = callback;
-    }
     void RenderFramebuffer();
     void PollEvents();
     bool ShouldClose() const;
@@ -93,7 +90,6 @@ private:
     int rotation_ = 90;  // Rotation in degrees
     bool dirty_ = false;
     std::mutex framebufferMutex_;  // Protect framebuffer access
-    std::function<void(Display&)> onFrameStartCallback_;
 
     UIConfig uiConfig_;
     int windowWidth_ = 0;

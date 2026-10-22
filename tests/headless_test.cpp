@@ -34,21 +34,17 @@ struct Pipe {
 // Only one CPU exists in this process (bcore's CEC state is process-global).
 class TestCpu : public BlackFinCpu {
 public:
-    void Drain() { ProcessEvents(); ProcessEvents(); }
+    // Takes the inbox, then lets the guest time its 1 ns delay passes.
+    void Drain() {
+        ProcessEvents();
+        time_.Retire(1);
+        ProcessEvents();
+    }
     GPIOPinLevel Pin(int bank, int index) { return gpioExpanders.at(bank)->GetPinOutput(index); }
     void EnablePlayInterrupt() {
         const u8 command[] = {0x04, 1 << 2}; // MCP23017 GPINTENA, play pin
         Require(gpioExpanders[5]->Write(command, sizeof(command)), "enable key interrupt over I2C");
         gpioExpanders[5]->Stop();
-    }
-    void CheckFramePulse(HeadlessFrontend& frontend, HeadlessFrontend::Clock::time_point now) {
-        portG->Write32(0x40, 1 << 3); // enable frame-sync input
-        portG->SetPinInput(3, GPIOPinLevel::High);
-        frontend.PollEvents(now);
-        Drain();
-        Require(portG->GetPinOutput(3) == GPIOPinLevel::Low, "headless frame starts PORTG3 pulse");
-        for (int i = 0; i < 1000; ++i) ProcessEvents();
-        Require(portG->GetPinOutput(3) == GPIOPinLevel::High, "CPU queue completes delayed frame pulse");
     }
 };
 
@@ -76,9 +72,7 @@ int main() {
         Pipe pipe;
         HeadlessFrontend frontend(config, pipe.fds[0]);
         std::vector<Event> events;
-        int frames = 0;
         frontend.SetKeyEventCallback([&](int bank, int pin, bool pressed) { events.emplace_back(bank, pin, pressed); });
-        frontend.SetOnFrameStartCallback([&](Display&) { ++frames; });
         frontend.Initialize(320, 160);
         frontend.UpdateRowBuffer(0, 0, nullptr, 0);
         pipe.Send("# comment\r\npress shift\nwait 50\ntap f3# 100\nrelease shift\nquit");
@@ -86,7 +80,7 @@ int main() {
         frontend.PollEvents(start);
         Require(events == std::vector<Event>{{5, 6, true}}, "press maps to shared UI wiring");
         frontend.PollEvents(start + 49ms);
-        Require(events.size() == 1 && frames == 2, "wait preserves frame sync without executing next command");
+        Require(events.size() == 1, "wait does not execute the next command early");
         frontend.PollEvents(start + 50ms);
         Require(events.back() == Event{3, 13, true}, "sharp note is not a comment");
         frontend.PollEvents(start + 149ms);
@@ -99,12 +93,11 @@ int main() {
     {
         Pipe pipe;
         HeadlessFrontend frontend(config, pipe.fds[0]);
-        int keys = 0, frames = 0;
+        int keys = 0;
         frontend.SetKeyEventCallback([&](int, int, bool) { ++keys; });
-        frontend.SetOnFrameStartCallback([&](Display&) { ++frames; });
         pipe.Send("tap pl");
         frontend.PollEvents(start);
-        Require(keys == 0 && frames == 1, "partial line does not block or execute");
+        Require(keys == 0, "partial line does not block or execute");
         pipe.Send("ay\n");
         frontend.PollEvents(start + 16ms);
         pipe.End();
@@ -233,13 +226,11 @@ int main() {
         Pipe pipe;
         HeadlessFrontend frontend(config, pipe.fds[0]);
         frontend.Initialize(4, 2);
-        int frames = 0;
-        frontend.SetOnFrameStartCallback([&](Display&) { ++frames; });
         pipe.Send("wait-frames 2\nvolume 7\n");
         frontend.PollEvents(start);
         FeedRows(frontend, 4, 0, 2);
         frontend.PollEvents(start + 16ms);
-        Require(frontend.SensorVersion() == 0 && frames == 2, "wait-frames holds later commands, frame sync continues");
+        Require(frontend.SensorVersion() == 0, "wait-frames holds later commands");
         FeedRows(frontend, 4, 0, 2);
         frontend.PollEvents(start + 32ms);
         Require(frontend.SensorVersion() == 1 && frontend.GetSensors().volume == 7, "wait-frames resumes after N new frames");
@@ -283,7 +274,6 @@ int main() {
         frontend->PollEvents(start + 116ms);
         cpu.Drain();
         Require(cpu.Pin(5, 2) == GPIOPinLevel::High, "CPU queue applies timed release");
-        cpu.CheckFramePulse(*frontend, start + 132ms);
     }
     std::filesystem::current_path(original);
     std::filesystem::remove_all(directory);

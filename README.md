@@ -51,7 +51,7 @@ quit
 `shift`, `c4`, `f3#`, and encoder **push** buttons `enc1` through `enc4`.
 `press KEY` holds a key until `release KEY`; use these for chords.
 `tap KEY [MS]` holds and releases it (default 100 ms).
-`wait MS` delays subsequent commands while emulation and frame sync continue.
+`wait MS` delays subsequent commands while emulation continues.
 Durations are integer wall-clock milliseconds, from 1 to 86400000, serviced at
 the host loop cadence. They are not deterministic guest-cycle timestamps;
 short presses can be missed while firmware is busy compiling or booting.
@@ -113,44 +113,55 @@ when firmware handled it. NAND writes are persistent unless `--nand-snapshot` is
 selected. When comparing timings, use the same frontend mode for every run:
 removing GL swaps and host audio changes host overhead and frame cadence.
 
-## Deterministic runs
+## Guest time
 
-By default the guest sees host time: CYCLES, the core timer, the GP timers, SPORT
-sample pacing and the RTC all follow the host's clock. A slower or busier host
-therefore makes the guest see more time pass per instruction (more timer
-interrupts, more polling), and no two boots do the same work. That is fine for
-playing the instrument and useless for measuring the emulator.
+Guest time comes from what the core executed: one cycle per instruction packet
+at 400 MHz (an issue model with no pipeline, cache or PLL timing), plus the
+cycles an IDLE waits. CYCLES, the core timer, the GP timers, SPORT sample pacing,
+the panel's frame sync and the RTC all follow it.
 
-`--deterministic` takes guest time from what the core executed instead: one
-cycle per instruction packet at 400 MHz (an issue model with no pipeline, cache
-or PLL timing). With the same NAND, OTP, input script and RTC epoch, every run
-executes the same instructions and draws the same frames, however fast or loaded
-the host is.
+- The core timer and SPORT run at their programmed rates.
+- Panel frame sync (TE, PORTG3) is a 60 Hz guest-time oscillator.
+- An IDLE waits for its wakeup: guest time goes on to the host's next device or
+  event time without executing anything (CYCLES counts through it, as on
+  hardware), unless a system interrupt SIC_IWR enables is already asserted.
+  `--no-idle-wait` runs it as a NOP instead.
+- A script's leading `accel`/`volume` commands are applied before the CPU starts.
+  After `at MS`, key presses are for guest time MS; those before the script's
+  first wait are queued before the CPU starts.
+
+By default the emulator keeps guest time from running ahead of the host's clock,
+so animation and audio go at the device's pace: when the guest gets more than
+1 ms ahead, the CPU thread sleeps until the clock catches up. A key or USB
+traffic arriving meanwhile ends the sleep, so the guest sees it about when it
+came. A guest that falls behind (while the JIT compiles, or on a busy host)
+runs flat out to catch up, by at most 100 ms: the rest of a longer stall is let
+off rather than rushed through. The RTC starts at the host's calendar time when
+the emulator starts, so it falls behind by the setup before the CPU runs and by
+what was let off; `--rtc-epoch SECONDS` sets another start.
+
+### Deterministic runs
+
+Keys and USB arrive on host time, and the random accelerometer feed sends a
+sample on every 16 ms host poll, so no two default runs do the same work.
+`--deterministic` runs as fast as the host allows instead, not paced to its
+clock. With the same NAND, OTP, input script and RTC epoch, every run executes
+the same instructions and draws the same frames, however fast or loaded the
+host is. Use it, headless, for measurement and regression runs.
 
 ```bash
 ./build/op1emu nand.bin --nand-snapshot --headless --deterministic --input-script boot.txt
 ```
 
-- Execution is not paced to real time: it runs as fast as the host allows, which
-  is currently much slower than real time, so animation and audio are slow.
-  Use it headless, for measurement and regression runs.
-- The core timer and SPORT run at their programmed rates. Host-time mode divides
-  both by 10 to make up for an emulator slower than real time.
-- Panel frame sync (TE, PORTG3) is a 60 Hz guest-time oscillator instead of the
-  frontend's 16 ms host poll.
-- An IDLE waits for its wakeup: guest time goes on to the host's next device or
-  event time without executing anything (CYCLES counts through it, as on
-  hardware), unless a system interrupt SIC_IWR enables is already asserted.
-  `--no-idle-wait` runs it as a NOP instead, as host-time mode always does.
-- The RTC starts at 2024-01-01 00:00 UTC; `--rtc-epoch SECONDS` sets another start
-  (only with `--deterministic`).
-- A script's leading `accel`/`volume` commands are applied before the CPU starts.
-  The random accelerometer feed sends one sample then (and one per later script
-  change) instead of one every 16 ms, so it no longer depends on host speed.
-  Key presses, `wait` and `tap` are host-timed, so a run that presses keys that
-  way is not repeatable; after `at MS` they are for guest time MS instead, and
-  those before the script's first wait are queued before the CPU starts, so a
-  run that presses keys that way is (`tools/op1prof/scripts/synth-keys.txt`).
+- Animation and audio run faster than on the device whenever the host is.
+- The RTC starts at 2024-01-01 00:00 UTC unless `--rtc-epoch` says otherwise.
+- The random accelerometer feed sends one sample when it starts (and one per
+  later script change) instead of one every 16 ms.
+- Key presses, `wait` and `tap` are host-timed, so a run that presses keys that
+  way is not repeatable; keys after `at MS` are, those before the script's first
+  wait queued before the CPU starts (`tools/op1prof/scripts/synth-keys.txt`).
+- The JIT's second compilation of a hot block is used a fixed number of packets
+  after it was asked for (`--tier-publish-after`), not as soon as it is done.
 
 Frontend regressions (including the CPU input event queue), the time model
 tests and an end-to-end smoke run of `op1emu` on a synthetic LDR (no NAND or

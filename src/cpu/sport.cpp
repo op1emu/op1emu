@@ -79,17 +79,15 @@ SPORT::SPORT(u32 baseAddr, int sportNum, const TimeSource& time)
 }
 
 uint64_t SPORT::NextSampleNs(uint64_t startNs, uint64_t delivered, NextSample& memo) const {
-    // DMARead/DMAWrite find floor(floor(elapsed * rate / 1e9) / slowdown)
-    // samples due, which exceeds `delivered` exactly when
-    // elapsed * rate >= (delivered + 1) * slowdown * 1e9. The DMA asks after
-    // every service and the answer changes once per sample: kept.
-    const uint64_t slowdown = time_.Slowdown();
-    if (memo.valid && memo.startNs == startNs && memo.delivered == delivered && memo.slowdown == slowdown)
-        return memo.at;
-    const unsigned __int128 needed = (unsigned __int128)(delivered + 1) * slowdown * 1'000'000'000ULL;
+    // DMARead/DMAWrite find floor(elapsed * rate / 1e9) samples due, which
+    // exceeds `delivered` exactly when elapsed * rate >= (delivered + 1) * 1e9.
+    // The DMA asks after every service and the answer changes once per
+    // sample: kept.
+    if (memo.valid && memo.startNs == startNs && memo.delivered == delivered) return memo.at;
+    const unsigned __int128 needed = (unsigned __int128)(delivered + 1) * 1'000'000'000ULL;
     const unsigned __int128 elapsed = (needed + sampleRateHz_ - 1) / sampleRateHz_;
     const unsigned __int128 at = startNs + elapsed;
-    memo = {true, startNs, delivered, slowdown, at > UINT64_MAX ? UINT64_MAX : uint64_t(at)};
+    memo = {true, startNs, delivered, at > UINT64_MAX ? UINT64_MAX : uint64_t(at)};
     return memo.at;
 }
 
@@ -148,9 +146,6 @@ u32 SPORT::DMARead(int x, int y, void* dest, u32 length)
     // How many samples are due based on elapsed time?
     uint64_t elapsedNs = time_.Nanoseconds() - dmaRxStartNs_;
     uint64_t totalDue = (elapsedNs * sampleRateHz_) / 1'000'000'000ULL;
-    // FIXME: wall time runs the emulator slower than real time, so it divides
-    // the rate by TimeSource::kWallSlowdown; deterministic guest time does not.
-    totalDue = totalDue / time_.Slowdown();
     uint64_t available = (totalDue > totalRxSamplesDelivered_)
                          ? (totalDue - totalRxSamplesDelivered_) : 0;
 
@@ -173,9 +168,6 @@ uint64_t SPORT::TxAvailable(uint64_t requestedSamples) const
     // How many samples are due based on elapsed time?
     uint64_t elapsedNs = time_.Nanoseconds() - dmaTxStartNs_;
     uint64_t totalDue = (elapsedNs * sampleRateHz_) / 1'000'000'000ULL;
-    // FIXME: wall time runs the emulator slower than real time, so it divides
-    // the rate by TimeSource::kWallSlowdown; deterministic guest time does not.
-    totalDue = totalDue / time_.Slowdown();
     uint64_t available = (totalDue > totalTxSamplesDelivered_)
                          ? (totalDue - totalTxSamplesDelivered_) : 0;
     return std::min(available, requestedSamples);
@@ -184,10 +176,7 @@ uint64_t SPORT::TxAvailable(uint64_t requestedSamples) const
 u32 SPORT::DMAWriteTake(u32 length) const
 {
     // DMAWrite's early returns, then its available samples. Before the first
-    // transfer it only starts the clock: nothing is due yet. In wall mode
-    // time moves on between this and the DMAWrite after it, which may then
-    // take more: no bound.
-    if (!time_.Deterministic()) return length;
+    // transfer it only starts the clock: nothing is due yet.
     if (!transmitEnabled || !dmaTxActive_) return 0;
     const u32 frameSize = (transmitWordLength > 16 ? 4 : 2) * (transmitStereoFrameSync ? 2 : 1);
     return u32(TxAvailable(length / frameSize) * frameSize);

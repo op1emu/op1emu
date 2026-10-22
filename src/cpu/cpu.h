@@ -1,6 +1,7 @@
 #pragma once
 
 #include "emu.h"
+#include "realtime_pacer.h"
 #include "time_source.h"
 #include <array>
 #include <atomic>
@@ -56,7 +57,8 @@ class BcoreEventSink;
 
 class BlackFinCpu : public CpuInterface {
 public:
-    // deterministic selects the guest-time model; see TimeSource.
+    // deterministic: as fast as the host allows, not paced to its clock; see
+    // TimeSource.
     explicit BlackFinCpu(bool deterministic = false);
     ~BlackFinCpu() override;
 
@@ -85,8 +87,8 @@ public:
     // Core::set_loop_blocks; on by default). The same results either way.
     // Before the first Run().
     void SetLoopBlocks(bool loop);
-    // Whether an IDLE waits for a wakeup (deterministic mode, on by
-    // default) or does nothing (wall mode). Before the first Run().
+    // Whether an IDLE waits for a wakeup (on by default) or does nothing.
+    // Before the first Run().
     void SetIdleWaits(bool waits);
     // Loop blocks that wait skip to their last iteration (bcore's
     // Core::set_steady_skip: 0 off, 1 dry, 2 on). Before the first Run().
@@ -190,7 +192,7 @@ public:
     profiling::MemoryCensus& EnableMemoryCensus();
     const CpuState& State() const { return *cpuState_; }
 #endif
-    // Deterministic mode only: RTC calendar time at guest time zero.
+    // RTC calendar time at guest time zero.
     void SetRtcEpoch(std::chrono::system_clock::time_point epoch) { time_.SetEpoch(epoch); }
 
 protected:
@@ -265,14 +267,20 @@ protected:
     void HostWork(bool would);
     // After an IDLE: guest time to the next wakeup (see cpu.cpp).
     void Wait();
+    // Real-time mode: guest time no further ahead of the host's clock (see
+    // cpu.cpp); whether another thread handed the CPU work.
+    uint64_t Pace(uint64_t targetNs);
+    bool OffThreadWork();
+    RealtimePacer pacer_;
+    // HostWork() paces the guest every kPaceCycles of guest time.
+    static constexpr uint64_t kPaceCycles = TimeSource::kHz / 1000;
+    uint64_t nextPaceCycles_ = 0;
     uint8_t idleWake_ = 0;  // SIC::Wakeup(), for generated code (CpuState::idle_wake)
     bool chaining_ = false;
     // A block is running (Core::run): what a device access queues now was
     // not in the run's budget.
     bool inRun_ = false;
     static constexpr uint32_t kMaxChainPackets = 1u << 24;
-    // Wall mode: no packet count says when a device is due.
-    static constexpr uint32_t kWallChainPackets = 4096;
     // The GP timers tick every kCyclesPerTimerTick guest cycles (see Run()).
     static constexpr uint64_t kCyclesPerTimerTick = 10000;
     static constexpr uint64_t kMaxCatchupTicks = 64;

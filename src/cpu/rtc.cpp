@@ -106,7 +106,7 @@ RTC::TimePoint RTC::NextStatChange(TimePoint now) const {
 bool RTC::NeedsTick() const {
     if (written_) return true;
     const auto now = time_.SystemNow();
-    // A host clock set back (wall mode) can change the calendar any time.
+    // An epoch set back (TimeSource::SetEpoch) can change the calendar any time.
     return now >= nextChange_ || now < lastTick_;
 }
 
@@ -124,8 +124,7 @@ void RTC::Tick() {
         CountServiceWork(1);
     }
 
-    // Check for second tick. One reading of the clock for the whole tick: in
-    // wall mode a second could otherwise pass between two.
+    // Check for second tick. One reading of the clock for the whole tick.
     const TimePoint now = time_.SystemNow();
     u32 currentStat = StatAt(now);
     auto currentStatTime = BlackfinToTime(currentStat);

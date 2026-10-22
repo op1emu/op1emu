@@ -17,7 +17,7 @@ from . import machine
 from .marks import Mark, parse_mark
 
 REPO = Path(__file__).resolve().parents[2]
-# Fixed sensors, applied before the CPU starts (--deterministic). The long wait
+# Fixed sensors, applied before the CPU starts. The long wait
 # keeps the frontend idle; --profile-until ends the run.
 DEFAULT_SCRIPT = "accel 100 -100 500\nvolume 128\nwait 86400000\n"
 # What run() sets on every run. The emulator keeps the last value of a

@@ -27,9 +27,6 @@ public:
     // the pixels: firmware rewrites PPI_CONTROL without starting a new frame.
     void Initialize(int width, int height) override;
     void UpdateRowBuffer(int x, int y, const void* data, int length) override;
-    void SetOnFrameStartCallback(const std::function<void(Display&)>& callback) override {
-        frameCallback_ = callback;
-    }
     void PollEvents(Clock::time_point now = Clock::now());
     bool ShouldClose() const { return shouldClose_; }
 
@@ -52,7 +49,6 @@ private:
     void Execute(const std::string& line, Clock::time_point now);
     using Pin = std::pair<int, int>;
     std::map<std::string, Pin> keys_;
-    std::function<void(Display&)> frameCallback_;
     int inputFd_ = -1;
     bool eof_ = false;
     bool shouldClose_ = false;

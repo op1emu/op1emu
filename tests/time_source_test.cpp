@@ -13,7 +13,7 @@ static void Require(bool ok, const char* message) {
 int main() {
     {
         TimeSource time(true);
-        Require(time.Deterministic() && time.Slowdown() == 1, "deterministic mode needs no slowdown");
+        Require(time.Deterministic(), "deterministic mode");
         Require(time.Cycles() == 0 && time.Nanoseconds() == 0, "guest time starts at zero");
         time.Retire(3);
         time.Retire(397);
@@ -39,21 +39,22 @@ int main() {
                 "fixed default epoch");
     }
     {
+        // Real-time mode keeps the same guest time; only its RTC starts at
+        // the host's calendar time.
+        const auto before = TimeSource::SystemClock::now();
         TimeSource time(false);
-        Require(!time.Deterministic() && time.Slowdown() == TimeSource::kWallSlowdown, "wall mode keeps its slowdown");
-        time.Retire(1000000);
-        Require(time.Packets() == 1000000, "wall mode still counts packets");
-        Require(time.Cycles() < 1000000, "wall mode does not take time from packets");
-    }
-    {
-        TimeSource time(false);
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        time.StartWallClock();
-        Require(time.Cycles() < 400 * 100000, "wall time starts at StartWallClock, not construction");
-        TimeSource guest(true);
-        guest.Retire(10);
-        guest.StartWallClock();
-        Require(guest.Cycles() == 10, "StartWallClock leaves deterministic time alone");
+        const auto after = TimeSource::SystemClock::now();
+        Require(!time.Deterministic(), "real-time mode");
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        Require(time.Cycles() == 0 && time.Nanoseconds() == 0, "host time passing is no guest time");
+        time.Retire(400);
+        Require(time.Cycles() == 400 && time.Nanoseconds() == 1000, "guest time from packets, as in deterministic mode");
+        Require(time.SystemNow() >= before + std::chrono::microseconds(1) &&
+                    time.SystemNow() <= after + std::chrono::microseconds(1),
+                "RTC time is the host's at construction plus guest time");
+        const auto epoch = TimeSource::SystemClock::time_point(std::chrono::seconds(1000));
+        time.SetEpoch(epoch);
+        Require(time.SystemNow() == epoch + std::chrono::microseconds(1), "an epoch given overrides it");
     }
     {
         PanelOscillator panel;

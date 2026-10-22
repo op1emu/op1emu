@@ -116,9 +116,6 @@ public:
         : inner_(std::move(inner)), profiler_(profiler) {}
     void Initialize(int width, int height) override;
     void UpdateRowBuffer(int x, int y, const void* data, int length) override;
-    void SetOnFrameStartCallback(const std::function<void(Display&)>& callback) override {
-        inner_->SetOnFrameStartCallback(callback);
-    }
 
 private:
     std::shared_ptr<Display> inner_;

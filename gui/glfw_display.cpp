@@ -267,9 +267,6 @@ void GLFWDisplay::RenderFramebuffer() {
 void GLFWDisplay::PollEvents() {
     glfwPollEvents();
     RenderFramebuffer();
-    if (onFrameStartCallback_) {
-        onFrameStartCallback_(*this);
-    }
 }
 
 bool GLFWDisplay::ShouldClose() const {

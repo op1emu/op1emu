@@ -361,24 +361,19 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
         return true;
     });
     // A chained block that accesses CYCLES sees it advance as this host's
-    // Run() writes it: from the packets in deterministic mode. In wall mode
-    // the next run would write a host clock that may lag behind, so CYCLES
-    // keeps the run's first value instead.
-    core_->set_host_cycles(deterministic);
+    // Run() writes it: from the packets.
+    core_->set_host_cycles(true);
     // An IDLE waits for its wakeup (Wait()) on guest time, but not while one
     // is already asserted (SIC::Wakeup): generated code reads the flag and
-    // runs on, as Wait() would. In wall mode, where the host's clock runs on
-    // regardless, it does nothing, as before.
+    // runs on, as Wait() would.
     sic->SetWakeFlag(&idleWake_);
-    core_->set_idle_waits(deterministic, &idleWake_);
+    core_->set_idle_waits(true, &idleWake_);
 #ifndef ENABLE_PROFILING
     // Block runs are counted for the profiler only (Profiler::AfterRun).
     core_->set_count_chained(false);
 #endif
     SetChaining(false);
     SetTierBackground(true);
-
-    time_.StartWallClock();
 }
 
 BlackFinCpu::~BlackFinCpu() {
@@ -423,8 +418,8 @@ HaltReason BlackFinCpu::Run() {
     // Events queued from this thread from now on are timed in guest time.
     if (cpuThread_.load(std::memory_order_relaxed) != std::this_thread::get_id())
         cpuThread_.store(std::this_thread::get_id(), std::memory_order_relaxed);
-    // Guest time at the start of this block: host time, or in deterministic
-    // mode the packets every earlier block executed (see TimeSource).
+    // Guest time at the start of this block: the packets every earlier block
+    // executed and the cycles IDLEs waited (see TimeSource).
     const uint64_t cyclesElapsed = time_.Cycles();
     SetBfinCycles(*cpuState_, cyclesElapsed);
 
@@ -481,10 +476,9 @@ HaltReason BlackFinCpu::Run() {
 #endif
     cpuState_->did_jump = false; // Clear jump flag set by bcore, since we handle it in the emulator loop
     HostWork(would);
-    // An IDLE in deterministic mode waits for its wakeup (Wait()), unless
-    // HostWork() just took an interrupt: that was it (it cleared the pending
-    // flag Wait() looks at).
-    if (cpuState_->idle && time_.Deterministic() && !cpuState_->did_jump) Wait();
+    // An IDLE waits for its wakeup (Wait()), unless HostWork() just took an
+    // interrupt: that was it (it cleared the pending flag Wait() looks at).
+    if (cpuState_->idle && !cpuState_->did_jump) Wait();
 #ifdef ENABLE_PROFILING
     if (would) {
         bool violated = false;
@@ -501,6 +495,13 @@ HaltReason BlackFinCpu::Run() {
 
 // The host's work between blocks, after one or after an IDLE's wait.
 void BlackFinCpu::HostWork(bool would) {
+    // Real-time mode: every millisecond of guest time or so, a guest running
+    // ahead of the host's clock waits for it. Before the devices and events,
+    // which then see what another thread handed in meanwhile.
+    if (!time_.Deterministic() && time_.Cycles() >= nextPaceCycles_) {
+        Pace(time_.Nanoseconds());
+        nextPaceCycles_ = time_.Cycles() + kPaceCycles;
+    }
 #ifdef ENABLE_PROFILING
     if (*cpuState_->cec_pending) ++hostWork_[kWorkCec];
 #endif
@@ -556,7 +557,7 @@ void BlackFinCpu::HostWork(bool would) {
         }
     }
 
-    if (time_.Deterministic()) ServicePanel();
+    ServicePanel();
     ProcessEvents();
     // Lines still high get latched again, and a latched interrupt is taken
     // before the next block.
@@ -592,7 +593,6 @@ uint32_t BlackFinCpu::ChainBudget(uint32_t pc) {
 #ifdef ENABLE_PROFILING
     chainReason_ = kChainDue;
 #endif
-    if (!time_.Deterministic()) return kWallChainPackets;
     // Packets are cycles while a run lasts: it retires one per cycle.
     const uint64_t due = DueCycles(ivg), now = time_.Cycles();
     return due <= now ? 0 : uint32_t(std::min<uint64_t>(due - now, kMaxChainPackets));
@@ -608,9 +608,9 @@ bool BlackFinCpu::HostHasWork(int ivg) const {
            (ivg != TWI::kIvg && s.twi->NeedsService(nowNs));
 }
 
-// Deterministic mode: the guest cycle of the host's next work between
-// blocks (a device's, an event's, the GP timers' tick, the core timer's
-// expiry), the earliest of them.
+// The guest cycle of the host's next work between blocks (a device's, an
+// event's, the GP timers' tick, the core timer's expiry), the earliest of
+// them.
 uint64_t BlackFinCpu::DueCycles(int ivg) {
     auto& s = serviced_;
     const uint64_t dmaNs = s.dma->IdleUntilNs();
@@ -641,7 +641,8 @@ uint64_t BlackFinCpu::DueCycles(int ivg) {
 
 // After a block that ended at an IDLE (bcore's CpuState::idle): the core
 // waits for a wakeup, and nothing runs until the host's next work is due
-// (DueCycles), so guest time goes there at once. CYCLES counts through it,
+// (DueCycles), so guest time goes there at once (in real-time mode, once the
+// host's clock is about there: Pace()). CYCLES counts through it,
 // as through a plain IDLE on hardware (only sleep mode stops CCLK), since it
 // follows the guest cycles (SetBfinCycles). The host then does that work, at
 // that time and before the next packet, as after a block that ended there.
@@ -659,8 +660,16 @@ void BlackFinCpu::Wait() {
     const int ivg = cec_current_ivg();
     if (HostHasWork(ivg) || *cpuState_->cec_pending || sic->Wakeup()) return;
     const uint64_t now = time_.Cycles();
-    const uint64_t due = std::min(DueCycles(ivg), now + kMaxChainPackets);
+    uint64_t due = std::min(DueCycles(ivg), now + kMaxChainPackets);
     if (due <= now) return;
+    // Real-time mode: no further than the host's clock allows, and on work
+    // another thread hands in meanwhile no further than the clock is: the
+    // guest sees a key about when it came, and runs on past the IDLE.
+    if (!time_.Deterministic()) {
+        const uint64_t dueNs = due * 5 / 2;
+        const uint64_t until = Pace(dueNs);
+        if (until < dueNs) due = std::max(now, TimeSource::CyclesAt(until));
+    }
     time_.Idle(due - now);
 #ifdef ENABLE_PROFILING
     ++idleWaits_;
@@ -668,6 +677,38 @@ void BlackFinCpu::Wait() {
     ++idleBy_[due == now + kMaxChainPackets ? kDueCap : dueSource_];
 #endif
     HostWork(false);
+}
+
+// Real-time mode: before guest time goes on to targetNs, the host's clock
+// must be no more than RealtimePacer::kAheadNs behind it. When it is, sleep
+// until the clock is there, so that the next sleep comes about kAheadNs of
+// guest time later, in slices: work from another thread (a key, USB) ends
+// the sleep. Returns how far guest time may go: targetNs, or on such work the
+// host clock's guest time if that is less.
+uint64_t BlackFinCpu::Pace(uint64_t targetNs) {
+    auto wallNs = [] {
+        return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count());
+    };
+    const uint64_t wall = wallNs();
+    pacer_.Sync(time_.Nanoseconds(), wall);
+    uint64_t clockNs = pacer_.GuestNsAt(wall);
+    if (targetNs <= clockNs + RealtimePacer::kAheadNs) return targetNs;
+    while (clockNs < targetNs) {
+        if (OffThreadWork()) return clockNs;
+        std::this_thread::sleep_for(std::chrono::nanoseconds(std::min(targetNs - clockNs, RealtimePacer::kSliceNs)));
+        clockNs = pacer_.GuestNsAt(wallNs());
+    }
+    return targetNs;
+}
+
+// Pace()'s caller then does it: ProcessEvents() takes the inbox,
+// ServiceDevices() the USB request, LatchLines() the line another thread
+// raised (so that flag is taken here). Not the guest's own USB accesses,
+// which would end every sleep while it polls the USB.
+bool BlackFinCpu::OffThreadWork() {
+    return inboxPending_.load(std::memory_order_acquire) || serviced_.usb->HostRequestPending() ||
+           offThreadLatch_.exchange(false);
 }
 
 void BlackFinCpu::SetChaining(bool chaining, bool dry) {
@@ -728,7 +769,7 @@ void BlackFinCpu::SetDmaSettling(bool on) { serviced_.dma->SetSettling(on); }
 
 uint64_t BlackFinCpu::SteadyIterations() const { return cpuState_->steady_iterations; }
 
-void BlackFinCpu::SetIdleWaits(bool waits) { core_->set_idle_waits(waits && time_.Deterministic(), &idleWake_); }
+void BlackFinCpu::SetIdleWaits(bool waits) { core_->set_idle_waits(waits, &idleWake_); }
 
 #ifdef ENABLE_PROFILING
 void BlackFinCpu::SetProfiler(Profiler* profiler) {
@@ -1051,8 +1092,7 @@ void BlackFinCpu::RaiseInterrupt(int ivg) {
 }
 
 // Runs the events due by now, in due order. An event that queues another
-// for now or earlier runs it in the same call (in wall mode the clock has
-// moved on by then, so it may wait for the next).
+// for now or earlier runs it in the same call.
 void BlackFinCpu::ProcessEvents() {
     const uint64_t now = time_.Nanoseconds();
     if (inboxPending_.load(std::memory_order_acquire)) {
@@ -1100,20 +1140,9 @@ void BlackFinCpu::ProcessEvents() {
 }
 
 void BlackFinCpu::AttachDisplay(const std::shared_ptr<Display>& display) {
+    // The frontend only presents pixels: TE comes from guest time
+    // (ServicePanel).
     ppi->AttachDisplay(display);
-    // Deterministic mode drives TE from guest time (ServicePanel); the
-    // frontend only presents pixels. Wall mode keeps the frontend's host poll.
-    if (time_.Deterministic()) return;
-    display->SetOnFrameStartCallback([this](Display& disp) {
-        // The end of the pulse is timed from its start on the CPU thread, so
-        // the pin is low for at least the next block.
-        this->QueueEvent([this]() {
-            this->portG->SetPinInput(3, GPIOPinLevel::Low);
-            this->QueueEvent([this]() {
-                this->portG->SetPinInput(3, GPIOPinLevel::High);
-            }, std::chrono::nanoseconds(1000));
-        });
-    });
 }
 
 void BlackFinCpu::AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash) {

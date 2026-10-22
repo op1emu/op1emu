@@ -37,8 +37,9 @@ on they include the mark-firing rule (`op1-mark-set-test`) and a profiling
 run on a synthetic LDR (`op1-profile-smoke`: marks, trace, cache flush,
 census, and options refused before the CPU starts). CI runs both.
 
-Measure with `--deterministic` (see the README): with host time, a slower
-host makes the guest do more work, so two runs never execute the same thing.
+Measure with `--deterministic` (see the README): by default the guest is
+paced to the host's clock and keys arrive on host time, so two runs never
+execute the same thing.
 
 ## Options
 
@@ -165,8 +166,8 @@ microseconds, the clock `perf record -k mono` uses.
   `jit_cpu_ms` adds it to `compile_cpu_ms`. In deterministic mode a
   promotion's code is used `--tier-publish-after` packets (default 2^23)
   after it was asked for, the CPU thread waiting for the worker if need be
-  (off-CPU time), so that every run does the same; in wall mode as soon as
-  the worker is done. `--jit-cpu N` puts the worker on CPU N (`op1prof`
+  (off-CPU time), so that every run does the same; by default as soon as the
+  worker is done. `--jit-cpu N` puts the worker on CPU N (`op1prof`
   pins the whole process to `--cpu` otherwise, worker included).
 - A tier-0 block whose instructions all have stencils (bcore's
   `Core::set_copy_patch`, on by default; `--no-copy-patch`) is copied
@@ -257,13 +258,9 @@ successor is not compiled returns. Chaining runs the guest's work block for
 block as before: every mark's counters, `runs` and `translated` included, are
 identical with `--no-chain`, which turns it off.
 
-That holds in deterministic mode (`--deterministic`), where guest time is
-packets and every due time is a packet count. In wall mode guest time is host
-time, which no packet count predicts, so a run chains at most 4096 packets
-whatever is due: the host sees an event or a timer up to as late as those
-packets take to run, as on a slower host. Wall mode never repeated a run's
-work to begin with; the dry run and its zero-violation result are for
-deterministic mode, and `--profile-chain-dry` requires it.
+Guest time is packets and every due time is a packet count, so that holds
+whether or not the run is paced to the host's clock; but only a
+`--deterministic` run repeats a run's work, so compare those.
 
 Census, probe and checksum runs count every block start, so they never
 chain; `--profile-until` stops chaining once its mark fires. Every other
@@ -1034,8 +1031,8 @@ compile, execution, off-CPU, translations) and stores it in `results.json`.
 Each rule comes from a result in the research line that was wrong until the
 rule was applied; the tool enforces what it can.
 
-- **Measure deterministic runs.** With host time, a slower host makes the guest
-  do more work, so two runs compare different things.
+- **Measure deterministic runs.** Paced to the host's clock (the default), a
+  run sleeps and takes keys on host time, so two runs compare different things.
 - **Gate on the workload, not just the frame.** Two bugs that dropped work
   looked like 6% and 5% speedups and drew the correct frame; only the packet
   count caught them. `ab` refuses a verdict when the workload moved, unless

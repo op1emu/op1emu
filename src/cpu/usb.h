@@ -112,6 +112,8 @@ public:
     bool NeedsService() const {
         return enabled && (touched_ || hostRequest_.load(std::memory_order_acquire));
     }
+    // The host's half of that: a request came in from the USB/IP loop.
+    bool HostRequestPending() const { return enabled && hostRequest_.load(std::memory_order_acquire); }
 
     u32 Read32(u32 offset) override {
         touched_ = true;

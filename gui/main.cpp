@@ -223,11 +223,12 @@ static int RunEmulator(int argc, char* argv[]) {
                   << " <nand_flash_file> [ldr_file] [--nand-rw|--nand-snapshot]\n"
                      "  --headless            No GLFW window or host audio device\n"
                      "  --input-script PATH   Read headless commands from PATH instead of stdin\n"
-                     "  --deterministic       Guest time from executed instructions, not host time:\n"
-                     "                        repeatable runs, as fast as the host allows\n"
-                     "  --rtc-epoch SECONDS   RTC time at boot with --deterministic (default 2024-01-01)\n"
+                     "  --deterministic       Run as fast as the host allows, not at the device's\n"
+                     "                        pace: repeatable runs, for measurement and tests\n"
+                     "  --rtc-epoch SECONDS   RTC time at boot (default: the host's; 2024-01-01\n"
+                     "                        with --deterministic)\n"
                      "  --no-chain            Return to the host after every guest block\n"
-                     "  --no-idle-wait        With --deterministic, run an IDLE as a NOP instead of\n"
+                     "  --no-idle-wait        Run an IDLE as a NOP instead of\n"
                      "                        letting guest time pass to the next wakeup\n"
                      "  --steady-skip MODE    on (default), dry or off: a loop whose iteration changed\n"
                      "                        nothing but its counters goes to its last iteration\n"
@@ -265,8 +266,7 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --profile-probes      Capture the marks file's probes (diagnostic)\n"
                      "  --profile-mark-digest Hashes of guest registers, CEC and RAM at every mark\n"
                      "  --profile-chain-dry   Blocks only report that they would chain; check that\n"
-                     "                        the host then has nothing to do ([chain] violations;\n"
-                     "                        with --deterministic)\n"
+                     "                        the host then has nothing to do ([chain] violations)\n"
                      "  --profile-dump-ir PCS Write the LLVM IR of blocks at these PCs (comma-separated hex)\n"
                      "  --profile-dump-dir D  Directory for those files (default ir)\n"
                      "  --profile-checksum-every N  Blocks between checksums (default 65536)\n"
@@ -274,8 +274,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --profile-trace-events N    Trace capacity in events (default 262144)\n"
                      "Headless commands (one per line):\n"
                      "  keys | press KEY | release KEY | tap KEY [MS] | wait MS | quit\n"
-                     "  at MS: later press/release/tap are for guest time MS (with --deterministic,\n"
-                     "         before the script's first wait: queued before the CPU starts)\n"
+                     "  at MS: later press/release/tap are for guest time MS (before the script's\n"
+                     "         first wait: queued before the CPU starts)\n"
                      "  accel X Y Z | accel random | volume 0..255\n"
                      "  wait-frames N [TIMEOUT_MS] | screenshot PATH.ppm\n"
                      "Keys are button names from gui/ui.json. Tap defaults to 100ms.\n"
@@ -285,11 +285,6 @@ static int RunEmulator(int argc, char* argv[]) {
     if (positional.size() > 2) throw std::runtime_error("Expected NAND and optional LDR paths");
     if (!inputScript.empty() && !headless)
         throw std::runtime_error("--input-script requires --headless");
-    if (rtcEpoch && !deterministic)
-        throw std::runtime_error("--rtc-epoch requires --deterministic");
-    // Wall mode chains a fixed number of packets, whatever is due.
-    if (chainDry && !deterministic)
-        throw std::runtime_error("--profile-chain-dry requires --deterministic");
 #ifndef ENABLE_PROFILING
     if (anyProfiling)
         throw std::runtime_error("Profiling options need a build with -DENABLE_PROFILING=ON");
@@ -452,14 +447,11 @@ static int RunEmulator(int argc, char* argv[]) {
             cpu.SetPotentiometerValue(0xFF - window->GetVolumeValue()); // Update potentiometer (volume) value
         }
     };
-    // With --deterministic, a script's leading commands (up to its first wait)
-    // take effect before the CPU starts, so sensor values reach the guest at
-    // the same point of every run instead of whenever the first host poll
-    // happens to land.
-    if (deterministic) {
-        if (headless) console->PollEvents();
-        pushSensors();
-    }
+    // A script's leading commands (up to its first wait) take effect before
+    // the CPU starts, so sensor values reach the guest at the same point of
+    // every run instead of whenever the first host poll happens to land.
+    if (headless) console->PollEvents();
+    pushSensors();
 
     // Start CPU execution thread
     std::thread cpuThread;

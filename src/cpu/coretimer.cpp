@@ -32,9 +32,7 @@ CoreTimer::CoreTimer(u32 baseAddr, const TimeSource& time)
 }
 
 u64 CoreTimer::CyclesPerTick() const {
-    // FIXME: wall time runs the emulator slower than real time, so it divides
-    // the rate by TimeSource::kWallSlowdown; deterministic guest time does not.
-    return u64(tscale + 1) * time_.Slowdown();
+    return u64(tscale + 1);
 }
 
 u32 CoreTimer::CountAt(u64 cycles) const {
