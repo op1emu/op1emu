@@ -115,6 +115,7 @@ static int RunEmulator(int argc, char* argv[]) {
     bool noIdleWait = false;
     bool noDmaSettle = false;
     int steadySkip = 2;
+    long long tierThreshold = BlackFinCpu::kTierThreshold;
     bool chainDry = false;
     bool markDigest = false;
     bool profileProbes = false;
@@ -146,6 +147,14 @@ static int RunEmulator(int argc, char* argv[]) {
             else if (mode == "dry") steadySkip = 1;
             else if (mode == "on") steadySkip = 2;
             else throw std::runtime_error("Invalid --steady-skip (off, dry, on): " + mode);
+        }
+        else if (options && arg == "--tier-threshold") {
+            if (++i == argc) throw std::runtime_error("--tier-threshold requires a count (0 for none)");
+            size_t used = 0;
+            tierThreshold = -1;
+            try { tierThreshold = std::stoll(argv[i], &used); } catch (const std::exception&) {}
+            if (used == 0 || argv[i][used] != '\0' || tierThreshold < 0 || tierThreshold > UINT32_MAX)
+                throw std::runtime_error(std::string("Invalid --tier-threshold: ") + argv[i]);
         }
         else if (options && arg == "--profile-chain-dry") chainDry = anyProfiling = true;
         else if (options && arg == "--profile-mark-digest") markDigest = anyProfiling = true;
@@ -210,6 +219,9 @@ static int RunEmulator(int argc, char* argv[]) {
                      "                        (dry: only counts the iterations it would skip)\n"
                      "  --no-dma-settle       Move each memory DMA row at its own time instead of\n"
                      "                        when something could see it (same transfers, slower)\n"
+                     "  --tier-threshold N    Compile a block with the whole pipeline once it\n"
+                     "                        started N times, cheaply before (default 1000;\n"
+                     "                        0: every block once, with the whole pipeline)\n"
                      "  --no-loop-blocks      Keep a guest loop's registers in memory across it\n"
                      "                        (bcore loop blocks off; same results, slower)\n"
                      "  --twi-speedup N       Run the I2C bus N times faster than programmed\n"
@@ -296,6 +308,7 @@ static int RunEmulator(int argc, char* argv[]) {
     if (noLoopBlocks) cpu.SetLoopBlocks(false);
     if (noIdleWait) cpu.SetIdleWaits(false);
     cpu.SetSteadySkip(steadySkip);
+    cpu.SetTiering(static_cast<uint32_t>(tierThreshold));
     if (noDmaSettle) cpu.SetDmaSettling(false);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
 #ifdef ENABLE_PROFILING

@@ -541,6 +541,11 @@ struct Profiler::Impl : BcoreEventSink {
                     " steady=%" PRIu64 " steady_iterations=%" PRIu64 " circular=%" PRIu64 "\n",
                     name, loops.loop_blocks, loops.loops_proven, loops.loops_speculated, loops.loops_vectorized,
                     loops.loops_steady, cpu.SteadyIterations(), loops.dag_circular);
+        // Tiered compilation (bcore's Core::set_tiering): blocks compiled
+        // again at tier 1, given up, and the runs that asked for more
+        // promotions than bcore's table holds.
+        std::printf("[tier] %s promoted=%" PRIu64 " dropped=%" PRIu64 " overflows=%" PRIu64 "\n",
+                    name, loops.blocks_promoted, loops.promotions_dropped, loops.tier_request_overflows);
         std::fflush(stdout);
         if (census) DumpCensus(name);
         if (perfBegin == name) PerfWrite("enable\n");
@@ -834,6 +839,8 @@ struct Profiler::Impl : BcoreEventSink {
                                  e.shape.object_hash, e.shape.collect_ns);
                     // A static string from bcore: what ends the block.
                     if (e.ok && e.shape.terminator) std::fprintf(file, ",\"terminator\":\"%s\"", e.shape.terminator);
+                    // Tiered compilation (bcore's Core::set_tiering): 0 or 1.
+                    if (e.ok && e.shape.tier >= 0) std::fprintf(file, ",\"tier\":%d", e.shape.tier);
                 }
                 if (invalidate) std::fprintf(file, ",\"cpu_ns\":%" PRIu64, e.cpu_ns);
                 if ((translate || invalidate) && counted) std::fprintf(file, ",\"insns\":%" PRIu64, e.insns);

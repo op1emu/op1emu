@@ -90,6 +90,12 @@ public:
     // Loop blocks that wait skip to their last iteration (bcore's
     // Core::set_steady_skip: 0 off, 1 dry, 2 on). Before the first Run().
     void SetSteadySkip(int mode);
+    // Blocks compiled cheaply first, and again with the whole pipeline after
+    // they started this many times (bcore's Core::set_tiering; 0 compiles
+    // every block once, with the whole pipeline). The same results either
+    // way. Before the first Run().
+    static constexpr uint32_t kTierThreshold = 1000;
+    void SetTiering(uint32_t threshold);
     // Whether memory DMA moves its rows only when something could see them
     // (DMA::SetSettling; on by default) or at each row's time. Before the
     // first Run().

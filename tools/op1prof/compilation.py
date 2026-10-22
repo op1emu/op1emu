@@ -21,6 +21,8 @@ class Translation:
     ir_insns: Optional[int]
     object_bytes: Optional[int]
     object_hash: Optional[str]
+    # bcore's Core::set_tiering: 0 a tier-0 block, 1 its promotion; None untiered.
+    tier: Optional[int] = None
 
 
 def translations(trace_data: dict, window: Optional[Tuple[str, str]] = None) -> List[Translation]:
@@ -32,7 +34,7 @@ def translations(trace_data: dict, window: Optional[Tuple[str, str]] = None) -> 
         args = e["args"]
         out.append(Translation(pc=args["pc"], begin_us=e["ts"], cpu_ns=args["cpu_ns"], ok=args.get("ok", True),
                                ir_insns=args.get("ir_insns"), object_bytes=args.get("object_bytes"),
-                               object_hash=args.get("object_hash")))
+                               object_hash=args.get("object_hash"), tier=args.get("tier")))
     return out
 
 
@@ -95,7 +97,9 @@ def report(trace_data: dict, window: Optional[Tuple[str, str]], limit: int, symb
     by_pc: Dict[int, List[Translation]] = defaultdict(list)
     for t in spans:
         by_pc[t.pc].append(t)
-    again = {pc: ts for pc, ts in by_pc.items() if len(ts) > 1}
+    # A promotion (tier 1) compiles a block again on purpose: not counted here.
+    again = {pc: [t for t in ts if t.tier != 1] for pc, ts in by_pc.items()}
+    again = {pc: ts for pc, ts in again.items() if len(ts) > 1}
     again_ms = sum(t.cpu_ns for ts in again.values() for t in ts[1:]) / 1e6
     failed = sum(1 for t in spans if not t.ok)
     lines = [f"compile {title}: {len(spans)} translations of {len(by_pc)} blocks, {sum(cpu_ms) / 1e3:.3f} s CPU"
@@ -104,6 +108,14 @@ def report(trace_data: dict, window: Optional[Tuple[str, str]], limit: int, symb
              f"max {max(cpu_ms):.2f} ms",
              f"translated again: {len(again)} blocks, {sum(len(ts) - 1 for ts in again.values())} extra "
              f"translations, {again_ms / 1e3:.3f} s CPU (the cache is flushed when the boot ROM is re-entered)"]
+    tiers = defaultdict(list)
+    for t in spans:
+        if t.tier is not None:
+            tiers[t.tier].append(t)
+    if tiers:
+        lines.append("tiered: " + "; ".join(
+            f"tier {tier} {len(ts)} translations, {sum(t.cpu_ns for t in ts) / 1e9:.3f} s CPU"
+            + (" (promotions)" if tier == 1 else "") for tier, ts in sorted(tiers.items())))
     lo, hi = _bounds(trace_data, window)
     flushes = [e for e in trace.jit_spans(trace_data) if e["name"] == "invalidate" and lo <= e["ts"] < hi]
     if flushes:

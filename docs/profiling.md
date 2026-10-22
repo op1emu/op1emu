@@ -147,6 +147,10 @@ microseconds, the clock `perf record -k mono` uses.
   happens, and no longer counted as execution.
 - Compile time is the union of `translate` and `invalidate` spans, the JIT's
   work: never add the nested stages to it.
+- With tiered compilation (bcore's `Core::set_tiering`, `--tier-threshold`,
+  on by default at 1000) every block is compiled at tier 0 first and again
+  at tier 1 once it started that many times; `args.tier` says which (absent
+  untiered). A `[tier]` line after every mark counts the promotions.
 - Marks (category `mark`) are instant events carrying the same counters as the
   `[mark]` line (including `invalidations`, the cache flushes so far), with `args.thread_cpu_ns`, `args.process_cpu_ns`,
   `args.irq_levels` (entries per IVG level, 0 = EMU ... 15 = IVG15) and
@@ -928,7 +932,8 @@ and blocks, compile CPU with its median, 95th percentile and maximum per
 translation, the blocks translated again (the cache is flushed whenever the
 boot ROM is re-entered) and what that cost, the stage proportions, the IR and
 machine code produced, and the blocks that cost most to compile with their IR
-size and compile time per IR instruction.
+size and compile time per IR instruction. A tiered run adds a line per tier;
+"translated again" leaves promotions out.
 
 `run` prints a table of every phase between consecutive marks (CPU,
 compile, execution, off-CPU, translations) and stores it in `results.json`.

@@ -320,6 +320,9 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     // bcore's tests and ISA suite verify every module the lifter makes; here
     // the verifier would be about 1% of the JIT's time.
     core_->set_verify(false);
+    // Most blocks of a boot run too rarely for the whole pipeline to pay:
+    // tier 0 compiles each about four times faster.
+    core_->set_tiering(kTierThreshold);
 
     // Initialize bcore CEC and EVT
     cec_init();
@@ -659,6 +662,8 @@ void BlackFinCpu::SetChaining(bool chaining, bool dry) {
 void BlackFinCpu::SetLoopBlocks(bool loop) { core_->set_loop_blocks(loop); }
 
 void BlackFinCpu::SetSteadySkip(int mode) { core_->set_steady_skip(mode); }
+
+void BlackFinCpu::SetTiering(uint32_t threshold) { core_->set_tiering(threshold); }
 
 void BlackFinCpu::SetDmaSettling(bool on) { serviced_.dma->SetSettling(on); }
 
