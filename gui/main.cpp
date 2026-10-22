@@ -117,6 +117,7 @@ static int RunEmulator(int argc, char* argv[]) {
     int steadySkip = 2;
     long long tierThreshold = BlackFinCpu::kTierThreshold;
     bool tierBackground = true;
+    bool copyPatch = true;
     long long tierPublishAfter = 0;
     long long jitCpu = -1;
     bool chainDry = false;
@@ -169,6 +170,7 @@ static int RunEmulator(int argc, char* argv[]) {
             (arg == "--jit-cpu" ? jitCpu : tierPublishAfter) = value;
         }
         else if (options && arg == "--no-tier-background") tierBackground = false;
+        else if (options && arg == "--no-copy-patch") copyPatch = false;
         else if (options && arg == "--profile-chain-dry") chainDry = anyProfiling = true;
         else if (options && arg == "--profile-mark-digest") markDigest = anyProfiling = true;
         else if (options && arg == "--rtc-epoch") {
@@ -237,6 +239,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "                        0: every block once, with the whole pipeline)\n"
                      "  --no-tier-background  Compile those blocks again on the CPU thread, not on\n"
                      "                        a thread of their own\n"
+                     "  --no-copy-patch       Make the cheap compilations with LLVM, not from\n"
+                     "                        stencils where the instructions allow\n"
                      "  --tier-publish-after N  With --deterministic, use such a block's second\n"
                      "                        compilation N packets after it was asked for\n"
                      "                        (default 8388608; the CPU thread waits for it)\n"
@@ -329,6 +333,7 @@ static int RunEmulator(int argc, char* argv[]) {
     cpu.SetSteadySkip(steadySkip);
     cpu.SetTiering(static_cast<uint32_t>(tierThreshold));
     cpu.SetTierBackground(tierBackground, static_cast<uint64_t>(tierPublishAfter), static_cast<int>(jitCpu));
+    cpu.SetCopyPatch(copyPatch);
     if (noDmaSettle) cpu.SetDmaSettling(false);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
 #ifdef ENABLE_PROFILING

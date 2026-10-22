@@ -168,6 +168,20 @@ microseconds, the clock `perf record -k mono` uses.
   (off-CPU time), so that every run does the same; in wall mode as soon as
   the worker is done. `--jit-cpu N` puts the worker on CPU N (`op1prof`
   pins the whole process to `--cpu` otherwise, worker included).
+- A tier-0 block whose instructions all have stencils (bcore's
+  `Core::set_copy_patch`, on by default; `--no-copy-patch`) is copied
+  together from them in microseconds: its `translate` span has
+  `args.copy_patch` true, `args.terminator` `copy-patch`, no IR
+  (`ir_insns` 0), `object_bytes` its code and `object_hash` one over its
+  stencils' code, relocations and hole values (so `diff compile` compares
+  such blocks too), and its
+  nested `lift` span holds the whole translation. In the code map its
+  variant is 1. With `--perf-jitdump` bcore writes these blocks (named
+  `bb_0x<pc>` as LLVM's tier-0 blocks are) to a jitdump of its own beside
+  LLVM's, in `.debug/jit/bcore-cp-*`, with the code each arena shares:
+  `bcore_cp_exit`, the chain exit of every such block, and
+  `bcore_cp_jump_<helper>`, its calls' jumps to the helpers (both in the
+  `generated code` bucket).
 - Marks (category `mark`) are instant events carrying the same counters as the
   `[mark]` line (including `invalidations`, the cache flushes so far), with `args.thread_cpu_ns`, `args.process_cpu_ns`,
   `args.irq_levels` (entries per IVG level, 0 = EMU ... 15 = IVG15) and

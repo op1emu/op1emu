@@ -108,6 +108,10 @@ public:
     // first Run().
     static constexpr uint64_t kTierPublishAfter = uint64_t(1) << 23;
     void SetTierBackground(bool background, uint64_t publishAfter = 0, int jitCpu = -1);
+    // Tier 0 copies blocks together from stencils where it can
+    // (Core::set_copy_patch, on by default), the rest it compiles with LLVM.
+    // Before the first Run().
+    void SetCopyPatch(bool enable);
     // The JIT worker's CPU time so far (the profiler's per-mark count), or -1
     // where there is none or the platform cannot tell.
     int64_t JitWorkerCpuNs() const;

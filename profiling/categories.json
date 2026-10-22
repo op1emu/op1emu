@@ -15,7 +15,7 @@
     {"name": "gpio/twi/sensors", "match": ["GPIO", "TWI::", "I2CPeripheral", "RegisterI2CPeripheral", "DummyI2CPeripheral", "MCP230XX::", "ADXL345::", "Potentiometer::", "Keyboard::"]},
     {"name": "event queue",      "match": ["BlackFinCpu::ProcessEvents(", "BlackFinCpu::QueueEvent("]},
     {"name": "memory callbacks", "match": ["mem_read", "mem_write", "Emulator::Memory", "EmulatorMemory::", "MemoryDevice::", "FastMem::", "EBIU::", "Bus::"]},
-    {"name": "generated code",   "match": ["bb_0x"]},
+    {"name": "generated code",   "match": ["bb_0x", "bcore_cp_"]},
     {"name": "dispatch",         "match": ["Core::run(", "JitEngine::lookup("]},
     {"name": "cpu loop",         "match": ["BlackFinCpu::"]}
   ]
