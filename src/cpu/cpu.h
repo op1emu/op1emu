@@ -93,8 +93,11 @@ public:
     // Blocks compiled cheaply first, and again with the whole pipeline after
     // they started this many times (bcore's Core::set_tiering; 0 compiles
     // every block once, with the whole pipeline). The same results either
-    // way. Before the first Run().
-    static constexpr uint32_t kTierThreshold = 1000;
+    // way. Before the first Run(). On a boot to the main display, from 300
+    // to 100000, all JIT CPU fell from 79 to 32 s and wall time from 62 to
+    // 33 s while execution rose from 2.1 to 2.9 s; 30000 gives up 4.6 s of
+    // JIT CPU against 100000 for 0.4 s less execution.
+    static constexpr uint32_t kTierThreshold = 30000;
     void SetTiering(uint32_t threshold);
     // Whether those second compilations run on a thread of their own (on by
     // default), at a lower priority, on jitCpu if not -1. In deterministic

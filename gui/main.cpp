@@ -233,7 +233,7 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --no-dma-settle       Move each memory DMA row at its own time instead of\n"
                      "                        when something could see it (same transfers, slower)\n"
                      "  --tier-threshold N    Compile a block with the whole pipeline once it\n"
-                     "                        started N times, cheaply before (default 1000;\n"
+                     "                        started N times, cheaply before (default 30000;\n"
                      "                        0: every block once, with the whole pipeline)\n"
                      "  --no-tier-background  Compile those blocks again on the CPU thread, not on\n"
                      "                        a thread of their own\n"

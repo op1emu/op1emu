@@ -148,7 +148,7 @@ microseconds, the clock `perf record -k mono` uses.
 - Compile time is the union of `translate` and `invalidate` spans, the JIT's
   work: never add the nested stages to it.
 - With tiered compilation (bcore's `Core::set_tiering`, `--tier-threshold`,
-  on by default at 1000) every block is compiled at tier 0 first and again
+  on by default at 30000) every block is compiled at tier 0 first and again
   at tier 1 once it started that many times; `args.tier` says which (absent
   untiered). A promotion compiled on bcore's worker thread
   (`Core::set_tier_background`, on by default; `--no-tier-background`)
