@@ -317,6 +317,9 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     // exact pairing with Default was not timed): O1 -6% execution for +43%
     // compile; O2 no faster than O1 and +69% compile.
     core_->init(/*opt_level=*/1, /*codegen_level=*/2);
+    // bcore's tests and ISA suite verify every module the lifter makes; here
+    // the verifier would be about 1% of the JIT's time.
+    core_->set_verify(false);
 
     // Initialize bcore CEC and EVT
     cec_init();
