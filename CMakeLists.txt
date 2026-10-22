@@ -88,6 +88,29 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(miniaudio)
 message(STATUS "miniaudio fetched successfully")
 
+# mimalloc as the process's malloc. LLVM allocates and frees for every IR
+# value, machine instruction and MC fragment it makes while compiling a
+# block: with glibc's allocator, malloc and free were 8% of a boot's JIT
+# compilation, and mimalloc took 6% of its instructions away. OFF keeps the C
+# library's allocator.
+option(OP1_MIMALLOC "Link mimalloc as the process's malloc" ON)
+if(OP1_MIMALLOC)
+    message(STATUS "Fetching mimalloc...")
+    set(MI_OVERRIDE ON CACHE BOOL "" FORCE)
+    set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(MI_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
+    set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        mimalloc
+        GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+        GIT_TAG v2.1.7
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(mimalloc)
+    message(STATUS "mimalloc fetched successfully")
+endif()
+
 find_package(Threads REQUIRED)
 
 # Measurement build (docs/profiling.md). OFF compiles every profiling hook out
@@ -145,6 +168,10 @@ file(GLOB_RECURSE SOURCES gui/*.cpp)
 add_executable(op1emu ${SOURCES})
 add_dependencies(op1emu op1-build-info)
 target_include_directories(op1emu PRIVATE ${OP1_BUILD_INFO_DIR})
+# First, so that its malloc and free are the ones every library calls.
+if(OP1_MIMALLOC)
+    target_link_libraries(op1emu PRIVATE mimalloc-static)
+endif()
 target_link_libraries(op1emu PRIVATE emulator glfw OpenGL::GL nlohmann_json::nlohmann_json uvw ext Threads::Threads ${CMAKE_DL_LIBS})
 target_include_directories(op1emu PRIVATE ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR})
 
