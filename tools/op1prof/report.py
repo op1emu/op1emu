@@ -460,7 +460,9 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
 def _jit_rows(result: Attribution, phase) -> dict:
     """The JIT's samples by stage and pass, in seconds of its CPU: the CPU
     thread's inside translations (compile_cpu_s), the worker's (its CPU in
-    the window, bg_compile_cpu_ms)."""
+    the window, bg_compile_cpu_ms; worker_exact False where that is an
+    estimate, trace.bg_cpu_ms). CPU with no samples to split it leaves its
+    tables empty: unknown, not zero (jit_unattributed)."""
     def rows(counter: Counter, total: int, seconds: float, key: str) -> List[dict]:
         if not total:
             return []
@@ -470,7 +472,7 @@ def _jit_rows(result: Attribution, phase) -> dict:
     compiled, worked = result.weights["compile"], result.worker
     return {"compile_stages": rows(result.compile_stages, compiled, compile_s, "stage"),
             "compile_passes": rows(result.compile_passes, compiled, compile_s, "pass"),
-            "worker_cpu_s": worker_s,
+            "worker_cpu_s": worker_s, "worker_exact": phase.bg_exact,
             "worker_stages": rows(result.worker_stages, worked, worker_s, "stage"),
             "worker_passes": rows(result.worker_passes, worked, worker_s, "pass")}
 
@@ -554,18 +556,34 @@ def _events_lines(data: dict, limit: int) -> List[str]:
     return lines
 
 
+# The JIT's tables, each with the CPU it splits: (stages, passes, CPU key).
+JIT_SECTIONS = (("compile_stages", "compile_passes", "compile_cpu_s"), ("worker_stages", "worker_passes", "worker_cpu_s"))
+
+
+def jit_unattributed(data: dict, section: str) -> bool:
+    """Whether a JIT table is unknown: its CPU is there but no sample split it
+    (a window too short for the sampling period, or the worker's stacks
+    without --call-graph lbr, where CompileWorker:: is not found)."""
+    cpu = next(cpu for stages, passes, cpu in JIT_SECTIONS if section in (stages, passes))
+    return not data.get(section) and (data.get(cpu) or 0) > 0
+
+
 def _jit_lines(data: dict, limit: int) -> List[str]:
     """The JIT's samples by stage and by pass: the CPU thread's inside
     translations, and bcore's worker thread's."""
     lines = []
-    for who, cpu_s, stages, passes in (("CPU thread, inside translations", data.get("compile_cpu_s", 0),
-                                        "compile_stages", "compile_passes"),
-                                       ("JIT worker", data.get("worker_cpu_s", 0), "worker_stages",
-                                        "worker_passes")):
+    for who, (stages, passes, cpu) in zip(("CPU thread, inside translations", "JIT worker"), JIT_SECTIONS):
+        cpu_s = data.get(cpu, 0)
+        estimate = " (an estimate: no worker clock at the marks)" if cpu == "worker_cpu_s" and \
+            not data.get("worker_exact", True) else ""
+        if jit_unattributed(data, stages):
+            lines += ["", f"JIT ({who}): {cpu_s:.3f} s of CPU{estimate}, but no samples to split it (a short window, "
+                          "or the worker without --call-graph lbr): its stages are unknown"]
+            continue
         if not data.get(stages):
             continue
-        lines += ["", f"JIT ({who}): {cpu_s:.3f} s of CPU split by sampled weight; a stage is the leaf-most frame "
-                      "that names one, malloc counted with its caller's"]
+        lines += ["", f"JIT ({who}): {cpu_s:.3f} s of CPU{estimate} split by sampled weight; a stage is the leaf-most "
+                      "frame that names one, malloc counted with its caller's"]
         lines += _table(f"JIT stage ({who})", data[stages], "stage", limit)
         lines += _table(f"JIT pass ({who})", data[passes], "pass", limit)
     return lines

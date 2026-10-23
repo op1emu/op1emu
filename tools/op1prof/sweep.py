@@ -38,6 +38,8 @@ COLUMNS = (("compile_cpu_ms", "compile s", 1e-3, "{:9.2f}"),
            ("wall_ms", "wall s", 1e-3, "{:8.2f}"),
            ("compile_insns", "comp Gi", 1e-9, "{:8.1f}"),
            ("noncompile_insns", "exec Gi", 1e-9, "{:8.2f}"))
+# Columns that hold the worker's CPU: estimates where a run's is (bg_exact).
+ESTIMATED = ("bg_compile_cpu_ms", "jit_cpu_ms")
 
 
 def parse_config(text: str) -> Tuple[str, List[str]]:
@@ -76,13 +78,17 @@ def configurations(params: Sequence[Tuple[str, List[str]]],
     return out
 
 
-def tier_wait_ms(log_lines: Sequence[str], mark: str) -> Optional[float]:
-    """The CPU thread's wait for the JIT worker up to a mark ([tier] line)."""
+def tier_wait_ms(log_lines: Sequence[str], begin: str, end: str) -> Optional[float]:
+    """The CPU thread's wait for the JIT worker between two marks: the [tier]
+    lines' wait_ms is cumulative. None without either line."""
+    waits = {}
     for line in log_lines:
         match = TIER_RE.match(line.strip())
-        if match and match.group("name") == mark:
-            return float(match.group("wait"))
-    return None
+        if match:
+            waits[match.group("name")] = float(match.group("wait"))
+    if begin not in waits or end not in waits:
+        return None
+    return waits[end] - waits[begin]
 
 
 @dataclass
@@ -103,8 +109,10 @@ def _metrics(result, phase: Tuple[str, str]) -> Dict[str, Optional[float]]:
     log = (result.directory / "log.txt").read_text(errors="replace").splitlines()
     return {"compile_cpu_ms": p.compile_cpu_ms, "bg_compile_cpu_ms": p.bg_compile_cpu_ms, "jit_cpu_ms": p.jit_cpu_ms,
             "noncompile_cpu_ms": p.noncompile_cpu_ms, "wall_ms": p.wall_ms,
-            "tier_wait_ms": tier_wait_ms(log, phase[1]),
-            "compile_insns": p.compile_insns, "noncompile_insns": p.noncompile_insns}
+            "tier_wait_ms": tier_wait_ms(log, *phase),
+            "compile_insns": p.compile_insns, "noncompile_insns": p.noncompile_insns,
+            # False: the worker's CPU (and so all JIT) is an estimate (trace.bg_cpu_ms).
+            "bg_exact": p.bg_exact}
 
 
 def sweep(spec: RunSpec, out: Path, configs: List[Tuple[str, List[str]]], rounds: int,
@@ -148,7 +156,8 @@ def summarize(report: dict) -> List[dict]:
     rows = []
     for config in report["configurations"]:
         runs = [r for r in report["runs"] if r["config"] == config["name"] and not r["error"]]
-        row = {"config": config["name"], "n": len(runs)}
+        row = {"config": config["name"], "n": len(runs),
+               "worker_estimated": sum(1 for r in runs if r["metrics"].get("bg_exact") is False)}
         for key, *_ in COLUMNS:
             values = [r["metrics"][key] for r in runs if r["metrics"].get(key) is not None]
             row[key] = {"mean": statistics.fmean(values), "min": min(values), "max": max(values)} if values else None
@@ -165,13 +174,20 @@ def format_sweep(report: dict) -> str:
         cells = []
         for key, _, scale, fmt in COLUMNS:
             value = row[key]
-            cells.append(fmt.format(value["mean"] * scale) if value else f"{'-':>{len(fmt.format(0))}}")
+            cell = fmt.format(value["mean"] * scale) if value else f"{'-':>{len(fmt.format(0))}}"
+            if value and key in ESTIMATED and row.get("worker_estimated"):
+                cell = "~" + cell[1:] if cell.startswith(" ") else "~" + cell
+            cells.append(cell)
         lines.append(f"{row['config']:{width}s} {row['n']:>2} " + " ".join(cells))
     spread = [(row["config"], key, row[key]) for row in report["summary"] for key, *_ in COLUMNS[:4]
               if row[key] and row[key]["mean"] and (row[key]["max"] - row[key]["min"]) > 0.05 * row[key]["mean"]]
     for config, key, value in spread:
         lines.append(f"{config}: {key} spread over 5% between rounds "
                      f"({value['min'] / 1e3:.3f}..{value['max'] / 1e3:.3f} s): a noisy machine, or too few rounds")
+    for row in report["summary"]:
+        if row.get("worker_estimated"):
+            lines.append(f"{row['config']}: ~ worker s and all JIT s are estimates in {row['worker_estimated']} of "
+                         f"{row['n']} runs (no worker clock at the marks, and promotions crossed them)")
     for name, problems in report["workload"].items():
         if problems:
             lines.append(f"{name}: other guest work than {report['reference']}: " + "; ".join(problems[:3]))

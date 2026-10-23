@@ -85,19 +85,50 @@ def load(captures: List[Path], categories: Categories, labels: perf_report.Label
     return reports
 
 
+def _unknown_jit_tables(reports: List[dict]) -> Dict[str, List[int]]:
+    """The JIT tables some capture cannot split (report.jit_unattributed), and
+    which captures: a missing row there is not 0 s, so the table is left out
+    of the set (and of a diff) instead of averaging in a false 0."""
+    out = {}
+    for _, section, _ in JIT_TABLES:
+        bad = [i for i, r in enumerate(reports) if perf_report.jit_unattributed(r, section)]
+        if bad:
+            out[section] = bad
+    return out
+
+
+def _jit_warnings(data: dict, prefix: str = "") -> List[str]:
+    lines = []
+    for title, section, _ in JIT_TABLES:
+        if section in data["unknown"]:
+            lines.append(f"{prefix}{title}: unknown (left out): captures {data['unknown'][section]} have the JIT's CPU "
+                         "but no samples to split it (a short window, or the worker without --call-graph lbr)")
+    estimated = [i for i, exact in enumerate(data["worker_exact"]) if not exact]
+    if estimated:
+        lines.append(f"{prefix}the worker's CPU is an estimate in captures {estimated} (no worker clock at the "
+                     "marks): its tables' seconds are too")
+    return lines
+
+
 def aggregate(captures: List[Path], reports: List[dict]) -> dict:
     """Per row of each table, the seconds of every capture (0 where a capture
     has no such row), their mean and, from three captures on, a 95% t
-    interval."""
+    interval. A JIT table that some capture cannot split is left out
+    (unknown)."""
     n = len(reports)
     out = {"schema": SET_SCHEMA, "captures": [str(c) for c in captures], "window": reports[0]["window"],
            "event": reports[0]["event"], "rate": reports[0]["rate"], "call_graph": reports[0]["call_graph"],
            "execution_cpu_s": [r["execution_cpu_s"] for r in reports],
            "compile_cpu_s": [r.get("compile_cpu_s", 0.0) for r in reports],
            "worker_cpu_s": [r.get("worker_cpu_s", 0.0) for r in reports],
+           "worker_exact": [r.get("worker_exact", True) for r in reports],
+           "unknown": _unknown_jit_tables(reports),
            "inclusive_valid": all(r["inclusive_valid"] for r in reports),
            "record": [r.get("record") for r in reports]}
     for section, key, value in SECTIONS:
+        if section in out["unknown"]:
+            out[section] = []
+            continue
         per = [_rows_of(r, section, key, value) for r in reports]
         names = set().union(*per)
         rows = []
@@ -127,6 +158,7 @@ def format_set(data: dict, limit: int) -> str:
     lines.append("seconds: mean over the captures and its 95% t interval" if n >= MIN_FOR_INTERVAL else
                  f"seconds: mean of {n} captures; an interval needs {MIN_FOR_INTERVAL} or more")
     lines += _record_warnings(data["record"])
+    lines += _jit_warnings({"unknown": data.get("unknown", {}), "worker_exact": data.get("worker_exact", [])})
     tables = [("host-path bucket", "buckets", "bucket"), ("guest block (self)", "blocks", "block")]
     if data["inclusive_valid"]:
         tables += [("guest block (inclusive)", "blocks_incl", "block"), ("host symbol (inclusive)", "host_inclusive", "symbol")]
@@ -185,8 +217,14 @@ def diff_sets(a_captures: List[Path], a: List[dict], b_captures: List[Path], b: 
            "execution_cpu_s": {"a": sa["execution_cpu_s"], "b": sb["execution_cpu_s"]},
            "workload_diff": workload_diff(marks_a, marks_b),
            "inclusive_valid": sa["inclusive_valid"] and sb["inclusive_valid"],
-           "record": {"a": sa["record"], "b": sb["record"]}}
+           "record": {"a": sa["record"], "b": sb["record"]},
+           "unknown": {"a": sa["unknown"], "b": sb["unknown"]},
+           "worker_exact": {"a": sa["worker_exact"], "b": sb["worker_exact"]}}
     for section, key, _ in SECTIONS:
+        if section in sa["unknown"] or section in sb["unknown"]:
+            # One side's rows are unknown: no difference to take.
+            out[section] = []
+            continue
         rows_a = {r[key]: r for r in sa[section]}
         rows_b = {r[key]: r for r in sb[section]}
         rows = []
@@ -225,6 +263,8 @@ def format_diff(data: dict, limit: int) -> str:
                      "trust a difference that is large, or that a second set repeats")
     for side in ("a", "b"):
         lines += [f"{side.upper()} " + line for line in _record_warnings(data["record"][side])]
+        lines += _jit_warnings({"unknown": data.get("unknown", {}).get(side, {}),
+                                "worker_exact": data.get("worker_exact", {}).get(side, [])}, f"{side.upper()} ")
     tables = [("host-path bucket", "buckets", "bucket"), ("guest block (self)", "blocks", "block")]
     if data["inclusive_valid"]:
         tables += [("guest block (inclusive)", "blocks_incl", "block"), ("host symbol (inclusive)", "host_inclusive", "symbol")]

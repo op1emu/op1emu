@@ -295,7 +295,32 @@ def test_sweep_configurations_are_every_combination_then_the_named():
     for bad in ("=1", "tier-threshold=", "tier-threshold=1,,2"):
         with pytest.raises(ValueError):
             sweep.parse_param(bad)
-    assert sweep.tier_wait_ms(["[tier] a promoted=1 wait_ms=2.5", "[tier] b promoted=2 wait_ms=7.000"], "b") == 7.0
+    log = ["[tier] a promoted=1 wait_ms=2.5", "[tier] b promoted=2 wait_ms=7.000"]
+    assert sweep.tier_wait_ms(log, "a", "b") == 4.5  # wait_ms is cumulative: the phase's is the difference
+    assert sweep.tier_wait_ms(["[tier] a wait_ms=900", "[tier] b wait_ms=900"], "a", "b") == 0.0
+    assert sweep.tier_wait_ms(log, "start", "b") is None  # no line at one end: unknown, not the total
+
+
+def test_sweep_marks_the_workers_estimated_cpu():
+    """A run whose worker CPU is an estimate (trace.bg_cpu_ms) marks its
+    worker and all-JIT means and says why (found in review: the values were
+    shown as if exact)."""
+    def run(exact):
+        return {"config": "c", "round": 0, "directory": "d", "error": None,
+                "metrics": {"compile_cpu_ms": 1000.0, "bg_compile_cpu_ms": 50.0, "jit_cpu_ms": 1050.0,
+                            "noncompile_cpu_ms": 2000.0, "tier_wait_ms": 0.0, "wall_ms": 4000.0,
+                            "compile_insns": None, "noncompile_insns": None, "bg_exact": exact}}
+    report = {"phase": ["a", "b"], "configurations": [{"name": "c", "args": []}], "runs": [run(True), run(False)],
+              "workload": {}, "status": "done"}
+    report["summary"] = sweep.summarize(report)
+    assert report["summary"][0]["worker_estimated"] == 1
+    text = sweep.format_sweep(report)
+    row = next(l for l in text.splitlines() if l.startswith("c "))
+    assert row.count("~") == 2  # worker s and all JIT s
+    assert "estimates in 1 of 2 runs" in text
+    report["runs"] = [run(True), run(True)]
+    report["summary"] = sweep.summarize(report)
+    assert "~" not in sweep.format_sweep(report)
 
 
 def test_sweep_runs_rounds_in_alternating_order_and_summarizes(files, tmp_path, monkeypatch):
@@ -2253,10 +2278,50 @@ def test_sets_show_the_jits_stages_as_shares_of_its_cpu():
     text = capture_set.format_set(data, 5)
     line = next(l for l in text.splitlines() if l.startswith("selection DAG"))
     assert line.rstrip().endswith("50.0%")  # of the JIT's 4 s, not of execution's 10
-    diff_data = _diff_sets([Path(f"a{i}") for i in range(3)], reports,
-                           [Path(f"b{i}") for i in range(3)], [{**r, "compile_stages": []} for r in reports])
+    # B compiled nothing: its rows are 0 s and the difference is real.
+    diff_data = _diff_sets([Path(f"a{i}") for i in range(3)], reports, [Path(f"b{i}") for i in range(3)],
+                           [{**r, "compile_cpu_s": 0.0, "compile_stages": []} for r in reports])
     assert {r["stage"]: r["delta"] for r in diff_data["compile_stages"]}["lift"] == pytest.approx(-1.0)
     assert "JIT stage" in capture_set.format_diff(diff_data, 5)
+
+
+def test_a_jit_table_with_cpu_but_no_samples_is_unknown_not_zero():
+    """The worker's CPU with no worker samples (no LBR, so no CompileWorker::
+    frame) leaves its tables empty: a set leaves them out and a diff takes
+    no difference, instead of a 0 s that reads as an improvement (found in
+    review: -50 ms of selection DAG, interval -50 ms, from nothing)."""
+    def report(stages):
+        return {**_report(10.0, 2.0, 1.0), "worker_cpu_s": 0.05, "worker_exact": True,
+                "worker_stages": [{"stage": "selection DAG", "seconds": 0.05}] if stages else [],
+                "worker_passes": [{"pass": "SelectionDAGISel", "seconds": 0.05}] if stages else []}
+    a, b = [report(True)] * 3, [report(False)] * 3
+    ca, cb = [Path(f"a{i}") for i in range(3)], [Path(f"b{i}") for i in range(3)]
+    data = capture_set.aggregate(cb, b)
+    assert data["unknown"] == {"worker_stages": [0, 1, 2], "worker_passes": [0, 1, 2]}
+    assert data["worker_stages"] == [] and "JIT stage (worker): unknown" in capture_set.format_set(data, 5)
+    diff_data = _diff_sets(ca, a, cb, b)
+    assert diff_data["worker_stages"] == [] and diff_data["worker_passes"] == []
+    text = capture_set.format_diff(diff_data, 5)
+    assert "B JIT stage (worker): unknown" in text and "selection DAG" not in text
+    # One capture of three without samples is enough: its 0 would pull the mean.
+    mixed = capture_set.aggregate(ca, [report(True), report(False), report(True)])
+    assert mixed["unknown"]["worker_stages"] == [1]
+    # Without the worker's CPU there is nothing to split: no table, nothing unknown.
+    idle = capture_set.aggregate(ca, [{**report(False), "worker_cpu_s": 0.0}] * 3)
+    assert idle["unknown"] == {}
+
+
+def test_the_workers_estimated_cpu_is_marked_in_reports_and_sets():
+    data = {"compile_cpu_s": 0.0, "worker_cpu_s": 0.05, "worker_exact": False,
+            "worker_stages": [{"stage": "lift", "seconds": 0.05, "pct": 100.0}],
+            "worker_passes": [{"pass": "(no pass)", "seconds": 0.05, "pct": 100.0}]}
+    assert "0.050 s of CPU (an estimate: no worker clock at the marks)" in "\n".join(perf_report._jit_lines(data, 5))
+    unknown = {**data, "worker_exact": True, "worker_stages": [], "worker_passes": []}
+    assert "its stages are unknown" in "\n".join(perf_report._jit_lines(unknown, 5))
+    sets = capture_set.aggregate([Path(f"c{i}") for i in range(3)],
+                                 [{**_report(10.0, 2.0, 1.0), **data, "worker_exact": exact} for exact in (True, False, True)])
+    assert sets["worker_exact"] == [True, False, True]
+    assert "the worker's CPU is an estimate in captures [1]" in capture_set.format_set(sets, 5)
 
 
 def _diff_sets(ca, a, cb, b, monkeypatch=None):

@@ -654,8 +654,11 @@ another: every combination of the values of each `--param FLAG=V1,V2,...`
 (the flag's dashes optional, as argparse reads `--param --flag=...` as an
 option), and each `--config NAME=ARGS`. It reports per configuration the
 means of the CPU thread's compile time, the JIT worker's, all JIT CPU,
-execution CPU, the CPU thread's wait for the worker (`[tier]` `wait_ms`),
-wall time and, with `--counters`, host instructions; a spread over 5%
+execution CPU, the CPU thread's wait for the worker in the phase (the
+difference of the cumulative `[tier]` `wait_ms` at its two marks), wall
+time and, with `--counters`, host instructions; `~` on the worker's and all
+JIT CPU where a run's worker CPU is an estimate (no worker clock at the
+marks: `bg_exact` in `results.json`); a spread over 5%
 between rounds; a configuration whose rounds did different guest work (an
 error) and one that did other work than the first configuration (reported:
 a setting may change how often the guest polls). It is a survey: between
@@ -978,7 +981,11 @@ translator, ...; `tools/op1prof/compile_samples.py`), an allocator leaf
 counting as `malloc in` its caller's stage, and to the nearest LLVM pass
 (a legacy `runOnMachineFunction`, or a new pass manager's `PassModel`).
 Capture sets and their diffs carry these tables too, their shares of the
-JIT's CPU.
+JIT's CPU. A table whose CPU is there but that no sample splits (a window
+short for the sampling period, or the worker without LBR) is unknown, not
+0 s: the report says so, a set leaves it out, and a diff takes no difference
+of it. Where the worker's CPU is an estimate (`worker_exact`), the report,
+the set and the diff say so.
 
 A capture of several events (`perf --event '{cycles:u,instructions:u}'`)
 is attributed event by event: the first in perf's order (`perf evlist`)
