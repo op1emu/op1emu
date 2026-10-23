@@ -2,6 +2,7 @@
 #include "emu.h"
 #include "time_source.h"
 #include "utils/log.h"
+#include <cstring>
 
 enum DataFormat {
     NORMAL = 0,
@@ -78,6 +79,20 @@ SPORT::SPORT(u32 baseAddr, int sportNum, const TimeSource& time)
     FIELD(SPORT_STAT, TXHRE, 6, 1, R(transmitHoldRegister.has_value()), N());
 }
 
+int SPORT::Channels(bool receive) const {
+    // A stereo frame sync sends a left and then a right word on each data
+    // channel in use; the secondary channel sends its words beside the
+    // primary's, and the DMA interleaves the two in memory, primary first.
+    const bool stereo = receive ? receiveStereoFrameSync : transmitStereoFrameSync;
+    const bool secondary = receive ? receiveSecondaryEnabled : transmitSecondaryEnabled;
+    return (stereo ? 2 : 1) * (secondary ? 2 : 1);
+}
+
+u32 SPORT::FrameSize(bool receive) const {
+    const u8 wordLength = receive ? receiveWordLength : transmitWordLength;
+    return (wordLength > 16 ? 4 : 2) * Channels(receive);
+}
+
 uint64_t SPORT::NextSampleNs(uint64_t startNs, uint64_t delivered, NextSample& memo) const {
     // DMARead/DMAWrite find floor(elapsed * rate / 1e9) samples due, which
     // exceeds `delivered` exactly when elapsed * rate >= (delivered + 1) * 1e9.
@@ -95,10 +110,7 @@ uint64_t SPORT::DMAIdleUntil(bool toMemory, u32 length) const {
     // The early returns of DMARead/DMAWrite, in their order.
     const bool enabled = toMemory ? receiveEnabled : transmitEnabled;
     if (!enabled) return UINT64_MAX;
-    const u8 wordLength = toMemory ? receiveWordLength : transmitWordLength;
-    const bool stereo = toMemory ? receiveStereoFrameSync : transmitStereoFrameSync;
-    const u32 frameSize = (wordLength > 16 ? 4 : 2) * (stereo ? 2 : 1);
-    if (length / frameSize == 0) return UINT64_MAX;
+    if (length / FrameSize(toMemory) == 0) return UINT64_MAX;
     if (toMemory) return dmaRxActive_ ? NextSampleNs(dmaRxStartNs_, totalRxSamplesDelivered_, rxNext_) : 0;
     return dmaTxActive_ ? NextSampleNs(dmaTxStartNs_, totalTxSamplesDelivered_, txNext_) : 0;
 }
@@ -129,10 +141,9 @@ u32 SPORT::DMARead(int x, int y, void* dest, u32 length)
         return 0;
     }
 
-    int wordSize = receiveWordLength > 16 ? 4 : 2;
-    int channels = receiveStereoFrameSync ? 2 : 1;
+    int channels = Channels(true);
     int bitsPerSample = receiveWordLength;
-    int frameSize = wordSize * channels;
+    int frameSize = FrameSize(true);
     size_t requestedSamples = length / frameSize;
     if (requestedSamples == 0) return 0;
 
@@ -158,7 +169,9 @@ u32 SPORT::DMARead(int x, int y, void* dest, u32 length)
         return static_cast<u32>(read * frameSize);
     }
 
-    // Fill with silence
+    // Fill with silence: dest is the DMA's staging buffer, which holds
+    // whatever it held.
+    std::memset(dest, 0, available * frameSize);
     totalRxSamplesDelivered_ += available;
     return static_cast<u32>(available * frameSize);
 }
@@ -178,7 +191,7 @@ u32 SPORT::DMAWriteTake(u32 length) const
     // DMAWrite's early returns, then its available samples. Before the first
     // transfer it only starts the clock: nothing is due yet.
     if (!transmitEnabled || !dmaTxActive_) return 0;
-    const u32 frameSize = (transmitWordLength > 16 ? 4 : 2) * (transmitStereoFrameSync ? 2 : 1);
+    const u32 frameSize = FrameSize(false);
     return u32(TxAvailable(length / frameSize) * frameSize);
 }
 
@@ -188,10 +201,9 @@ u32 SPORT::DMAWrite(int x, int y, const void* source, u32 length)
         return 0;
     }
 
-    int wordSize = transmitWordLength > 16 ? 4 : 2;
-    int channels = transmitStereoFrameSync ? 2 : 1;
+    int channels = Channels(false);
     int bitsPerSample = transmitWordLength;
-    int frameSize = wordSize * channels;
+    int frameSize = FrameSize(false);
     size_t requestedSamples = length / frameSize;
     if (requestedSamples == 0) return 0;
 
@@ -206,7 +218,7 @@ u32 SPORT::DMAWrite(int x, int y, const void* source, u32 length)
     if (available == 0) return 0;  // Not time yet — DMA retries next cycle
 
     if (audioOutputCallback) {
-        audioOutputCallback(source, available, channels, bitsPerSample);
+        audioOutputCallback(source, available, channels, bitsPerSample, transmitStereoFrameSync);
     }
 
     totalTxSamplesDelivered_ += available;

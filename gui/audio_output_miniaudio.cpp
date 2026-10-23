@@ -2,13 +2,16 @@
 #include "miniaudio.h"
 #include "audio_output_miniaudio.h"
 #include "audio_ring.h"
+#include "audio_pcm.h"
 #include "utils/log.h"
 #include <cstring>
 #include <algorithm>
 
-static constexpr ma_uint32 SAMPLE_RATE = 48000;
+// SPORT's frame rate, the OP-1 codec's; miniaudio resamples for a device
+// that does not take it.
+static constexpr ma_uint32 SAMPLE_RATE = 44100;
 static constexpr ma_uint32 CHANNELS = 2;
-static constexpr ma_uint32 RING_BUFFER_FRAMES = 4096; // ~85ms at 48kHz
+static constexpr ma_uint32 RING_BUFFER_FRAMES = 4096; // ~93ms at 44.1kHz
 
 MiniaudioOutput::MiniaudioOutput()
     : device_(nullptr), ringBuffer_(nullptr) {
@@ -30,7 +33,7 @@ MiniaudioOutput::MiniaudioOutput()
     config.playback.format = ma_format_f32;
     config.playback.channels = CHANNELS;
     config.sampleRate = SAMPLE_RATE;
-    config.periodSizeInFrames = 256; // ~5.3ms low-latency period
+    config.periodSizeInFrames = 256; // ~5.8ms low-latency period
     config.dataCallback = reinterpret_cast<ma_device_data_proc>(DataCallback);
     config.pUserData = rb;
 
@@ -102,8 +105,8 @@ void MiniaudioOutput::DataCallback(void* pDevice, void* pOutput, const void* pIn
     }
 }
 
-void MiniaudioOutput::WriteSamples(const void* data, size_t samples, int channels, int bitsPerSample) {
-    if (!active_.load() || samples == 0) {
+void MiniaudioOutput::WriteSamples(const void* data, size_t samples, int channels, int bitsPerSample, bool stereo) {
+    if (!active_.load() || samples == 0 || channels <= 0) {
         return;
     }
 
@@ -115,49 +118,12 @@ void MiniaudioOutput::WriteSamples(const void* data, size_t samples, int channel
     float chunk[CHUNK_FRAMES * CHANNELS];
 
     const uint8_t* src = static_cast<const uint8_t*>(data);
-    int wordSize = bitsPerSample > 16 ? 4 : 2;
-    size_t srcStride = wordSize * channels;
+    const size_t srcStride = size_t(bitsPerSample > 16 ? 4 : 2) * channels;
 
     size_t framesRemaining = samples;
     while (framesRemaining > 0) {
         size_t framesToProcess = std::min(framesRemaining, CHUNK_FRAMES);
-
-        // Convert to float32 stereo
-        for (size_t i = 0; i < framesToProcess; i++) {
-            float left = 0.0f, right = 0.0f;
-
-            if (bitsPerSample <= 16) {
-                // 16-bit signed integer
-                int16_t sample;
-                memcpy(&sample, src + i * srcStride, sizeof(int16_t));
-                left = static_cast<float>(sample) / 32768.0f;
-
-                if (channels >= 2) {
-                    memcpy(&sample, src + i * srcStride + 2, sizeof(int16_t));
-                    right = static_cast<float>(sample) / 32768.0f;
-                } else {
-                    right = left;
-                }
-            } else {
-                // 24-bit packed in 32-bit words
-                int32_t sample;
-                memcpy(&sample, src + i * srcStride, sizeof(int32_t));
-                // Sign-extend from 24-bit
-                sample = (sample << 8) >> 8;
-                left = static_cast<float>(sample) / 8388608.0f;
-
-                if (channels >= 2) {
-                    memcpy(&sample, src + i * srcStride + 4, sizeof(int32_t));
-                    sample = (sample << 8) >> 8;
-                    right = static_cast<float>(sample) / 8388608.0f;
-                } else {
-                    right = left;
-                }
-            }
-
-            chunk[i * CHANNELS] = left;
-            chunk[i * CHANNELS + 1] = right;
-        }
+        PcmToStereo(src, framesToProcess, channels, bitsPerSample, stereo, chunk);
 
         // A write may stop at the physical end even when the ring has free
         // space at the start. Continue there; drop only when the ring is full.

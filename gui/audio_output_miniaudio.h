@@ -8,7 +8,7 @@ public:
     MiniaudioOutput();
     ~MiniaudioOutput() override;
 
-    void WriteSamples(const void* data, size_t samples, int channels, int bitsPerSample) override;
+    void WriteSamples(const void* data, size_t samples, int channels, int bitsPerSample, bool stereo) override;
 
 private:
     static void DataCallback(void* pDevice, void* pOutput, const void* pInput, unsigned int frameCount);

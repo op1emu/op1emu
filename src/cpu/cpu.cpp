@@ -1165,8 +1165,8 @@ void BlackFinCpu::AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard) {
 }
 
 void BlackFinCpu::AttachAudioOutput(const std::shared_ptr<AudioOutput>& audioOutput) {
-    auto cb = [audioOutput](const void* data, size_t samples, int channels, int bitsPerSample) {
-        audioOutput->WriteSamples(data, samples, channels, bitsPerSample);
+    auto cb = [audioOutput](const void* data, size_t samples, int channels, int bitsPerSample, bool stereo) {
+        audioOutput->WriteSamples(data, samples, channels, bitsPerSample, stereo);
     };
     sport0->SetAudioOutputCallback(cb);
     sport1->SetAudioOutputCallback(cb);

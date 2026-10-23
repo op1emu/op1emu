@@ -8,9 +8,12 @@ public:
     virtual ~AudioOutput() = default;
 
     // Called from CPU thread (via SPORT DMA callback).
-    // data: raw PCM samples from the SPORT
-    // samples: number of sample frames
-    // channels: 1 (mono) or 2 (stereo)
-    // bitsPerSample: typically 16 or 24
-    virtual void WriteSamples(const void* data, size_t samples, int channels, int bitsPerSample) = 0;
+    // data: raw PCM frames from the SPORT, as SPORT::AudioOutputCallback
+    // samples: number of frames
+    // channels: words per frame (primary, then secondary if on; for the left
+    //           and then the right half with stereo)
+    // bitsPerSample: the word length; up to 16 a word is 16 bits, above it is
+    //                right-justified in 32
+    // stereo: the frame's halves are left and right
+    virtual void WriteSamples(const void* data, size_t samples, int channels, int bitsPerSample, bool stereo) = 0;
 };

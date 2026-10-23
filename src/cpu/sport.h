@@ -12,7 +12,11 @@ class TimeSource;
 
 class SPORT : public RegisterDevice, public DMABus {
 public:
-    using AudioOutputCallback = std::function<void(const void* data, size_t samples, int channels, int bitsPerSample)>;
+    // samples frames of channels words each: the primary word, then the
+    // secondary channel's if it is on, for the left half of a stereo frame
+    // sync and then for its right; stereo is the frame sync's.
+    using AudioOutputCallback =
+        std::function<void(const void* data, size_t samples, int channels, int bitsPerSample, bool stereo)>;
     using AudioInputCallback = std::function<size_t(void* data, size_t samples, int channels, int bitsPerSample)>;
 
     SPORT(u32 baseAddr, int sportNum, const TimeSource& time);
@@ -45,6 +49,10 @@ protected:
     uint64_t NextSampleNs(uint64_t startNs, uint64_t delivered, NextSample& memo) const;
     // DMAWrite's due samples, at most requestedSamples (transmit active).
     uint64_t TxAvailable(uint64_t requestedSamples) const;
+    // The words in a frame, which DMA moves together and the audio callbacks
+    // see as its channels, and the frame's bytes in memory.
+    int Channels(bool receive) const;
+    u32 FrameSize(bool receive) const;
     void SetTransmitEnable();
     void SetReceiveEnable();
 
@@ -94,6 +102,7 @@ protected:
     // NextSampleNs, per direction, for the DMA's repeated asks.
     mutable NextSample txNext_, rxNext_;
 
-    // Nominal sample rate in Hz (future: derive from TCLKDIV/TFSDIV registers)
-    uint32_t sampleRateHz_ = 48000;
+    // Frames per second. The OP-1's codec masters the link (its clocks are
+    // not SPORT's TCLKDIV/TFSDIV) at 44.1 kHz.
+    uint32_t sampleRateHz_ = 44100;
 };

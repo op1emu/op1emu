@@ -16,7 +16,51 @@ static void Require(bool ok, const std::string& message) {
     }
 }
 
+// TIMER_DISABLE of a PWM_OUT timer is a pending stop (BF52x HRM, "Stopping
+// the Timer in PWM_OUT Mode"): TIMEN reads 0 at once, but the timer finishes
+// its period, with its interrupt, and only then clears TRUN. Writing TRUN in
+// TIMER_STATUS after the disable stops it at once, with no interrupt. The
+// OP-1's PPI interrupt disables TIMER0/1 every frame and polls TRUN until
+// they stop themselves.
+static void DisableIsAPendingStop() {
+    for (bool abort : {false, true}) {
+        GPTimer timers(0xFFC00600);
+        int interrupts = 0;
+        timers.BindInterrupt(0, 0, [&](int, int level) { interrupts += level; });
+        // TIMER0 as the OP-1 has it: PWM out, count to the period, interrupt.
+        timers.Write32(0x00, 0x01 | 0x08 | 0x10);
+        timers.Write32(0x08, 200);
+        timers.Write32(0x0C, 199);
+        timers.Write32(0x80, 1);
+        for (int i = 0; i < 50; ++i) timers.Tick(GPTimerClockTypeSCLK);
+        Require(timers.Read32(0x88) & (1u << 12), "an enabled timer runs (TRUN0)");
+        timers.Write32(0x84, 1);
+        Require(!(timers.Read32(0x80) & 1), "TIMEN0 reads 0 at the disable");
+        if (abort) {
+            timers.Write32(0x88, 1u << 12);
+            Require(!(timers.Read32(0x88) & (1u << 12)), "TRUN0 written after the disable stops the timer at once");
+        } else {
+            Require(timers.Read32(0x88) & (1u << 12), "TRUN0 stays set to the end of the period");
+        }
+        int ticks = 50;
+        while (ticks < 400 && (timers.Read32(0x88) & (1u << 12))) {
+            timers.Tick(GPTimerClockTypeSCLK);
+            ++ticks;
+        }
+        if (!abort) {
+            Require(ticks == 199, "the timer stops at the end of its period, at tick " + std::to_string(ticks));
+            Require(interrupts == 1, "with the period's interrupt");
+        } else {
+            Require(interrupts == 0, "an aborted timer raises no interrupt");
+        }
+        for (int i = 0; i < 400; ++i) timers.Tick(GPTimerClockTypeSCLK);
+        Require(!(timers.Read32(0x88) & (1u << 12)), "a stopped timer stays stopped");
+        Require(interrupts == (abort ? 0 : 1), "and raises nothing more");
+    }
+}
+
 int main() {
+    DisableIsAPendingStop();
     for (uint32_t seed = 1; seed <= 20; ++seed) {
         GPTimer kept(0xFFC00600), rebuilt(0xFFC00600);
         int interrupts[2] = {};

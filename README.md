@@ -120,7 +120,10 @@ at 400 MHz (an issue model with no pipeline, cache or PLL timing), plus the
 cycles an IDLE waits. CYCLES, the core timer, the GP timers, SPORT sample pacing,
 the panel's frame sync and the RTC all follow it.
 
-- The core timer and SPORT run at their programmed rates.
+- The core timer runs at its programmed rate.
+- SPORT moves frames at the codec's 44.1 kHz, the codec being the link's clock
+  master. A frame is a word per channel in use: on the OP-1 a primary and a
+  secondary word, of which the primary is the audio.
 - Panel frame sync (TE, PORTG3) is a 60 Hz guest-time oscillator.
 - An IDLE waits for its wakeup: guest time goes on to the host's next device or
   event time without executing anything (CYCLES counts through it, as on

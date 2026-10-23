@@ -569,7 +569,7 @@ struct AudioRig {
         emulator.BindDevice(&ram);
         dma.AttachDMABus(DMAPeripheralSPORT0Rx, sport);
         dma.AttachDMABus(DMAPeripheralSPORT0Tx, sport);
-        sport->SetAudioOutputCallback([this](const void* data, size_t samples, int channels, int bits) {
+        sport->SetAudioOutputCallback([this](const void* data, size_t samples, int channels, int bits, bool) {
             log.push_back(std::to_string(step) + " out " + std::to_string(samples) + "x" + std::to_string(channels) +
                           " " + std::to_string(bits) + " " + std::to_string(*static_cast<const uint16_t*>(data)));
         });
@@ -619,7 +619,8 @@ static void AudioMatchesPolling(uint32_t seed) {
             r.time.Retire(packets);
             if (event == 0) r.sport->Write32(0x00, transmit ? 1 : 0);
             if (event == 1) r.sport->Write32(0x20, 1);
-            if (event == 2) r.sport->Write32(0x04, 15 | (step % 2 ? 256 : 0));
+            // Stereo frame sync and the secondary channel: frames of 1, 2 or 4 words.
+            if (event == 2) r.sport->Write32(0x04, 15 | (step % 2 ? 256 : 0) | (step % 3 ? 0 : 512));
             if (event == 3) r.Channel(4, 0x1000 + (step % 7) * 64, 16 + step % 48, false, step % 5 != 0);
             if (event == 4) r.Channel(3, 0x4000, 1 + step % 32, true, true);
         });
@@ -649,7 +650,7 @@ static void AudioMatchesPolling(uint32_t seed) {
 static void SportTransmitDeliversTheBuffer(u32 modify) {
     AudioRig rig;
     std::vector<uint16_t> heard;
-    rig.sport->SetAudioOutputCallback([&](const void* data, size_t samples, int channels, int) {
+    rig.sport->SetAudioOutputCallback([&](const void* data, size_t samples, int channels, int, bool) {
         auto* words = static_cast<const uint16_t*>(data);
         heard.insert(heard.end(), words, words + samples * channels);
     });
@@ -671,6 +672,71 @@ static void SportTransmitDeliversTheBuffer(u32 modify) {
         Require(heard[i] == uint16_t(rig.ram.Read32(addr & ~3u) >> (addr & 2 ? 16 : 0)),
                 "sample " + std::to_string(i) + " is the buffer's word (modify " + std::to_string(modify) + ")");
     }
+}
+
+// The OP-1's codec link: SPORT0 with the secondary channels on (TXSE, RXSE),
+// 32-bit words, no stereo frame sync. A frame is a primary word and a
+// secondary word, interleaved in memory, at the codec's 44.1 kHz: one second
+// of guest time moves 44100 two-word frames each way, and the sink gets the
+// buffer's words in order, two to a frame.
+static void SportSecondaryChannelsFrameTwoWords() {
+    AudioRig rig;
+    uint64_t heard = 0, taken = 0;
+    std::vector<uint32_t> words;
+    rig.sport->SetAudioOutputCallback([&](const void* data, size_t samples, int channels, int bits, bool stereo) {
+        Require(channels == 2 && bits == 32 && !stereo, "a frame is a primary and a secondary word, not left and right");
+        auto* w = static_cast<const uint32_t*>(data);
+        if (words.size() < 64) words.insert(words.end(), w, w + samples * channels);
+        heard += samples;
+    });
+    rig.sport->SetAudioInputCallback([&](void* data, size_t samples, int channels, int bits) {
+        Require(channels == 2 && bits == 32, "a received frame has a primary and a secondary word");
+        std::memset(data, 0, samples * channels * 4);
+        taken += samples;
+        return samples;
+    });
+    rig.sport->Write32(0x04, 31 | 512);  // TCR2: 32-bit words, TXSE
+    rig.sport->Write32(0x24, 31 | 512);  // RCR2: 32-bit words, RXSE
+    rig.sport->Write32(0x00, 1);         // TSPEN
+    rig.sport->Write32(0x20, 1);         // RSPEN
+    for (int channel : {3, 4}) {
+        const u32 base = channel * 0x40;
+        rig.dma.Write32(base + 0x04, channel == 3 ? 0x4000 : 0x1000);
+        rig.dma.Write32(base + 0x10, 128);
+        rig.dma.Write32(base + 0x14, 4);
+        // 32-bit words, autobuffer.
+        rig.dma.Write32(base + 0x08, 1 | (channel == 3 ? 2 : 0) | (2 << 2) | (1 << 12));
+    }
+    // Both directions start their clocks at their first transfer, here.
+    rig.dma.ProcessWithInterrupt(-1);
+    for (int ms = 0; ms < 1000; ++ms) {
+        rig.time.Retire(TimeSource::kHz / 1000);
+        rig.dma.ProcessWithInterrupt(-1);
+    }
+    // A service moves the frames due up to the buffer's end, the rest come at
+    // the next: at most one buffer (64 frames) of the second is still to go.
+    auto aSecond = [](uint64_t frames) { return frames <= 44100 && frames + 64 >= 44100; };
+    Require(aSecond(heard), "transmit: 44100 frames in a second, not " + std::to_string(heard));
+    Require(aSecond(taken), "receive: 44100 frames in a second, not " + std::to_string(taken));
+    for (size_t i = 0; i < words.size(); ++i)
+        Require(words[i] == rig.ram.Read32(0x1000 + u32(i % 128) * 4), "the sink hears the buffer's words in order");
+}
+
+// With no audio input attached, SPORT receive hands the DMA silence: zero
+// words in the buffer it is given, not whatever that held (the DMA stages a
+// transfer on its stack; the firmware mixes its input into what it plays).
+static void SportReceiveWithoutInputIsSilence() {
+    TimeSource time{true};
+    SPORT sport(0xFFC00800, 0, time);
+    sport.Write32(0x24, 31 | 512);  // RCR2: 32-bit words, RXSE
+    sport.Write32(0x20, 1);         // RSPEN
+    uint32_t buffer[64];
+    Require(sport.DMARead(0, 0, buffer, sizeof buffer) == 0, "the first transfer only starts the clock");
+    time.Retire(TimeSource::kHz / 1000);
+    std::fill(std::begin(buffer), std::end(buffer), 0xDEADBEEFu);
+    const u32 moved = sport.DMARead(0, 0, buffer, sizeof buffer);
+    Require(moved == sizeof buffer, "a millisecond has a buffer's worth of frames due");
+    for (uint32_t word : buffer) Require(word == 0, "a received word is silence");
 }
 
 // The SIC's outputs are levels: high while a routed pin is asserted and
@@ -957,5 +1023,7 @@ int main() {
     for (uint32_t seed = 1; seed <= 10; ++seed) AudioMatchesPolling(seed);
     SportTransmitDeliversTheBuffer(2);
     SportTransmitDeliversTheBuffer(6);
+    SportSecondaryChannelsFrameTwoWords();
+    SportReceiveWithoutInputIsSilence();
     std::puts("device-service-test: ok");
 }
