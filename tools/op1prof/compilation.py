@@ -26,6 +26,13 @@ class Translation:
     # A background promotion (Core::set_tier_background) is two spans on the
     # CPU thread: "lift" (no code yet) and "link" (the worker's code loaded).
     part: Optional[str] = None
+    # bcore's Core::set_copy_patch: made of stencils; of its packets, those
+    # whose stencils were built at run time (Core::set_copy_patch_runtime),
+    # and the stencils this translation built (also for a block LLVM then
+    # compiled, as a packet had none).
+    copy_patch: bool = False
+    cp_runtime_packets: int = 0
+    cp_runtime_built: int = 0
 
 
 def translations(trace_data: dict, window: Optional[Tuple[str, str]] = None) -> List[Translation]:
@@ -38,7 +45,9 @@ def translations(trace_data: dict, window: Optional[Tuple[str, str]] = None) -> 
         out.append(Translation(pc=args["pc"], begin_us=e["ts"], cpu_ns=args["cpu_ns"], ok=args.get("ok", True),
                                ir_insns=args.get("ir_insns"), object_bytes=args.get("object_bytes"),
                                object_hash=args.get("object_hash"), tier=args.get("tier"),
-                               part=args.get("part")))
+                               part=args.get("part"), copy_patch=bool(args.get("copy_patch")),
+                               cp_runtime_packets=args.get("cp_runtime_packets", 0),
+                               cp_runtime_built=args.get("cp_runtime_built", 0)))
     return out
 
 
@@ -129,6 +138,15 @@ def report(trace_data: dict, window: Optional[Tuple[str, str]], limit: int, symb
         lines.append("tiered: " + "; ".join(
             f"tier {tier} {len(ts)} translations, {sum(t.cpu_ns for t in ts) / 1e9:.3f} s CPU"
             + (" (promotions)" if tier == 1 else "") for tier, ts in sorted(tiers.items())))
+    stenciled = [t for t in spans if t.copy_patch]
+    if stenciled:
+        llvm0 = [t for t in tiers.get(0, []) if not t.copy_patch]
+        runtime = [t for t in stenciled if t.cp_runtime_packets]
+        built = [t for t in spans if t.cp_runtime_built]
+        lines.append(f"copy-and-patch: {len(stenciled)} blocks of stencils, {sum(t.cpu_ns for t in stenciled) / 1e9:.3f} s "
+                     f"CPU ({len(runtime)} with stencils built at run time; {sum(t.cp_runtime_built for t in built)} "
+                     f"stencils built in {len(built)} of the translations, their CPU included)"
+                     + (f"; tier 0 with LLVM {len(llvm0)} blocks, {sum(t.cpu_ns for t in llvm0) / 1e9:.3f} s" if tiers else ""))
     lo, hi = _bounds(trace_data, window)
     flushes = [e for e in trace.jit_spans(trace_data) if e["name"] == "invalidate" and lo <= e["ts"] < hi]
     if flushes:

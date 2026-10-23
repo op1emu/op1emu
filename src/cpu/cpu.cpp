@@ -765,6 +765,15 @@ void BlackFinCpu::SetTiering(uint32_t threshold) { core_->set_tiering(threshold)
 
 void BlackFinCpu::SetCopyPatch(bool enable) { core_->set_copy_patch(enable); }
 
+CpRuntimeStats BlackFinCpu::CopyPatchRuntimeStats() const { return core_->cp_runtime_stats(); }
+
+void BlackFinCpu::SetCopyPatchRuntime(bool enable, int opt) {
+    CpRuntimeSettings settings;
+    settings.enable = enable;
+    settings.opt = opt;
+    core_->set_copy_patch_runtime(settings);
+}
+
 void BlackFinCpu::SetTierBackground(bool background, uint64_t publishAfter, int jitCpu) {
     if (!publishAfter) publishAfter = kTierPublishAfter;
     workerClockSet_.store(false, std::memory_order_release);  // the worker it names stops here

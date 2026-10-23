@@ -52,6 +52,7 @@ class SPORT;
 class AudioOutput;
 class Profiler;
 struct BcoreStats;
+struct CpRuntimeStats;
 namespace profiling { struct ServiceStats; struct MemoryCensus; }
 class BcoreEventSink;
 
@@ -114,6 +115,12 @@ public:
     // (Core::set_copy_patch, on by default), the rest it compiles with LLVM.
     // Before the first Run().
     void SetCopyPatch(bool enable);
+    // The stencils it lacks for a block's packets (a parallel packet, a
+    // 32-bit instruction outside the common ones) built at run time, once
+    // per encoding (Core::set_copy_patch_runtime, on by default), at -O opt.
+    // Before the first Run().
+    void SetCopyPatchRuntime(bool enable, int opt = 0);
+    CpRuntimeStats CopyPatchRuntimeStats() const;
     // The JIT worker's CPU time so far (the profiler's per-mark count), or -1
     // where there is none or the platform cannot tell.
     int64_t JitWorkerCpuNs() const;
