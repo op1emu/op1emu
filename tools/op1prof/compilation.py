@@ -139,10 +139,12 @@ def report(trace_data: dict, window: Optional[Tuple[str, str]], limit: int, symb
             f"tier {tier} {len(ts)} translations, {sum(t.cpu_ns for t in ts) / 1e9:.3f} s CPU"
             + (" (promotions)" if tier == 1 else "") for tier, ts in sorted(tiers.items())))
     stenciled = [t for t in spans if t.copy_patch]
-    if stenciled:
+    # Also where only LLVM blocks built stencils (found in review: a window
+    # whose blocks all went to LLVM left their stencils unreported).
+    built = [t for t in spans if t.cp_runtime_built]
+    if stenciled or built:
         llvm0 = [t for t in tiers.get(0, []) if not t.copy_patch]
         runtime = [t for t in stenciled if t.cp_runtime_packets]
-        built = [t for t in spans if t.cp_runtime_built]
         lines.append(f"copy-and-patch: {len(stenciled)} blocks of stencils, {sum(t.cpu_ns for t in stenciled) / 1e9:.3f} s "
                      f"CPU ({len(runtime)} with stencils built at run time; {sum(t.cp_runtime_built for t in built)} "
                      f"stencils built in {len(built)} of the translations, their CPU included)"
