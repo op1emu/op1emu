@@ -281,9 +281,18 @@ protected:
     // not in the run's budget.
     bool inRun_ = false;
     static constexpr uint32_t kMaxChainPackets = 1u << 24;
-    // The GP timers tick every kCyclesPerTimerTick guest cycles (see Run()).
+    // The GP timers tick every kCyclesPerTimerTick guest cycles (see Run()),
+    // but for TMRCLK's: it is TIMER7's output (GPTimer::TmrclkSclks), in
+    // SCLK cycles of kCyclesPerSclk core cycles (the firmware's PLL_DIV = 5:
+    // CCLK the VCO's 400 MHz, SCLK a fifth of it).
     static constexpr uint64_t kCyclesPerTimerTick = 10000;
     static constexpr uint64_t kMaxCatchupTicks = 64;
+    static constexpr uint64_t kCyclesPerSclk = 5;
+    // The guest cycles of a TMRCLK cycle now, 0 while nothing clocks it, and
+    // its ticks counted up to a guest cycle.
+    uint64_t TmrclkCycles() const;
+    void SettleTmrclk(uint64_t cycles);
+    void AdvanceGpTimers(uint64_t cycles);
 #ifdef ENABLE_PROFILING
     // The host's work between blocks, by kind, for the dry run's check.
     // kWorkQuiet: a service the device's contract skipped would have changed
@@ -318,8 +327,10 @@ protected:
 #ifdef ENABLE_PROFILING
     uint64_t userModeLatchDeferred_ = 0;
 #endif
-    // Last cyclesElapsed value the GP timers were advanced to (see Run()).
+    // Last cyclesElapsed value the GP timers were advanced to (see Run()),
+    // and the TMRCLK ones.
     uint64_t lastTimerCycles_ = 0;
+    uint64_t lastTmrclkCycles_ = 0;
     Emulator emulator;
     std::unique_ptr<CpuState> cpuState_;
     std::unique_ptr<EmulatorMemory> bcoreMemory_;

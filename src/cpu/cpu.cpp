@@ -167,6 +167,8 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     devices.emplace_back(std::make_shared<Jtag>(0xFFE05000, 0x02));
     devices.emplace_back(std::make_shared<BootROM>(0xEF000000));
     gptimer = std::make_shared<GPTimer>(0xFFC00600);
+    // A write comes after the ticks before it (AdvanceGpTimers).
+    gptimer->SetBeforeWrite([this] { AdvanceGpTimers(time_.Cycles()); });
     for (int i = 0; i < 8; i++) {
         gptimer->BindInterrupt(i, IRQ_GPTIMER_0 + i, irqHandler);
     }
@@ -521,41 +523,7 @@ void BlackFinCpu::HostWork(bool would) {
     // The guest time at the end of the block: timers count to it.
     const uint64_t blockEnd = time_.Cycles();
     coreTimer->Advance(blockEnd);
-    // Drive the GP timers off the *delta* in guest cycles, not off it landing
-    // on a multiple. `cycles % 10000 == 0` only fires when the sampled
-    // value happens to be an exact multiple of 10000, which is essentially
-    // never true for a value derived from wall-clock microseconds -- most
-    // ticks were silently dropped, and occasionally the value sat on a
-    // multiple across calls and ticked repeatedly, so the emulated GP timer
-    // rate was erratic (measured: programmed period=200 firing at 10-19 ms
-    // instead of the 5 ms that rate implies).
-    //
-    // An accumulator is both correct and cheap. At most kMaxCatchupTicks are
-    // delivered per call and the rest of a long gap is dropped on purpose
-    // (the accumulator still advances by the full gap): after a host stall or
-    // suspend/resume, replaying the backlog would make the guest storm timer
-    // interrupts for as long as the gap was.
-    // FIXME: still one shared rate for all three clock domains, which is not
-    // how SCLK/TACLK/TMRCLK relate on real hardware.
-    uint64_t ticks = (blockEnd - lastTimerCycles_) / kCyclesPerTimerTick;
-    if (ticks) {
-        lastTimerCycles_ += ticks * kCyclesPerTimerTick;
-        if (ticks > kMaxCatchupTicks) {
-#ifdef ENABLE_PROFILING
-            if (auto* stats = Service()) stats->timerTicksDropped += ticks - kMaxCatchupTicks;
-#endif
-            ticks = kMaxCatchupTicks;
-        }
-#ifdef ENABLE_PROFILING
-        if (auto* stats = Service()) stats->timerTicks += ticks;
-        ++hostWork_[kWorkTimerTick];
-#endif
-        for (uint64_t i = 0; i < ticks; ++i) {
-            gptimer->Tick(GPTimerClockTypeSCLK);
-            gptimer->Tick(GPTimerClockTypeTACLK);
-            gptimer->Tick(GPTimerClockTypeTMRCLK);
-        }
-    }
+    AdvanceGpTimers(blockEnd);
 
     ServicePanel();
     ProcessEvents();
@@ -598,6 +566,73 @@ uint32_t BlackFinCpu::ChainBudget(uint32_t pc) {
     return due <= now ? 0 : uint32_t(std::min<uint64_t>(due - now, kMaxChainPackets));
 }
 
+// The GP timers' ticks up to guest cycle `cycles`: after a block, and before
+// a write to their registers, so that a write comes after the ticks before it
+// whenever the host works.
+void BlackFinCpu::AdvanceGpTimers(uint64_t cycles) {
+    // Drive the GP timers off the *delta* in guest cycles, not off it landing
+    // on a multiple. `cycles % 10000 == 0` only fires when the sampled
+    // value happens to be an exact multiple of 10000, which is essentially
+    // never true for a value derived from wall-clock microseconds -- most
+    // ticks were silently dropped, and occasionally the value sat on a
+    // multiple across calls and ticked repeatedly, so the emulated GP timer
+    // rate was erratic (measured: programmed period=200 firing at 10-19 ms
+    // instead of the 5 ms that rate implies).
+    //
+    // An accumulator is both correct and cheap. At most kMaxCatchupTicks are
+    // delivered per call and the rest of a long gap is dropped on purpose
+    // (the accumulator still advances by the full gap): after a host stall or
+    // suspend/resume, replaying the backlog would make the guest storm timer
+    // interrupts for as long as the gap was.
+    // FIXME: SCLK and TACLK still share one rate, which is not how they
+    // relate on real hardware. TMRCLK has its own (SettleTmrclk).
+    uint64_t ticks = (cycles - lastTimerCycles_) / kCyclesPerTimerTick;
+    if (ticks) {
+        const uint64_t from = lastTimerCycles_;
+        uint64_t dropped = 0;
+        lastTimerCycles_ += ticks * kCyclesPerTimerTick;
+        if (ticks > kMaxCatchupTicks) {
+#ifdef ENABLE_PROFILING
+            if (auto* stats = Service()) stats->timerTicksDropped += ticks - kMaxCatchupTicks;
+#endif
+            dropped = ticks - kMaxCatchupTicks;
+            ticks = kMaxCatchupTicks;
+        }
+#ifdef ENABLE_PROFILING
+        if (auto* stats = Service()) stats->timerTicks += ticks;
+        ++hostWork_[kWorkTimerTick];
+#endif
+        for (uint64_t i = 0; i < ticks; ++i) {
+            // An SCLK tick can change TMRCLK's clock (TIMER7 takes a new
+            // period or stops): TMRCLK's time before it, at the rate before.
+            SettleTmrclk(from + (dropped + i + 1) * kCyclesPerTimerTick);
+            gptimer->Tick(GPTimerClockTypeSCLK);
+            gptimer->Tick(GPTimerClockTypeTACLK);
+        }
+    }
+    SettleTmrclk(cycles);
+}
+
+uint64_t BlackFinCpu::TmrclkCycles() const { return uint64_t(gptimer->TmrclkSclks()) * kCyclesPerSclk; }
+
+// TMRCLK runs at MHz: its ticks up to guest cycle `cycles`, at once, at the
+// rate since the last settle. The rate changes only at an SCLK tick (TIMER7
+// takes a new period or stops) or a register write, which settle first, so
+// what the timers count does not depend on when the host works. With no
+// clock TMRCLK does not count, and starts from where one starts.
+void BlackFinCpu::SettleTmrclk(uint64_t cycles) {
+    if (cycles <= lastTmrclkCycles_) return;
+    const uint64_t per = TmrclkCycles();
+    if (!per) {
+        lastTmrclkCycles_ = cycles;
+        return;
+    }
+    if (const uint64_t n = (cycles - lastTmrclkCycles_) / per) {
+        lastTmrclkCycles_ += n * per;
+        gptimer->Advance(GPTimerClockTypeTMRCLK, n);
+    }
+}
+
 // A device the host services between blocks has work now.
 bool BlackFinCpu::HostHasWork(int ivg) const {
     auto& s = serviced_;
@@ -616,7 +651,13 @@ uint64_t BlackFinCpu::DueCycles(int ivg) {
     const uint64_t dmaNs = s.dma->IdleUntilNs();
     uint64_t dueNs = std::min({nextEventNs_, panel_.DeadlineNs(), dmaNs, time_.DueNs(s.rtc->NextChange())});
     if (ivg != TWI::kIvg) dueNs = std::min(dueNs, s.twi->NextByteNs());
-    const uint64_t tick = lastTimerCycles_ + kCyclesPerTimerTick;
+    uint64_t tick = lastTimerCycles_ + kCyclesPerTimerTick;
+    // A TMRCLK timer's next end of period or width, where its TRUN or
+    // interrupt changes.
+    if (const uint64_t per = TmrclkCycles()) {
+        const uint64_t ticks = gptimer->TicksToChange(GPTimerClockTypeTMRCLK);
+        if (ticks != UINT64_MAX) tick = std::min(tick, lastTmrclkCycles_ + ticks * per);
+    }
     uint64_t due = std::min(TimeSource::CyclesAt(dueNs), tick);
     const auto expiry = s.coreTimer->NextExpiry();
     if (expiry) due = std::min(due, *expiry);

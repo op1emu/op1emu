@@ -4,11 +4,13 @@
 // CYCLES reads, device reads, core timer count and ILAT, and deliver every
 // event a read hook queues at the same packet.
 #include "cpu/coretimer.h"
+#include "cpu/gptimer.h"
 #include "cpu/cpu.h"
 #include "cpu/nand.h"
 #include "cpu_state.h"
 #include "mmr.h"
 #include "../ext/bcore/src/cec.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -52,6 +54,14 @@ public:
     }
     CoreTimer& Timer() { return *coreTimer; }
     CpuState& State() { return *cpuState_; }
+    GPTimer& GpTimer() { return *gptimer; }
+    // Guest time goes on by packets with no host work, or with it after,
+    // between runs: CpuState's CEC flag bound as Core::run binds it.
+    void Retire(uint64_t packets) { time_.Retire(packets); }
+    void HostWorkNow() {
+        cpuState_->cec_pending = &bcore_cec_pending;
+        HostWork(false);
+    }
 };
 
 constexpr uint32_t kCode = 0xFFA00100;
@@ -222,6 +232,73 @@ static void RealTimeIdleKeepsToTheHostClock() {
     Require(keyedNs >= 0 && keyedNs < int64_t(kKeyNs) + 6000000, "the key arrives within a few ms of its wall time");
 }
 
+// TMRCLK (TIMER7's output, ~5.7 MHz) is counted at the host's work, many
+// ticks at once: what the timers on it count must not depend on when that
+// work comes. Each scenario does the same register writes at the same guest
+// cycles, with host work every `step` cycles, and the timers must end alike.
+// A change of TIMER7's clock (a buffered period, a pending stop) comes at an
+// SCLK tick and a register write at its cycle, between the host's works.
+struct TmrclkWrite {
+    uint64_t cycle;
+    uint32_t offset, value;
+};
+
+static std::array<uint32_t, 5> TmrclkRun(uint64_t step, const std::vector<TmrclkWrite>& writes, uint64_t cycles) {
+    TestCpu cpu(true);
+    GPTimer& t = cpu.GpTimer();
+    // TIMER7: continuous PWM on SCLK, period 14 (TMRCLK = SCLK/14).
+    t.Write32(0x70, 0x09);
+    t.Write32(0x78, 14);
+    t.Write32(0x7C, 3);
+    // TIMER0: continuous PWM on TMRCLK, a long period.
+    t.Write32(0x00, 0xA9);
+    t.Write32(0x08, 1000000);
+    t.Write32(0x0C, 199);
+    // TIMER1: PWM on TMRCLK with a short period, enabled later.
+    t.Write32(0x10, 0xB9);
+    t.Write32(0x18, 300);
+    t.Write32(0x1C, 1);
+    t.Write32(0x80, 0x81);
+    uint64_t now = 0, nextWork = step;
+    size_t w = 0;
+    while (now < cycles) {
+        const uint64_t next = std::min({nextWork, cycles, w < writes.size() ? writes[w].cycle : UINT64_MAX});
+        cpu.Retire(next - now);
+        now = next;
+        for (; w < writes.size() && writes[w].cycle == now; ++w) t.Write32(writes[w].offset, writes[w].value);
+        if (now == nextWork) {
+            cpu.HostWorkNow();
+            nextWork += step;
+        }
+    }
+    cpu.HostWorkNow();
+    return {t.Read32(0x04), t.Read32(0x14), t.Read32(0x74), t.Read32(0x88), t.Read32(0x78)};
+}
+
+static void TmrclkCountsAlikeAtAnyHostWork() {
+    const std::vector<std::pair<const char*, std::vector<TmrclkWrite>>> scenarios = {
+        {"steady", {}},
+        {"TIMER7's period buffered to 28", {{0, 0x78, 28}}},
+        {"TIMER7 disabled, stopping at the end of its period", {{0, 0x84, 0x80}}},
+        {"TIMER1 enabled between host works", {{65003, 0x80, 0x02}}},
+        {"TIMER1 enabled, then TIMER7 aborted", {{65003, 0x80, 0x02}, {97001, 0x84, 0x80}, {97001, 0x88, 1u << 31}}},
+    };
+    for (const auto& [name, writes] : scenarios) {
+        const auto fine = TmrclkRun(10, writes, 260000);
+        for (uint64_t step : {7u, 3333u, 10000u, 65536u}) {
+            const auto coarse = TmrclkRun(step, writes, 260000);
+            if (coarse != fine) {
+                std::fprintf(stderr, "%s, host work every %llu cycles:", name, static_cast<unsigned long long>(step));
+                for (size_t i = 0; i < fine.size(); ++i) std::fprintf(stderr, " %u/%u", coarse[i], fine[i]);
+                std::fprintf(stderr, "\n");
+                Require(false, "TMRCLK timers count alike whenever the host works");
+            }
+        }
+        if (writes.empty() && fine[0] != 260000 / 70) std::fprintf(stderr, "TIMER0 at %u\n", fine[0]);
+        if (writes.empty()) Require(fine[0] == 260000 / 70, "TIMER0 counts TMRCLK, a tick per 70 cycles");
+    }
+}
+
 int main() {
     // Isolate OTP creation performed by BlackFinCpu's constructor.
     char directory[] = "/tmp/op1-cpu-chain-test-XXXXXX";
@@ -230,6 +307,7 @@ int main() {
     std::filesystem::current_path(directory);
     IdleTakesItsInterrupt();
     RealTimeIdleKeepsToTheHostClock();
+    TmrclkCountsAlikeAtAnyHostWork();
     unsigned pairs = 0;
     uint64_t plainRuns = 0, chainedRuns = 0, plainLoopRuns = 0, chainedLoopRuns = 0;
     uint64_t plainQuietRuns = 0, chainedQuietRuns = 0;

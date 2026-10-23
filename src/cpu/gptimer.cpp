@@ -1,4 +1,6 @@
 #include "gptimer.h"
+#include <algorithm>
+#include <cstdint>
 
 enum GPTimerMode {
     GPTIMER_MODE_RESET = 0x0,
@@ -46,6 +48,17 @@ public:
     void clearInterruptPending();
 
     void Tick(GPTimerClockType clockType);
+    // Ticks of clock until one changes more than the counter (an end of the
+    // period or the width, an overflow); UINT64_MAX when the timer ignores
+    // the clock. Advance(n) does what n Ticks do.
+    uint64_t TicksToChange(GPTimerClockType clock) const;
+    void Advance(GPTimerClockType clock, uint64_t ticks);
+    // The SCLK cycles of a period while the timer runs continuous PWM on
+    // SCLK, else 0.
+    u32 SclkPwmPeriod() const {
+        const bool pwm = running && mode == GPTIMER_MODE_PWM_OUT && countToEndOfPeriod;
+        return pwm && clockType == GPTimerClockTypeSCLK ? period : 0;
+    }
 
 private:
     void startTimer();
@@ -138,6 +151,29 @@ void GPTimerImpl::stopTimer() {
 void GPTimerImpl::clearInterruptPending() {
     interruptPending = false;
     TriggerInterrupt(0);
+}
+
+uint64_t GPTimerImpl::TicksToChange(GPTimerClockType clock) const {
+    if (!running || clock != clockType) return UINT64_MAX;
+    // Tick() counts, then looks for the overflow and for the period's or the
+    // width's end, whichever its mode has.
+    const uint32_t end = countToEndOfPeriod ? period : width;
+    const uint64_t toOverflow = counter == 0xFFFFFFFF ? (1ull << 32) : 0xFFFFFFFFull - counter;
+    return end > counter ? std::min<uint64_t>(end - counter, toOverflow) : toOverflow;
+}
+
+void GPTimerImpl::Advance(GPTimerClockType clock, uint64_t ticks) {
+    while (ticks) {
+        const uint64_t change = TicksToChange(clock);
+        if (change == UINT64_MAX) return;
+        if (ticks < change) {
+            counter += uint32_t(ticks);
+            return;
+        }
+        counter += uint32_t(change - 1);
+        Tick(clock);
+        ticks -= change;
+    }
 }
 
 void GPTimerImpl::Tick(GPTimerClockType clock) {
@@ -274,6 +310,7 @@ u32 GPTimer::Read32(u32 offset) {
 }
 
 void GPTimer::Write32(u32 offset, u32 value) {
+    if (beforeWrite_) beforeWrite_();
     statusValid_ = false;
     if (offset < 0x80) {
         int timerIndex = offset / 0x10;
@@ -287,6 +324,22 @@ void GPTimer::BindInterrupt(int id, int q, InterruptHandler callback) {
     if (id < 0 || id >= timers.size()) return;
     timers[id]->BindInterrupt(q, callback);
 }
+
+uint64_t GPTimer::TicksToChange(GPTimerClockType clockType) const {
+    uint64_t ticks = UINT64_MAX;
+    for (auto& timer : timers) ticks = std::min(ticks, timer->TicksToChange(clockType));
+    return ticks;
+}
+
+void GPTimer::Advance(GPTimerClockType clockType, uint64_t ticks) {
+    for (auto& timer : timers) {
+        if (!timer->isRunning()) continue;
+        statusValid_ = false;
+        timer->Advance(clockType, ticks);
+    }
+}
+
+u32 GPTimer::TmrclkSclks() const { return timers[7]->SclkPwmPeriod(); }
 
 void GPTimer::Tick(GPTimerClockType clockType) {
     for (auto& timer : timers) {

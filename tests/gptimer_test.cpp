@@ -3,6 +3,7 @@
 // second is made to rebuild it before each read, and both must agree, as must
 // every other register.
 #include "cpu/gptimer.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -59,8 +60,67 @@ static void DisableIsAPendingStop() {
     }
 }
 
+// TMRCLK ticks come many at a time (GPTimer::Advance): advancing n ticks must
+// leave every register and interrupt as n Ticks do, and TicksToChange must be
+// how far that can go before a timer's state changes.
+static void AdvanceIsTicks(uint32_t seed) {
+    GPTimer ticked(0xFFC00600), advanced(0xFFC00600);
+    int interrupts[2] = {};
+    for (int i = 0; i < 8; ++i) {
+        ticked.BindInterrupt(i, 0, [&](int, int level) { interrupts[0] += level; });
+        advanced.BindInterrupt(i, 0, [&](int, int level) { interrupts[1] += level; });
+    }
+    std::mt19937 rng(seed);
+    auto both = [&](auto&& f) { f(ticked); f(advanced); };
+    for (int step = 0; step < 4000; ++step) {
+        const uint32_t op = rng() % 8, timer = rng() % 8, value = rng();
+        switch (op) {
+        case 0: both([&](GPTimer& t) { t.Write32(timer * 0x10 + 0x00, (value & 0x9F) | 0x01); }); break;  // PWM CONFIG
+        case 1: both([&](GPTimer& t) { t.Write32(timer * 0x10 + 0x08, value % 300 + 1); }); break;          // PERIOD
+        case 2: both([&](GPTimer& t) { t.Write32(timer * 0x10 + 0x0C, value % 300 + 1); }); break;          // WIDTH
+        case 3: both([&](GPTimer& t) { t.Write32(0x80, 1u << timer); }); break;                            // ENABLE
+        case 4: both([&](GPTimer& t) { t.Write32(0x84, 1u << timer); }); break;                            // DISABLE
+        default: {
+            const auto clock = static_cast<GPTimerClockType>(value % 3);
+            const uint64_t change = advanced.TicksToChange(clock);
+            const uint64_t n = rng() % 3 ? rng() % 700 + 1 : std::min<uint64_t>(change, 100000);
+            const uint32_t before = advanced.Read32(0x88);
+            advanced.Advance(clock, n);
+            for (uint64_t i = 0; i < n; ++i) ticked.Tick(clock);
+            if (n < change)
+                Require(advanced.Read32(0x88) == before, "seed " + std::to_string(seed) +
+                                                             ": no state changes before TicksToChange");
+        }
+        }
+        for (uint32_t offset = 0; offset < 0x8C; offset += 4)
+            Require(ticked.Read32(offset) == advanced.Read32(offset),
+                    "seed " + std::to_string(seed) + " step " + std::to_string(step) + ": register " +
+                        std::to_string(offset) + " differs");
+        Require(interrupts[0] == interrupts[1], "seed " + std::to_string(seed) + ": interrupts differ");
+    }
+}
+
+// TMRCLK as the OP-1 has it: TIMER7's PWM output, counting SCLK, period 14.
+static void Timer7DrivesTmrclk() {
+    GPTimer timers(0xFFC00600);
+    Require(timers.TmrclkSclks() == 0, "no TMRCLK before TIMER7 runs");
+    timers.Write32(7 * 0x10 + 0x00, 0x01 | 0x08);  // PWM out, count to the period, SCLK
+    timers.Write32(7 * 0x10 + 0x08, 14);
+    timers.Write32(7 * 0x10 + 0x0C, 3);
+    Require(timers.TmrclkSclks() == 0, "nor while it is only configured");
+    timers.Write32(0x80, 1u << 7);
+    Require(timers.TmrclkSclks() == 14, "a TMRCLK cycle per TIMER7 period, in SCLK cycles");
+    for (int i = 0; i < 100; ++i) timers.Tick(GPTimerClockTypeSCLK);
+    Require(timers.TmrclkSclks() == 14, "through TIMER7's periods");
+    timers.Write32(0x84, 1u << 7);
+    timers.Write32(0x88, 1u << 31);  // TRUN7: stop at once
+    Require(timers.TmrclkSclks() == 0, "none once TIMER7 stops");
+}
+
 int main() {
     DisableIsAPendingStop();
+    Timer7DrivesTmrclk();
+    for (uint32_t seed = 1; seed <= 20; ++seed) AdvanceIsTicks(seed);
     for (uint32_t seed = 1; seed <= 20; ++seed) {
         GPTimer kept(0xFFC00600), rebuilt(0xFFC00600);
         int interrupts[2] = {};
