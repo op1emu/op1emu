@@ -7,7 +7,8 @@ like the real emulator (with host instruction counts under --profile-counters).
 Behavior comes from FAKE_* variables (the runner keeps those):
   FAKE_SCALE   multiply execution CPU by this (default 1.0)
   FAKE_WORK    packets per mark step (default 1000)
-  FAKE_MODE    comma list: hang, fail, noise (random workload), dropped,
+  FAKE_MODE    comma list: hang, fail, noise (random workload), statenoise
+               (random guest state, the same work), dropped,
                closeout (close stdout after the first marks, keep running),
                spew (print without end after the first mark)
   FAKE_IRQ     interrupts taken per mark step (default 3)
@@ -17,6 +18,9 @@ Behavior comes from FAKE_* variables (the runner keeps those):
   FAKE_BUILD   JSON merged into the [build] line ("none": print no line)
   FAKE_SKEW    OPTION: one more packet per mark step when OPTION is given
   FAKE_ENVLOG  write the received environment here
+  FAKE_STATE   OPTION=MARK: with OPTION given, the guest state (the
+               --profile-mark-digest line) differs from MARK on
+  FAKE_VIOLATE OPTION: chain violations at every mark when OPTION is given
 """
 import json
 import os
@@ -92,6 +96,18 @@ for step, name in enumerate(names):
     print(f"[mark] {name} pc=0x{step:08x} wall_ms={wall / 1e6:.3f} cpu_ms={cpu / 1e6:.3f} "
           f"process_cpu_ms={(cpu + 1000) / 1e6:.3f} "
           + " ".join(f"{k}={v}" for k, v in {**counters, **host}.items()) + " deterministic=1", flush=True)
+    chained = 0 if "--no-chain" in args or "--profile-chain-dry" in args else step * work // 4
+    would = step * work // 4 if "--profile-chain-dry" in args else 0
+    violated = step if os.environ.get("FAKE_VIOLATE") and os.environ["FAKE_VIOLATE"] in args else 0
+    print(f"[chain] {name} returns={step * work // 3 - chained} chained={chained} host_only=0 service={step} "
+          f"deadline=0 access=0 cec=0 pending=0 miss=0 would={would} violations={violated}"
+          + (f" violation_service={violated}" if violated else ""), flush=True)
+    if "--profile-mark-digest" in args:
+        state_opt, _, state_from = os.environ.get("FAKE_STATE", "").partition("=")
+        changed = bool(state_opt) and state_opt in args and state_from in names[:step + 1]
+        regs = random.getrandbits(64) if "statenoise" in mode else step * 31 + (1 if changed else 0)
+        print(f"[digest] {name} regs={regs:016x} dag={step:016x} sys=0000000000000001 "
+              f"cec=00000012,00000000,0000001f memory={step * 97:016x}", flush=True)
     if name == until:
         break
     if "spew" in mode and step == 1:

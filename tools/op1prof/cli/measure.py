@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from .. import ab, capture_set, perf, stats, trace, verify
+from .. import ab, capture_set, gate, perf, stats, sweep, trace, verify
 from .. import report as perf_report
 from ..categories import Categories
 from ..runner import instrument_args, run, sha256_file, snapshot_binary
@@ -85,6 +85,50 @@ def cmd_verify(args) -> int:
         print("to find where the runs first differ, repeat with --checksum 65536 and run op1prof diverge")
     print(f"{report['status']} ({len(report['runs'])} runs; {out / 'results.json'})")
     return 0 if report["status"] == "deterministic" else 1
+
+
+def cmd_gate(args) -> int:
+    _check_args(args.arg)
+    phase = _phase(args)
+    try:
+        variants = [gate.parse_variant(text) for text in args.variant]
+    except ValueError as error:
+        raise SystemExit(f"--variant: {error}")
+    names = [name for name, _ in variants]
+    taken = {"base", "plain"} | {name for name, _ in gate.DEFAULT_VARIANTS}
+    if len(set(names)) != len(names) or taken & set(names):
+        raise SystemExit(f"--variant names must be unique and not {sorted(taken)}")
+    for _, extra in variants:
+        _check_args(extra)
+    if not _preflight(args, compares=True):
+        return 2
+    out = _out(args, "gate")
+    spec = _spec(args, snapshot_binary(args.binary, out))
+    base = _spec(args, snapshot_binary(args.base_bin, out)) if args.base_bin else None
+    report = gate.gate(spec, out, base, variants, phase)
+    print(gate.format_gate(report))
+    print(f"({out / 'results.json'})")
+    return 0 if report["status"] == "same" else 1
+
+
+def cmd_sweep(args) -> int:
+    _check_args(args.arg)
+    phase = _phase(args)
+    try:
+        configs = sweep.configurations([sweep.parse_param(p) for p in args.param],
+                                       [sweep.parse_config(c) for c in args.config])
+    except ValueError as error:
+        raise SystemExit(f"--param/--config: {error}")
+    for _, extra in configs:
+        _check_timing_args(extra)
+    _check_timing_args(args.arg)
+    if not _preflight(args, compares=True):
+        return 2
+    out = _out(args, "sweep")
+    report = sweep.sweep(_spec(args, snapshot_binary(args.binary, out)), out, configs, args.rounds, phase)
+    print(sweep.format_sweep(report))
+    print(f"({out / 'results.json'})")
+    return 0 if report["status"] == "done" else 1
 
 
 def _verify_instrumentation(args) -> int:

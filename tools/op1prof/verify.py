@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .marks import SHAPE, WORKLOAD, Mark
-from . import diverge
+from . import diverge, gate
 from .census import Symbols
 from .runner import RunSpec, run
 
@@ -57,8 +57,14 @@ def verify(spec: RunSpec, runs: int, out: Path, expect: Optional[Path], write_ex
             path.write_text(json.dumps(report, indent=1))
             return report
         tuples.append(_tuple(result.marks))
+    states = [gate.digests((out / f"run{index:02d}" / "log.txt").read_text(errors="replace").splitlines())
+              for index in range(runs)]
     for index, other in enumerate(tuples[1:], 1):
         report["differences"] += [f"run {index}: {line}" for line in _diff(tuples[0], other)]
+        # With --arg=--profile-mark-digest: the guest's state at every mark too.
+        for name, state in states[0].items():
+            if states[index].get(name) != state:
+                report["differences"].append(f"run {index}: {name}: guest state differs (--profile-mark-digest)")
         if spec.checksum_every:
             # Guest state, compared on its own: two runs can do the same
             # counted work and still hold different registers.

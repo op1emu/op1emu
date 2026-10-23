@@ -7,7 +7,7 @@ from pathlib import Path
 from .analyze import (cmd_annotate, cmd_census, cmd_compile, cmd_diff, cmd_diverge, cmd_perf, cmd_probes,
                       cmd_report, cmd_service, cmd_threads)
 from .common import _checksum, _common, _counters, _dump_pc, _hex, _positive
-from .measure import _print_ab, cmd_ab, cmd_extend, cmd_run, cmd_verify
+from .measure import _print_ab, cmd_ab, cmd_extend, cmd_gate, cmd_run, cmd_sweep, cmd_verify
 
 __all__ = ["main", "_print_ab"]
 
@@ -38,6 +38,29 @@ def main(argv=None) -> int:
     _checksum(p)
     _common(p)
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("gate", help="the guest's work and state at every mark the same: chained, without "
+                                    "chaining, chaining dry, other variants, and an older binary")
+    p.add_argument("--binary", required=True, type=Path)
+    p.add_argument("--base-bin", type=Path, help="an older binary whose plain run is the reference")
+    p.add_argument("--variant", action="append", default=[], metavar="NAME=ARGS",
+                   help="another run of --binary with these emulator arguments (repeatable), "
+                        "e.g. no-loops='--no-loop-blocks'")
+    _common(p)
+    p.set_defaults(func=cmd_gate)
+
+    p = sub.add_parser("sweep", help="one binary with several settings, a few rounds each: compile, worker, "
+                                     "execution and wall time per setting")
+    p.add_argument("--binary", required=True, type=Path)
+    p.add_argument("--param", action="append", default=[], metavar="FLAG=V1,V2,...",
+                   help="an emulator flag (its leading dashes optional) and its values, e.g. "
+                        "tier-threshold=3000,30000 (repeatable: every combination)")
+    p.add_argument("--config", action="append", default=[], metavar="NAME=ARGS",
+                   help="a configuration of its own (repeatable; ARGS split at spaces, may be empty)")
+    p.add_argument("--rounds", type=_positive, default=2, help="runs of each configuration (default 2)")
+    _counters(p)
+    _common(p)
+    p.set_defaults(func=cmd_sweep)
 
     p = sub.add_parser("ab", help="paired AB/BA comparison")
     p.add_argument("--base-bin", required=True, type=Path)

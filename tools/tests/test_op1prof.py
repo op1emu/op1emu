@@ -13,7 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from op1prof import ab, capture_set, census, cli, compilation, diff, exits, machine, service, stats, trace, verify  # noqa: E402
+from op1prof import (ab, capture_set, census, cli, compilation, diff, exits, gate, machine, service, stats,  # noqa: E402
+                     sweep, trace, verify)
 from op1prof.marks import parse_mark, workload_diff, parse_marks  # noqa: E402
 from op1prof.runner import RESERVED_ARGS, RunSpec, run, snapshot_binary, sha256_file  # noqa: E402
 
@@ -216,6 +217,111 @@ def test_verify_records_inputs_and_checks_them_against_an_expect_file(files, tmp
     assert report["status"] == "differences found"
     assert any("input otp_sha256" in line for line in report["differences"])
 
+
+
+def test_verify_compares_the_mark_digests(files, tmp_path, monkeypatch):
+    report = verify.verify(spec(files, args=["--profile-mark-digest"]), 2, tmp_path / "v1", None, None)
+    assert report["status"] == "deterministic"
+    # The same work counted, other registers: only the digests tell.
+    monkeypatch.setenv("FAKE_MODE", "statenoise")
+    report = verify.verify(spec(files, args=["--profile-mark-digest"]), 3, tmp_path / "v2", None, None)
+    assert report["status"] == "differences found"
+    assert all("guest state differs" in line for line in report["differences"])
+
+
+# ---- gate ----
+
+def test_gate_runs_every_variant_and_agrees(files, tmp_path):
+    report = gate.gate(spec(files), tmp_path / "g", None, [("extra", ["--no-loop-blocks"])], ("start", "main-frame"))
+    assert report["status"] == "same", report["differences"]
+    assert [r["name"] for r in report["runs"]] == ["plain", "no-chain", "chain-dry", "extra"]
+    plain, nochain, dry, _ = report["runs"]
+    assert plain["chain"]["chained"] > 0 and nochain["chain"]["chained"] == 0 and dry["chain"]["would"] > 0
+    assert set(plain["digests"]) == {"start", "bootrom", "main-display", "main-frame"}
+    assert "same" in gate.format_gate(report)
+
+
+def test_gate_finds_other_state_work_and_violations(files, tmp_path, monkeypatch):
+    # Other registers from main-display on without chaining: the work counted
+    # is the same, the state is not.
+    monkeypatch.setenv("FAKE_STATE", "--no-chain=main-display")
+    report = gate.gate(spec(files), tmp_path / "g1", None, [], ("start", "main-frame"))
+    assert report["status"] == "differences found"
+    assert report["differences"] == ["no-chain: main-display: guest state differs (regs)",
+                                     "no-chain: main-frame: guest state differs (regs)"]
+    monkeypatch.delenv("FAKE_STATE")
+    # More packets in the dry run, and violations in a variant.
+    monkeypatch.setenv("FAKE_SKEW", "--profile-chain-dry")
+    monkeypatch.setenv("FAKE_VIOLATE", "--no-loop-blocks")
+    report = gate.gate(spec(files), tmp_path / "g2", None, [("loops", ["--no-loop-blocks"])], ("start", "main-frame"))
+    found = report["differences"]
+    assert any(line.startswith("chain-dry: bootrom.packets") for line in found)
+    assert "loops: chain violations at main-frame: violation_service=3, violations=3" in found
+    assert "differs" in gate.format_gate(report)
+
+
+def test_gate_against_an_older_binary(files, tmp_path, monkeypatch):
+    # The base is the reference: a binary that counts one more packet per
+    # mark step (FAKE_SKEW on its own argument) differs from it in every run.
+    base = spec(files, args=["--rtc-epoch", "0"])
+    monkeypatch.setenv("FAKE_SKEW", "--rtc-epoch")
+    report = gate.gate(spec(files), tmp_path / "g", base, [], ("start", "main-frame"))
+    assert report["reference"] == "base" and [r["name"] for r in report["runs"]][0] == "base"
+    assert {line.split(":")[0] for line in report["differences"]} == {"plain", "no-chain", "chain-dry"}
+
+
+def test_cli_gate(files, tmp_path):
+    assert _cli(files, "gate", "--out", str(tmp_path / "g"), "--variant", "loops=--no-loop-blocks") == 0
+    with pytest.raises(SystemExit):
+        _cli(files, "gate", "--out", str(tmp_path / "g2"), "--variant", "no-chain=--x")
+    with pytest.raises(SystemExit):
+        _cli(files, "gate", "--out", str(tmp_path / "g3"), "--variant", "bad")
+
+
+# ---- sweep ----
+
+def test_sweep_configurations_are_every_combination_then_the_named():
+    configs = sweep.configurations([("--tier-threshold", ["1", "2"]), ("--jit-cpu", ["3"])],
+                                   [("plain", []), ("off", ["--no-copy-patch"])])
+    assert configs == [("tier-threshold=1,jit-cpu=3", ["--tier-threshold", "1", "--jit-cpu", "3"]),
+                       ("tier-threshold=2,jit-cpu=3", ["--tier-threshold", "2", "--jit-cpu", "3"]),
+                       ("plain", []), ("off", ["--no-copy-patch"])]
+    with pytest.raises(ValueError):
+        sweep.configurations([], [])
+    with pytest.raises(ValueError):
+        sweep.configurations([], [("a", []), ("a", ["-x"])])
+    assert sweep.parse_param("tier-threshold=1") == sweep.parse_param("--tier-threshold=1") == ("--tier-threshold", ["1"])
+    for bad in ("=1", "tier-threshold=", "tier-threshold=1,,2"):
+        with pytest.raises(ValueError):
+            sweep.parse_param(bad)
+    assert sweep.tier_wait_ms(["[tier] a promoted=1 wait_ms=2.5", "[tier] b promoted=2 wait_ms=7.000"], "b") == 7.0
+
+
+def test_sweep_runs_rounds_in_alternating_order_and_summarizes(files, tmp_path, monkeypatch):
+    # A configuration that does other work than the first (FAKE_SKEW): reported, not an error.
+    monkeypatch.setenv("FAKE_SKEW", "--slow")
+    configs = [("plain", []), ("slow", ["--slow"])]
+    report = sweep.sweep(spec(files), tmp_path / "s", configs, 2, ("start", "main-frame"))
+    assert report["status"] == "done"
+    assert [(r["config"], r["round"]) for r in report["runs"]] == [("plain", 0), ("slow", 0), ("slow", 1),
+                                                                   ("plain", 1)]
+    rows = {row["config"]: row for row in report["summary"]}
+    assert rows["plain"]["n"] == 2 and rows["plain"]["compile_cpu_ms"]["mean"] > 0
+    assert rows["plain"]["compile_insns"] is None  # no --counters
+    assert report["workload"]["slow"] and "other guest work than plain" in sweep.format_sweep(report)
+
+
+def test_sweep_flags_a_configuration_whose_rounds_disagree(files, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "noise")
+    report = sweep.sweep(spec(files), tmp_path / "s", [("plain", [])], 2, ("start", "main-frame"))
+    assert report["status"] == "1 runs failed or did other work"
+    assert "another workload than its first round" in report["runs"][1]["error"]
+
+
+def test_cli_sweep(files, tmp_path):
+    assert _cli(files, "sweep", "--out", str(tmp_path / "s"), "--param", "tier-threshold=1,2", "--rounds", "1") == 0
+    with pytest.raises(SystemExit):  # diagnostic instrumentation changes timing
+        _cli(files, "sweep", "--out", str(tmp_path / "s2"), "--config", "c=--profile-census x")
 
 
 def test_input_hashes_follow_content_not_file_metadata(files):

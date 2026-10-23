@@ -571,6 +571,8 @@ B=../build-prof/op1emu; IN="--nand ../nand.bin --otp ../otp.bin --cpu 2"
 python3 -m op1prof run    --binary $B $IN                    # one boot: marks, compile/execution split
 python3 -m op1prof verify --binary $B $IN --runs 2           # the workload must repeat exactly
 python3 -m op1prof verify --binary $B $IN --instrumentation  # no instrumentation may change it
+python3 -m op1prof gate   --binary $B $IN --base-bin old/op1emu  # the guest's state: chained, unchained, dry
+python3 -m op1prof sweep  --binary $B $IN --param tier-threshold=3000,30000 --rounds 2
 python3 -m op1prof ab     --base-bin old/op1emu --new-bin $B $IN --pairs 4
 python3 -m op1prof ab     --base-bin $B $IN --aa --pairs 4   # noise floor
 python3 -m op1prof extend op1prof-ab-* --pairs 2           # more pairs for the same batch
@@ -628,6 +630,36 @@ diagnostic options in `--arg`, which would switch one on in every
 configuration, the plain one included. On a stock boot to `main-display` all six
 settings ran the canonical 346,047,018 blocks and 1,151,352,850 packets,
 with 68,688 interrupts taken and 62,454 latched.
+
+`gate` checks a change that must not change what the guest does, on the
+boot. The binary runs as it is, with every block returning to the host
+(`--no-chain`), with blocks that only count where they would have chained
+(`--profile-chain-dry`), and with each `--variant NAME=ARGS` (say
+`no-loops=--no-loop-blocks`); `--base-bin` runs an older binary first, and
+its run is the reference (else the plain run is). The runs are serial, and
+all print the guest's state at every mark (`--profile-mark-digest`:
+registers, DAG, system registers, CEC, RAM): every one must have the
+reference's state and counted work at every mark, and in every run the
+chain counters' `violations` (a block that chained past work that was due)
+must be 0. On a stock boot to `main-display` the four runs of one binary,
+plain, no-chain, chain-dry and no-loop-blocks, agree, with execution CPU
+2.6, 15.4, 35.1 and 3.6 s. `verify` compares the digests too, when its runs
+print them (`--arg=--profile-mark-digest`): two runs can count the same
+work and hold other registers.
+
+`sweep` runs one binary with several settings, `--rounds` times each
+(default 2), serially, the configurations in reverse order in every other
+round, so that a machine drifting over the sweep moves none more than
+another: every combination of the values of each `--param FLAG=V1,V2,...`
+(the flag's dashes optional, as argparse reads `--param --flag=...` as an
+option), and each `--config NAME=ARGS`. It reports per configuration the
+means of the CPU thread's compile time, the JIT worker's, all JIT CPU,
+execution CPU, the CPU thread's wait for the worker (`[tier]` `wait_ms`),
+wall time and, with `--counters`, host instructions; a spread over 5%
+between rounds; a configuration whose rounds did different guest work (an
+error) and one that did other work than the first configuration (reported:
+a setting may change how often the guest polls). It is a survey: between
+two settings, `ab`'s paired runs and their interval decide.
 
 Before starting, op1prof refuses to run when another emulator is running (it
 would compete for CPU and memory, and a second instance cannot bind the USB/IP
