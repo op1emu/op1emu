@@ -874,6 +874,9 @@ struct Profiler::Impl : BcoreEventSink {
                     if (e.ok && e.shape.terminator) std::fprintf(file, ",\"terminator\":\"%s\"", e.shape.terminator);
                     // Tiered compilation (bcore's Core::set_tiering): 0 or 1.
                     if (e.ok && e.shape.tier >= 0) std::fprintf(file, ",\"tier\":%d", e.shape.tier);
+                    // A tier-0 block's threshold, its size applied (--tier-size-ref).
+                    if (e.ok && e.shape.tier_threshold)
+                        std::fprintf(file, ",\"tier_threshold\":%u", e.shape.tier_threshold);
                     // A tier-0 block copied together from stencils (Core::set_copy_patch).
                     if (e.ok && e.shape.copy_patch) std::fputs(",\"copy_patch\":true", file);
                     // Stencils built at run time (Core::set_copy_patch_runtime): the

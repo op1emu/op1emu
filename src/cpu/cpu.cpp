@@ -761,7 +761,9 @@ void BlackFinCpu::SetLoopBlocks(bool loop) { core_->set_loop_blocks(loop); }
 
 void BlackFinCpu::SetSteadySkip(int mode) { core_->set_steady_skip(mode); }
 
-void BlackFinCpu::SetTiering(uint32_t threshold) { core_->set_tiering(threshold); }
+void BlackFinCpu::SetTiering(uint32_t threshold, uint32_t sizeRef) { core_->set_tiering(threshold, sizeRef); }
+
+void BlackFinCpu::SetLightTier1(bool light) { core_->set_light_tier1(light); }
 
 void BlackFinCpu::SetCopyPatch(bool enable) { core_->set_copy_patch(enable); }
 

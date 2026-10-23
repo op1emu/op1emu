@@ -102,7 +102,19 @@ public:
     // 33 s while execution rose from 2.1 to 2.9 s; 30000 gives up 4.6 s of
     // JIT CPU against 100000 for 0.4 s less execution.
     static constexpr uint32_t kTierThreshold = 30000;
-    void SetTiering(uint32_t threshold);
+    // A block of more than sizeRef packets waits as many times longer as it
+    // has packets more (bcore's tier_threshold; 0: one threshold for all).
+    // On the boot most promotions were blocks just past the threshold that
+    // then ran little, the large ones costing the most to compile again: at
+    // 16 the JIT worker's CPU fell from 8.1 to 5.0 s and execution rose 7%
+    // (0.16 s); the synth phase after it, where some of those blocks are
+    // promoted now, executed 15% (0.2 s) more.
+    static constexpr uint32_t kTierSizeRef = 16;
+    void SetTiering(uint32_t threshold, uint32_t sizeRef = kTierSizeRef);
+    // Promotions other than loop blocks optimized with bcore's light
+    // pipeline (Core::set_light_tier1) rather than the default one. Before
+    // the first Run().
+    void SetLightTier1(bool light);
     // Whether those second compilations run on a thread of their own (on by
     // default), at a lower priority, on jitCpu if not -1. In deterministic
     // mode each one's code takes the cheap one's place publishAfter packets

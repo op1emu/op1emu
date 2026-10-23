@@ -151,7 +151,11 @@ microseconds, the clock `perf record -k mono` uses.
 - With tiered compilation (bcore's `Core::set_tiering`, `--tier-threshold`,
   on by default at 30000) every block is compiled at tier 0 first and again
   at tier 1 once it started that many times; `args.tier` says which (absent
-  untiered). A promotion compiled on bcore's worker thread
+  untiered). A block of more than `--tier-size-ref` packets (default 16; 0
+  for none) waits as many times longer as it has packets more: a tier-0
+  span's `args.tier_threshold` is its block's. Promotions other than loop
+  blocks take bcore's light IR pipeline (`--tier1-pipeline light`, the
+  default; `o1` for the full one). A promotion compiled on bcore's worker thread
   (`Core::set_tier_background`, on by default; `--no-tier-background`)
   makes two `translate` spans on the CPU thread, `args.part` `lift` (the
   module, no code yet: it counts as compile time, not as a translation) and
