@@ -117,6 +117,16 @@ def perf_command(capture: Path) -> List[str]:
     return ["perf", "--buildid-dir", str(cache.resolve())] if cache.is_dir() else ["perf"]
 
 
+def event_order(data: Path) -> List[str]:
+    """The events of a capture in perf's own order (perf evlist): which of
+    several is the first a report divides the time by. Empty if perf cannot
+    tell."""
+    listed = subprocess.run([*perf_command(data.parent), "evlist", "-i", str(data)], capture_output=True, text=True)
+    if listed.returncode != 0:
+        return []
+    return [line.strip() for line in listed.stdout.splitlines() if line.strip() and not line.startswith("#")]
+
+
 def preflight(event: str, rate: List[str], call_graph: str = "fp") -> Optional[str]:
     try:
         paranoid = int(Path("/proc/sys/kernel/perf_event_paranoid").read_text())

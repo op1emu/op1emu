@@ -4,6 +4,7 @@ Run: python3 -m pytest tools/tests
 """
 import hashlib
 import json
+import tempfile
 import os
 import stat
 import sys
@@ -505,7 +506,7 @@ def test_leaves_must_be_the_same_samples_in_the_same_order():
     other = [CHAINED_LEAVES[0], (42, "10.000000200", 51, CHAINED_LEAVES[1][3])]
     with pytest.raises(ValueError, match="sample 1"):
         list(perf_report.with_leaves(chains, perf_report.parse_leaves(_leaves(*other))))
-    with pytest.raises(ValueError, match="2 samples with call chains, 1 without"):
+    with pytest.raises(ValueError, match="more samples with call chains than without them .from sample 1"):
         list(perf_report.with_leaves(perf_report.parse_samples(_script(*CHAINED)),
                                      perf_report.parse_leaves(_leaves(CHAINED_LEAVES[0]))))
     with pytest.raises(ValueError, match="cannot parse"):
@@ -561,6 +562,101 @@ def test_attribution_weights_buckets_and_inclusive_time():
     assert result.incl_blocks == {"bb_0x01a5e27e": 400}
     assert result.incl_symbols["BlackFinCpu::Run()"] == 450 and result.incl_symbols["NFC::Read(unsigned int)"] == 300
     assert result.self_symbols["memcpy (libc.so.6)"] == 100
+
+
+def test_the_jits_samples_are_split_by_stage_and_pass():
+    """Samples inside translations (the CPU thread) and the worker thread's
+    in the window, by the leaf-most stage frame and the nearest pass; an
+    allocator leaf keeps its caller's stage."""
+    lift = "LiftVisitor::decode_COMP3op_ADD(unsigned short, unsigned short, unsigned short) (/x/op1emu)"
+    isel = "llvm::SelectionDAGISel::SelectCode(llvm::SDNode*) (/x/op1emu)"
+    isel_pass = "llvm::SelectionDAGISel::runOnMachineFunction(llvm::MachineFunction&) (/x/op1emu)"
+    worker = "CompileWorker::loop() (/x/op1emu)"
+    combine = ("llvm::detail::PassModel<llvm::Function, llvm::InstCombinePass, llvm::PreservedAnalyses, "
+               "llvm::AnalysisManager<llvm::Function>>::run(llvm::Function&) (/x/op1emu)")
+    samples = [(42, "10.000000550", 40, [lift, "Core::compile(unsigned int) (/x/op1emu)", RUN]),
+               (42, "10.000000560", 60, ["mi_malloc (/x/op1emu)", isel, isel_pass, RUN]),
+               (43, "10.000000300", 70, ["llvm::InstCombinerImpl::run() (/x/op1emu)", combine, worker]),
+               (43, "10.000000400", 30, ["llvm::RAGreedy::selectOrSplit() (/x/op1emu)",
+                                         "(anonymous namespace)::RAGreedy::runOnMachineFunction(llvm::MachineFunction&)"
+                                         " (/x/op1emu)", worker]),
+               (43, "12.000000000", 99, ["llvm::RAGreedy::x() (/x/op1emu)", worker]),        # after the window
+               (43, "10.000000300", 99, ["glfwPollEvents (/x/libglfw.so)"])]                 # not the worker
+    result = perf_report.attribute(perf_report.parse_samples(_script(*samples)), _perf_trace(), ("a", "b"),
+                                   Categories.load(), perf_report.Labels())
+    assert result.counts == {"compile": 2, "worker": 2, "other_threads": 2}
+    assert result.compile_stages == {"lift": 40, "malloc in selection DAG": 60}
+    assert result.compile_passes == {"(no pass)": 40, "SelectionDAGISel": 60}
+    assert result.worker_stages == {"IR pass": 70, "register allocation": 30}
+    assert result.worker_passes == {"InstCombinePass": 70, "RAGreedy": 30}
+    capture = _capture(Path(tempfile.mkdtemp()), _perf_trace())
+    data = perf_report.analyze(capture, Categories.load(), perf_report.Labels(),
+                               samples=perf_report.parse_samples(_script(*samples)))
+    # The CPU thread's 100 ns in translations (the trace's span) split 40:60.
+    assert [(r["stage"], round(r["seconds"] * 1e9)) for r in data["compile_stages"]] == [
+        ("malloc in selection DAG", 60), ("lift", 40)]
+    assert data["worker_stages"] == [] or data["worker_cpu_s"] == 0  # this trace has no worker clock
+    assert "JIT stage (CPU thread, inside translations)" in perf_report.format_report(data, 10)
+
+
+def test_several_events_are_attributed_each_by_itself():
+    def script(samples):
+        lines = []
+        for tid, seconds, period, event, frames in samples:
+            lines.append(f" {tid} {seconds}:     {period}       {event}: ")
+            lines += [f"\t    {0x1000 + i:x} {frame}" for i, frame in enumerate(frames)]
+            lines.append("")
+        return lines
+    samples = [(42, "10.000000100", 300, "cpu_core/cycles/u", ["bb_0x01a5e27e (/j.so)", RUN]),
+               (42, "10.000000150", 600, "cpu_core/instructions/u", ["bb_0x01a5e27e (/j.so)", RUN]),
+               (42, "10.000000200", 100, "cpu_core/cycles/u", ["memcpy (/lib/libc.so.6)", RUN]),
+               (42, "10.000000250", 50, "cpu_core/instructions/u", ["memcpy (/lib/libc.so.6)", RUN])]
+    parsed = list(perf_report.parse_samples(script(samples)))
+    assert [s.event for s in parsed] == ["cpu_core/cycles/u", "cpu_core/instructions/u"] * 2
+    # perf's order decides which event the time is divided by, not the first sample's.
+    result = perf_report.attribute(parsed, _perf_trace(), ("a", "b"), Categories.load(), perf_report.Labels(),
+                                   events=["cpu_atom/instructions/u", "cpu_core/instructions/u", "cpu_core/cycles/u"])
+    assert result.event == "cpu_core/instructions/u" and result.execution == 650
+    assert list(result.others) == ["cpu_core/cycles/u"] and result.others["cpu_core/cycles/u"].execution == 400
+    capture = _capture(Path(tempfile.mkdtemp()), _perf_trace())
+    data = perf_report.analyze(capture, Categories.load(), perf_report.Labels(), samples=parsed)
+    assert data["primary_event"] == "cpu_core/cycles/u" and data["execution_cpu_s"] > 0
+    other = data["events"][0]
+    assert other["event"] == "cpu_core/instructions/u" and other["blocks"] == {"bb_0x01a5e27e": 600}
+    text = perf_report.format_report(data, 10)
+    # instructions per cycle: 600 / 300 in the block, 650 / 400 in all.
+    assert "bb_0x01a5e27e" in text and "2.000" in text and "1.625" in text
+    assert "instructions/cycles" in text
+    assert perf_report.short_event("cpu_core/br_misp_retired.all_branches/u") == "br_misp_retired.all_branches"
+    assert perf_report.short_event("cycles:u") == "cycles"
+    # -G lines carry the event too.
+    leaf = next(perf_report.parse_leaves([" 42 10.000000100:     300       cpu_core/cycles/u:      1000 bb_0x1 (/j.so)"]))
+    assert leaf.event == "cpu_core/cycles/u" and leaf.frames == (("bb_0x1", "j.so"),)
+
+
+def test_perf_script_streams_and_reports_failures(tmp_path, monkeypatch):
+    """Lines come as perf prints them, not all at the end; a failing perf is
+    an error once its output is read."""
+    data = tmp_path / "perf.jit.data"
+    data.write_text("")
+    # A perf that prints a line, then waits for a file before it goes on:
+    # the first line reaches the reader before perf is done.
+    gate_file = tmp_path / "go"
+    fake = tmp_path / "fake_perf.py"
+    fake.write_text("import os, sys, time\nprint(' 42 10.000000100:     250 ', flush=True)\n"
+                    f"while not os.path.exists({str(gate_file)!r}): time.sleep(0.01)\n"
+                    "sys.stderr.write('perf: broken\\n')\nsys.exit(2)\n")
+    monkeypatch.setattr(perf, "perf_command", lambda capture: [sys.executable, str(fake)])
+    lines = perf_report._perf_script(data)
+    assert next(lines) == " 42 10.000000100:     250 "
+    gate_file.write_text("")
+    with pytest.raises(RuntimeError, match="perf script failed: perf: broken"):
+        list(lines)
+    # Stopping early stops perf, and is no error.
+    gate_file.unlink()
+    early = perf_report._perf_script(data)
+    next(early)
+    early.close()
 
 
 def test_overlapping_translate_spans_are_merged():
@@ -2145,6 +2241,22 @@ def test_sets_and_diffs_keep_the_code_blocks_share():
     # Reports from before the table: no rows, no table.
     old = capture_set.aggregate(caps, [_report(10.0, 2.0, 1.0)] * 3)
     assert old["shared_code"] == [] and "no block owns" not in capture_set.format_set(old, 5)
+
+
+def test_sets_show_the_jits_stages_as_shares_of_its_cpu():
+    reports = [{**_report(10.0, 2.0, 1.0), "compile_cpu_s": c,
+                "compile_stages": [{"stage": "selection DAG", "seconds": c / 2}, {"stage": "lift", "seconds": c / 4}]}
+               for c in (4.0, 4.2, 3.8)]
+    data = capture_set.aggregate([Path(f"c{i}") for i in range(3)], reports)
+    rows = {r["stage"]: r for r in data["compile_stages"]}
+    assert rows["selection DAG"]["mean"] == pytest.approx(2.0) and rows["selection DAG"]["ci95"] is not None
+    text = capture_set.format_set(data, 5)
+    line = next(l for l in text.splitlines() if l.startswith("selection DAG"))
+    assert line.rstrip().endswith("50.0%")  # of the JIT's 4 s, not of execution's 10
+    diff_data = _diff_sets([Path(f"a{i}") for i in range(3)], reports,
+                           [Path(f"b{i}") for i in range(3)], [{**r, "compile_stages": []} for r in reports])
+    assert {r["stage"]: r["delta"] for r in diff_data["compile_stages"]}["lift"] == pytest.approx(-1.0)
+    assert "JIT stage" in capture_set.format_diff(diff_data, 5)
 
 
 def _diff_sets(ca, a, cb, b, monkeypatch=None):

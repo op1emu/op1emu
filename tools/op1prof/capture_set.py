@@ -19,10 +19,17 @@ from . import report as perf_report
 
 SECTIONS = (("buckets", "bucket", "seconds"), ("blocks", "block", "self_s"), ("blocks_incl", "block", "incl_s"),
             ("shared_code", "symbol", "seconds"), ("host_self", "symbol", "seconds"),
-            ("host_inclusive", "symbol", "seconds"))
+            ("host_inclusive", "symbol", "seconds"),
+            ("compile_stages", "stage", "seconds"), ("compile_passes", "pass", "seconds"),
+            ("worker_stages", "stage", "seconds"), ("worker_passes", "pass", "seconds"))
 # The tables a set and a diff show, after the buckets and the blocks: the
 # generated code no block owns (report.SHARED_PREFIX), then the host's.
 SHARED_TABLE = ("generated code no block owns (self)", "shared_code", "symbol")
+# The JIT's samples (report._jit_rows), after the host's.
+JIT_TABLES = (("JIT stage (CPU thread, inside translations)", "compile_stages", "stage"),
+              ("JIT pass (CPU thread, inside translations)", "compile_passes", "pass"),
+              ("JIT stage (worker)", "worker_stages", "stage"),
+              ("JIT pass (worker)", "worker_passes", "pass"))
 MIN_FOR_INTERVAL = 3
 SET_SCHEMA = "op1prof.report-set.v1"
 DIFF_SCHEMA = "op1prof.report-diff.v1"
@@ -86,6 +93,8 @@ def aggregate(captures: List[Path], reports: List[dict]) -> dict:
     out = {"schema": SET_SCHEMA, "captures": [str(c) for c in captures], "window": reports[0]["window"],
            "event": reports[0]["event"], "rate": reports[0]["rate"], "call_graph": reports[0]["call_graph"],
            "execution_cpu_s": [r["execution_cpu_s"] for r in reports],
+           "compile_cpu_s": [r.get("compile_cpu_s", 0.0) for r in reports],
+           "worker_cpu_s": [r.get("worker_cpu_s", 0.0) for r in reports],
            "inclusive_valid": all(r["inclusive_valid"] for r in reports),
            "record": [r.get("record") for r in reports]}
     for section, key, value in SECTIONS:
@@ -124,11 +133,17 @@ def format_set(data: dict, limit: int) -> str:
     if data["shared_code"]:
         tables.append(SHARED_TABLE)
     tables.append(("host symbol (self)", "host_self", "symbol"))
+    tables += [table for table in JIT_TABLES if data.get(table[1])]
+    # A JIT table's share is of the JIT's CPU (the CPU thread's in
+    # translations, or the worker's), every other of execution.
+    whole = {"compile_stages": "compile_cpu_s", "compile_passes": "compile_cpu_s",
+             "worker_stages": "worker_cpu_s", "worker_passes": "worker_cpu_s"}
     for title, section, key in tables:
+        total = statistics.fmean(data.get(whole[section], [0.0]) or [0.0]) if section in whole else execution
         lines += ["", f"{title:56s} {'seconds':>9} {'95% interval':>15} {'share':>6}"]
         for row in data[section][:limit]:
             lines.append(f"{row[key][:56]:56s} {_cell(row['mean'], row['ci95'])} "
-                         f"{row['mean'] / execution * 100 if execution else 0:5.1f}%")
+                         f"{row['mean'] / total * 100 if total else 0:5.1f}%")
     return "\n".join(lines)
 
 
@@ -216,6 +231,7 @@ def format_diff(data: dict, limit: int) -> str:
     if data["shared_code"]:
         tables.append(SHARED_TABLE)
     tables.append(("host symbol (self)", "host_self", "symbol"))
+    tables += [table for table in JIT_TABLES if data.get(table[1])]
     for title, section, key in tables:
         lines += ["", f"{title:50s} {'A s':>9} {'B s':>9} {'delta':>9} {'95% interval':>17}"]
         for row in data[section][:limit]:

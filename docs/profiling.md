@@ -967,6 +967,29 @@ the same order. Before this, all of a chained run's time went to its first
 block: on a stock boot with chaining, `bb_0x01a9bd30` showed 0.37 s of self
 time from 6 ms of its own samples, the rest from the blocks it chained to.
 
+The JIT's samples are tables of their own: the CPU thread's inside
+translations, and those of bcore's worker thread (a sample of another
+thread whose stack has `CompileWorker::`, inside the window: whole call
+chains find it, `--call-graph lbr`), in seconds of
+`compile_cpu_s` and of the worker's CPU. Each sample goes to the stage of
+the leaf-most frame that names one (selection DAG, FastISel, register
+allocation, MC emission, object loading, the lifter, the copy-and-patch
+translator, ...; `tools/op1prof/compile_samples.py`), an allocator leaf
+counting as `malloc in` its caller's stage, and to the nearest LLVM pass
+(a legacy `runOnMachineFunction`, or a new pass manager's `PassModel`).
+Capture sets and their diffs carry these tables too, their shares of the
+JIT's CPU.
+
+A capture of several events (`perf --event '{cycles:u,instructions:u}'`)
+is attributed event by event: the first in perf's order (`perf evlist`)
+that has samples is the one the time is divided by, and the report adds,
+for the top blocks and buckets and for all of execution, every event's
+count and its ratio to the first (instructions per cycle, there).
+
+`perf script` is read as it prints, and with LBR both passes in step: a
+boot's capture is millions of samples, which as lists once took more
+memory than the machine had.
+
 For `cpu-clock` it also compares the sampled CPU
 time with the trace's execution CPU. For a non-precise event it says that the
 totals are only valid per block and symbol.

@@ -3,15 +3,17 @@ and, joined with a census run, cost per executed block."""
 from __future__ import annotations
 
 import bisect
+import itertools
 import json
 import re
 import subprocess
+import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
-from . import census, exits, perf, trace
+from . import census, compile_samples, exits, perf, trace
 from .perf import is_software_event
 from .categories import Categories
 from .marks import Mark, workload_diff
@@ -27,11 +29,14 @@ BLOCK_PREFIX = "bb_0x"
 # bcore_cp_jump_<helper>, their calls' jumps to the helpers).
 SHARED_PREFIX = "bcore_cp_"
 
-HEADER = re.compile(r"^\s*(?P<tid>\d+)\s+(?P<time>\d+\.\d+):\s+(?P<period>\d+)\s*$")
+# With the event field (perf script -F ...,event,...): "tid time: period event: ".
+HEADER = re.compile(r"^\s*(?P<tid>\d+)\s+(?P<time>\d+\.\d+):\s+(?P<period>\d+)(?:\s+(?P<event>\S+):)?\s*$")
 FRAME = re.compile(r"^\s+(?P<ip>[0-9a-f]+)\s+(?P<sym>.*)\s+\((?P<dso>[^()]*)\)\s*$")
 # `perf script -G`: the header and the sampled IP's frame on one line.
-LEAF = re.compile(r"^\s*(?P<tid>\d+)\s+(?P<time>\d+\.\d+):\s+(?P<period>\d+)"
+LEAF = re.compile(r"^\s*(?P<tid>\d+)\s+(?P<time>\d+\.\d+):\s+(?P<period>\d+)(?:\s+(?P<event>\S+):)?"
                   r"\s+(?P<ip>[0-9a-f]+)\s+(?P<sym>.*)\s+\((?P<dso>[^()]*)\)\s*$")
+# The fields perf script prints (_perf_script).
+SCRIPT_FIELDS = "tid,time,event,period,ip,sym,dso"
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,7 @@ class Sample:
     time_ns: int
     period: int
     frames: Tuple[Tuple[str, str], ...]   # (symbol, dso basename), leaf first
+    event: str = ""                       # perf's name for it; "" where the script had no event field
 
     @property
     def symbols(self) -> Tuple[str, ...]:
@@ -86,21 +92,30 @@ def with_leaves(samples: Iterable[Sample], leaves: Iterable[Sample]) -> Iterator
     generated code runs the blocks it chains by musttail jumps, so every
     block after the first of a run had its time charged to the first.
     `leaves` are the same samples in the same order (`parse_leaves`)."""
-    samples, leaves = list(samples), list(leaves)
-    if len(samples) != len(leaves):
-        raise ValueError(f"perf script gave {len(samples)} samples with call chains, {len(leaves)} without")
-    for index, (sample, leaf) in enumerate(zip(samples, leaves)):
-        if (sample.tid, sample.time_ns, sample.period) != (leaf.tid, leaf.time_ns, leaf.period):
+    # In step, one sample of each at a time: a boot's capture holds millions
+    # (reading them all first once took more memory than the machine had).
+    done = object()
+    samples, leaves = iter(samples), iter(leaves)
+    for index in itertools.count():
+        sample, leaf = next(samples, done), next(leaves, done)
+        if sample is done or leaf is done:
+            if sample is not leaf:
+                more, fewer = ("without", "with") if sample is done else ("with", "without")
+                raise ValueError(f"perf script gave more samples {more} call chains than {fewer} them "
+                                 f"(from sample {index})")
+            return
+        if (sample.tid, sample.time_ns, sample.period, sample.event) != (leaf.tid, leaf.time_ns, leaf.period,
+                                                                          leaf.event):
             raise ValueError(f"perf script sample {index} differs with and without call chains")
         yield Sample(tid=sample.tid, time_ns=sample.time_ns, period=sample.period,
-                     frames=leaf.frames + sample.frames[1:])
+                     frames=leaf.frames + sample.frames[1:], event=sample.event)
 
 
 def _sample(header: re.Match, frames: List[Tuple[str, str]]) -> Sample:
     seconds, _, fraction = header.group("time").partition(".")
     return Sample(tid=int(header.group("tid")),
                   time_ns=int(seconds) * 1_000_000_000 + int(fraction.ljust(9, "0")[:9]),
-                  period=int(header.group("period")), frames=tuple(frames))
+                  period=int(header.group("period")), frames=tuple(frames), event=header.group("event") or "")
 
 
 def block_pc(symbol: str) -> Optional[int]:
@@ -165,10 +180,24 @@ class Attribution:
     incl_symbols: Counter = field(default_factory=Counter)
     buckets: Counter = field(default_factory=Counter)
     callers: Counter = field(default_factory=Counter)
+    # The JIT's samples: the CPU thread's inside translations, and bcore's
+    # worker thread's in the window (compile_samples), by stage and by pass.
+    compile_stages: Counter = field(default_factory=Counter)
+    compile_passes: Counter = field(default_factory=Counter)
+    worker_stages: Counter = field(default_factory=Counter)
+    worker_passes: Counter = field(default_factory=Counter)
+    event: str = ""
+    # A capture of several events: this is the first's (the one the time
+    # is divided by); the others, each attributed alike.
+    others: Dict[str, "Attribution"] = field(default_factory=dict)
 
     @property
     def execution(self) -> int:
         return self.weights["execution"]
+
+    @property
+    def worker(self) -> int:
+        return self.weights["worker"]
 
 
 def _merged(spans: Iterable[Tuple[int, int]]) -> List[Tuple[int, int]]:
@@ -199,9 +228,12 @@ def dso_label(dso: str) -> str:
 
 
 def attribute(samples: Iterable[Sample], trace_data: dict, window: Tuple[str, str], categories: Categories,
-              labels: Labels, callers_of: Optional[str] = None) -> Attribution:
+              labels: Labels, callers_of: Optional[str] = None, events: Sequence[str] = ()) -> Attribution:
     """Weight every CPU-thread sample inside the window and outside
-    translation by its period."""
+    translation by its period. Samples of several events are attributed
+    each by itself: the result is the first of `events` that has samples
+    (perf's own order, `perf evlist`), else the first seen, with the others
+    in its `others`."""
     found = trace.marks(trace_data)
     lo, hi = (int(found[name]["ts"] * 1000) for name in window)
     spans = _merged((int(e["ts"] * 1000), int((e["ts"] + e["dur"]) * 1000))
@@ -211,11 +243,16 @@ def attribute(samples: Iterable[Sample], trace_data: dict, window: Tuple[str, st
     if tid is None:
         # Every thread's samples would count as the CPU thread's.
         raise ValueError("the trace does not name the CPU thread (cpu_thread_tid): record it with a newer binary")
-    out = Attribution()
+    by_event: Dict[str, Attribution] = {}
     for sample in samples:
+        out = by_event.get(sample.event)
+        if out is None:
+            out = by_event[sample.event] = Attribution(event=sample.event)
+        inside = lo <= sample.time_ns < hi
         if sample.tid != tid:
-            fate = "other_threads"
-        elif not lo <= sample.time_ns < hi:
+            # bcore's worker thread compiling promotions: JIT time of its own.
+            fate = "worker" if inside and compile_samples.is_worker(sample.symbols) else "other_threads"
+        elif not inside:
             fate = "outside_window"
         else:
             index = bisect.bisect_right(starts, sample.time_ns) - 1
@@ -224,7 +261,16 @@ def attribute(samples: Iterable[Sample], trace_data: dict, window: Tuple[str, st
         out.weights[fate] += sample.period
         if fate == "execution":
             _execution(out, sample, categories, labels, callers_of)
-    return out
+        elif fate in ("compile", "worker"):
+            stage, pass_ = compile_samples.classify(sample.symbols)
+            (out.compile_stages if fate == "compile" else out.worker_stages)[stage] += sample.period
+            (out.compile_passes if fate == "compile" else out.worker_passes)[pass_] += sample.period
+    if not by_event:
+        return Attribution()
+    order = [event for event in events if event in by_event] + [e for e in by_event if e not in events]
+    first = by_event[order[0]]
+    first.others = {event: by_event[event] for event in order[1:]}
+    return first
 
 
 def _execution(out: Attribution, sample: Sample, categories: Categories, labels: Labels,
@@ -353,12 +399,14 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
     info = json.loads((capture / "capture.json").read_text())
     window = tuple(info["window"])
     trace_data = trace.load(str(capture / "run" / "trace.json"))
+    events: List[str] = []
     if samples is None:
+        events = perf.event_order(capture / "perf.jit.data")
         samples = parse_samples(_perf_script(capture / "perf.jit.data"))
         # A frame-pointer chain starts at the sampled IP already.
         if info.get("call_graph", "fp") == "lbr":
             samples = with_leaves(samples, parse_leaves(_perf_script(capture / "perf.jit.data", call_chains=False)))
-    result = attribute(samples, trace_data, window, categories, labels, callers_of)
+    result = attribute(samples, trace_data, window, categories, labels, callers_of, events)
     phase = trace.phase(trace_data, *window)
     execution = result.execution
     per_weight = phase.noncompile_cpu_ms / 1e3 / execution if execution else 0.0
@@ -394,6 +442,9 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
         if execution else [],
         "host_self": _rows(result.self_symbols, execution, per_weight, "symbol") if execution else [],
         "host_inclusive": _rows(result.incl_symbols, execution, per_weight, "symbol") if inclusive else [],
+        "primary_event": result.event,
+        "events": _other_events(result),
+        **_jit_rows(result, phase),
     }
     if callers_of:
         data["callers"] = {"of": callers_of,
@@ -406,19 +457,117 @@ def analyze(capture: Path, categories: Categories, labels: Labels, callers_of: O
     return data
 
 
-def _perf_script(data: Path, call_chains: bool = True) -> List[str]:
-    script = subprocess.run([*perf.perf_command(data.parent), "script", "-i", str(data),
-                             *([] if call_chains else ["-G"]), "-F", "tid,time,period,ip,sym,dso", "--ns"],
-                            capture_output=True, text=True)
-    if script.returncode != 0:
-        raise RuntimeError(f"perf script failed: {script.stderr.strip()[-300:]}")
-    return script.stdout.splitlines()
+def _jit_rows(result: Attribution, phase) -> dict:
+    """The JIT's samples by stage and pass, in seconds of its CPU: the CPU
+    thread's inside translations (compile_cpu_s), the worker's (its CPU in
+    the window, bg_compile_cpu_ms)."""
+    def rows(counter: Counter, total: int, seconds: float, key: str) -> List[dict]:
+        if not total:
+            return []
+        return [{key: name, "seconds": weight * seconds / total, "pct": weight / total * 100}
+                for name, weight in counter.most_common()]
+    compile_s, worker_s = phase.compile_cpu_ms / 1e3, phase.bg_compile_cpu_ms / 1e3
+    compiled, worked = result.weights["compile"], result.worker
+    return {"compile_stages": rows(result.compile_stages, compiled, compile_s, "stage"),
+            "compile_passes": rows(result.compile_passes, compiled, compile_s, "pass"),
+            "worker_cpu_s": worker_s,
+            "worker_stages": rows(result.worker_stages, worked, worker_s, "stage"),
+            "worker_passes": rows(result.worker_passes, worked, worker_s, "pass")}
+
+
+def _other_events(result: Attribution) -> List[dict]:
+    """Each other event of the capture: its counts in execution, by guest
+    block (self) and host-path bucket, beside the first event's."""
+    return [{"event": event, "execution": other.execution,
+             "blocks": dict(other.self_blocks.most_common()), "buckets": dict(other.buckets.most_common())}
+            for event, other in result.others.items()]
+
+
+def _perf_script(data: Path, call_chains: bool = True) -> Iterator[str]:
+    """perf script's lines as it prints them: a boot's capture is millions
+    of samples, more than the machine's memory as one list."""
+    command = [*perf.perf_command(data.parent), "script", "-i", str(data), *([] if call_chains else ["-G"]),
+               "-F", SCRIPT_FIELDS, "--ns"]
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors, text=True, errors="replace",
+                                   bufsize=1 << 20)
+        finished = False
+        try:
+            for line in process.stdout:
+                yield line.rstrip("\n")
+            finished = True
+        finally:
+            # A reader that stops early (an error in a sample) stops perf too.
+            if not finished:
+                process.kill()
+            process.stdout.close()
+            process.wait()
+        if process.returncode != 0:
+            errors.seek(0)
+            raise RuntimeError(f"perf script failed: {errors.read().decode(errors='replace').strip()[-300:]}")
 
 
 def _table(title: str, rows: List[dict], key: str, limit: int, width: int = 60) -> List[str]:
     lines = ["", f"{title:{width}s} {'seconds':>9} {'share':>6}"]
     for row in rows[:limit]:
         lines.append(f"{row[key][:width]:{width}s} {row['seconds']:9.3f} {row['pct']:5.1f}%")
+    return lines
+
+
+def short_event(event: str) -> str:
+    """An event's name for a column: without the PMU of a hybrid CPU
+    (cpu_core/...) and the user-only modifier."""
+    name = re.sub(r"^cpu_(core|atom)/", "", event)
+    return re.sub(r"(/u|:u)$", "", name).rstrip("/")
+
+
+def _events_lines(data: dict, limit: int) -> List[str]:
+    """A capture of several events: each block's and bucket's count of every
+    event, in millions, and its ratio to the first event (instructions per
+    cycle, say, where the first is cycles)."""
+    others = data.get("events") or []
+    if not others:
+        return []
+    first = data.get("primary_event") or data["event"]
+    execution = data["samples"].get("execution", {}).get("weight", 0)
+    names = [short_event(first)] + [short_event(o["event"]) for o in others]
+    head = "".join(f" {name[:14]:>14}" for name in names) + "".join(f" {(name + '/' + names[0])[:20]:>20}"
+                                                                     for name in names[1:])
+    lines = ["", f"events: counts in execution, millions, and their ratios to {first}",
+             f"{'guest block':40s}" + head]
+    for row in data["blocks"][:limit]:
+        weight = row["self_pct"] / 100 * execution
+        counts = [weight] + [o["blocks"].get(row["block"], 0) for o in others]
+        ratios = [c / weight if weight else 0.0 for c in counts[1:]]
+        lines.append(f"{row['block'][:40]:40s}" + "".join(f" {c / 1e6:14.1f}" for c in counts)
+                     + "".join(f" {r:20.3f}" for r in ratios))
+    lines.append(f"{'host-path bucket':40s}" + head)
+    for row in data["buckets"][:limit]:
+        weight = row["pct"] / 100 * execution
+        counts = [weight] + [o["buckets"].get(row["bucket"], 0) for o in others]
+        ratios = [c / weight if weight else 0.0 for c in counts[1:]]
+        lines.append(f"{row['bucket'][:40]:40s}" + "".join(f" {c / 1e6:14.1f}" for c in counts)
+                     + "".join(f" {r:20.3f}" for r in ratios))
+    totals = [execution] + [o["execution"] for o in others]
+    lines.append(f"{'all execution':40s}" + "".join(f" {c / 1e6:14.1f}" for c in totals)
+                 + "".join(f" {c / execution if execution else 0:20.3f}" for c in totals[1:]))
+    return lines
+
+
+def _jit_lines(data: dict, limit: int) -> List[str]:
+    """The JIT's samples by stage and by pass: the CPU thread's inside
+    translations, and bcore's worker thread's."""
+    lines = []
+    for who, cpu_s, stages, passes in (("CPU thread, inside translations", data.get("compile_cpu_s", 0),
+                                        "compile_stages", "compile_passes"),
+                                       ("JIT worker", data.get("worker_cpu_s", 0), "worker_stages",
+                                        "worker_passes")):
+        if not data.get(stages):
+            continue
+        lines += ["", f"JIT ({who}): {cpu_s:.3f} s of CPU split by sampled weight; a stage is the leaf-most frame "
+                      "that names one, malloc counted with its caller's"]
+        lines += _table(f"JIT stage ({who})", data[stages], "stage", limit)
+        lines += _table(f"JIT pass ({who})", data[passes], "pass", limit)
     return lines
 
 
@@ -456,6 +605,8 @@ def format_report(data: dict, limit: int, sort: str = "seconds", min_runs: int =
         lines += _table("host symbol (inclusive)", data["host_inclusive"], "symbol", limit)
     if "callers" in data:
         lines += _table(f"callers of {data['callers']['of']}", data["callers"]["rows"], "caller", limit)
+    lines += _events_lines(data, limit)
+    lines += _jit_lines(data, limit)
     if "census" in data:
         lines += _census_lines(data["census"], limit, sort, min_runs)
     return "\n".join(lines)
