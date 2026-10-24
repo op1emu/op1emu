@@ -210,13 +210,29 @@ static void IdleTakesItsInterrupt() {
 // (it ends that wait early, as a wakeup without an interrupt would).
 static void RealTimeIdleKeepsToTheHostClock() {
     using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
     constexpr uint64_t kDueNs = 30000000, kKeyNs = 10000000;
-    const auto deterministic = Scenario(true, Loop::Idle, kDueNs, false);
+    // The RTC's next second is a due time, which ends an IDLE's wait: both
+    // modes start its calendar alike, real-time mode's own epoch being the
+    // host's. On a whole second the 30 ms cross none; just over 10 ms before
+    // one they cross it off the GP timers' ticks, and the loop goes round
+    // once more.
+    const std::chrono::system_clock::time_point second{std::chrono::seconds(TimeSource::kDefaultEpochSeconds)};
+    uint64_t rounds[2] = {};
     Clock::time_point start;
-    const auto paced = Scenario(true, Loop::Idle, kDueNs, false, false, [&](TestCpu&) { start = Clock::now(); });
-    const auto took = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count();
-    Require(took >= int64_t(kDueNs) - 2000000, "30 ms of guest time take about 30 ms on the host's clock");
-    Require(paced.state == deterministic.state, "real-time mode executes what deterministic mode does");
+    for (const auto epoch : {second, second + 1s - 10ms - 3us}) {
+        const auto at = [epoch](TestCpu& cpu) { cpu.SetRtcEpoch(epoch); };
+        const auto deterministic = Scenario(true, Loop::Idle, kDueNs, false, true, at);
+        const auto paced = Scenario(true, Loop::Idle, kDueNs, false, false, [&](TestCpu& cpu) {
+            at(cpu);
+            start = Clock::now();
+        });
+        const auto took = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count();
+        Require(took >= int64_t(kDueNs) - 2000000, "30 ms of guest time take about 30 ms on the host's clock");
+        Require(paced.state == deterministic.state, "real-time mode executes what deterministic mode does");
+        rounds[epoch != second] = deterministic.state[1];
+    }
+    Require(rounds[1] == rounds[0] + 1, "the RTC's next second wakes the idle loop once more");
 
     std::thread key;
     std::atomic<int64_t> keyedNs{-1};
