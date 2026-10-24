@@ -177,14 +177,19 @@ microseconds, the clock `perf record -k mono` uses.
   `Core::set_copy_patch`, on by default; `--no-copy-patch`) is copied
   together from them in microseconds: its `translate` span has
   `args.copy_patch` true, `args.terminator` `copy-patch`, no IR
-  (`ir_insns` 0), `object_bytes` its code and `object_hash` one over its
-  stencils' code, relocations and hole values (so `diff compile` compares
-  such blocks too), and its
+  (`ir_insns` 0), `object_bytes` its code (its cold part's included) and
+  `object_hash` one over its stencils' code, relocations and hole values
+  (so `diff compile` compares such blocks too), and its
   nested `lift` span holds the whole translation. In the code map its
-  variant is 1. With `--perf-jitdump` bcore writes these blocks (named
-  `bb_0x<pc>` as LLVM's tier-0 blocks are) to a jitdump of its own beside
+  variant is 1. The stencils are split as LLVM's blocks are: a block is
+  their hot parts one after the other, ending in a chain exit of its own
+  that runs the block again without the chain table when it goes on to
+  itself, and their cold parts lie apart. With `--perf-jitdump` bcore
+  writes these blocks (named `bb_0x<pc>` as LLVM's tier-0 blocks are, and
+  `bb_0x<pc>.cold`) to a jitdump of its own beside
   LLVM's, in `.debug/jit/bcore-cp-*`, with the code each arena shares:
-  `bcore_cp_exit`, the chain exit of every such block, and
+  `bcore_cp_exit`, the chain exit of a block that has none of its own (dry
+  runs, no chaining), and
   `bcore_cp_jump_<helper>`, its calls' jumps to the helpers. `op1prof
   report` counts both as generated code (the bucket and the `generated
   code (self)` share) in a table of their own, `generated code no block
