@@ -120,8 +120,6 @@ static int RunEmulator(int argc, char* argv[]) {
     bool lightTier1 = true;
     bool tierBackground = true;
     bool copyPatch = true;
-    bool cpRuntime = true;
-    int cpRuntimeOpt = 0;
     long long tierPublishAfter = 0;
     long long jitCpu = -1;
     bool chainDry = false;
@@ -183,14 +181,6 @@ static int RunEmulator(int argc, char* argv[]) {
         }
         else if (options && arg == "--no-tier-background") tierBackground = false;
         else if (options && arg == "--no-copy-patch") copyPatch = false;
-        else if (options && arg == "--no-cp-runtime") cpRuntime = false;
-        else if (options && arg == "--cp-runtime-opt") {
-            if (++i == argc) throw std::runtime_error("--cp-runtime-opt requires a level (0-3)");
-            const std::string level = argv[i];
-            if (level.size() != 1 || level[0] < '0' || level[0] > '3')
-                throw std::runtime_error("Invalid --cp-runtime-opt (0-3): " + level);
-            cpRuntimeOpt = level[0] - '0';
-        }
         else if (options && arg == "--profile-chain-dry") chainDry = anyProfiling = true;
         else if (options && arg == "--profile-mark-digest") markDigest = anyProfiling = true;
         else if (options && arg == "--rtc-epoch") {
@@ -267,10 +257,6 @@ static int RunEmulator(int argc, char* argv[]) {
                      "                        a thread of their own\n"
                      "  --no-copy-patch       Make the cheap compilations with LLVM, not from\n"
                      "                        stencils where the instructions allow\n"
-                     "  --no-cp-runtime       Only the stencils built with the emulator: a block\n"
-                     "                        with a packet they lack compiles with LLVM\n"
-                     "  --cp-runtime-opt N    Build the stencils the emulator lacks at -O N\n"
-                     "                        (default 0)\n"
                      "  --tier-publish-after N  With --deterministic, use such a block's second\n"
                      "                        compilation N packets after it was asked for\n"
                      "                        (default 8388608; the CPU thread waits for it)\n"
@@ -358,7 +344,6 @@ static int RunEmulator(int argc, char* argv[]) {
     cpu.SetTiering(static_cast<uint32_t>(tierThreshold), static_cast<uint32_t>(tierSizeRef));
     cpu.SetLightTier1(lightTier1);
     cpu.SetTierBackground(tierBackground, static_cast<uint64_t>(tierPublishAfter), static_cast<int>(jitCpu));
-    cpu.SetCopyPatchRuntime(cpRuntime, cpRuntimeOpt);
     cpu.SetCopyPatch(copyPatch);
     if (noDmaSettle) cpu.SetDmaSettling(false);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));

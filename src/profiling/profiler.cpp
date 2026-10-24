@@ -567,13 +567,6 @@ struct Profiler::Impl : BcoreEventSink {
                     " wait_ms=%.3f\n",
                     name, loops.blocks_promoted, loops.promotions_dropped, loops.promotions_discarded,
                     loops.tier_request_overflows, loops.tier_wait_ns / 1e6);
-        // Stencils the copy-and-patch tier built at run time (Core::set_copy_patch_runtime),
-        // cumulative: built, refused, found, modules, and the time of each step.
-        const CpRuntimeStats rt = cpu.CopyPatchRuntimeStats();
-        std::printf("[cp-runtime] %s built=%" PRIu64 " refused=%" PRIu64 " hits=%" PRIu64 " batches=%" PRIu64
-                    " bytes=%" PRIu64 " lift_ms=%.3f compile_ms=%.3f extract_ms=%.3f\n",
-                    name, rt.built, rt.refused, rt.hits, rt.batches, rt.code_bytes, rt.lift_ns / 1e6,
-                    rt.compile_ns / 1e6, rt.extract_ns / 1e6);
         std::fflush(stdout);
         if (census) DumpCensus(name);
         if (perfBegin == name) PerfWrite("enable\n");
@@ -879,11 +872,6 @@ struct Profiler::Impl : BcoreEventSink {
                         std::fprintf(file, ",\"tier_threshold\":%u", e.shape.tier_threshold);
                     // A tier-0 block copied together from stencils (Core::set_copy_patch).
                     if (e.ok && e.shape.copy_patch) std::fputs(",\"copy_patch\":true", file);
-                    // Stencils built at run time (Core::set_copy_patch_runtime): the
-                    // block's packets that have one, and how many this translation built.
-                    if (e.shape.cp_runtime_packets)
-                        std::fprintf(file, ",\"cp_runtime_packets\":%u", e.shape.cp_runtime_packets);
-                    if (e.shape.cp_runtime_built) std::fprintf(file, ",\"cp_runtime_built\":%u", e.shape.cp_runtime_built);
                     // A promotion compiled on the worker: its lift, then its load.
                     if (e.ok && e.shape.background)
                         std::fprintf(file, ",\"part\":\"%s\"", e.shape.background == 1 ? "lift" : "link");

@@ -194,20 +194,15 @@ microseconds, the clock `perf record -k mono` uses.
   report` counts both as generated code (the bucket and the `generated
   code (self)` share) in a table of their own, `generated code no block
   owns`, not as host symbols.
-- A packet the build has no stencil for (a parallel packet, a 32-bit
-  instruction outside the common ones) gets one at run time, built once
-  per encoding for the process (bcore's `Core::set_copy_patch_runtime`, on
-  by default at -O0; `--no-cp-runtime`, `--cp-runtime-opt N`), so its
-  block is made of stencils too. The `translate` span of a block with such
-  stencils has `args.cp_runtime_packets` (its packets that have one) and,
-  where this translation built some, `args.cp_runtime_built` (also on an
-  LLVM block, where a packet could get none); their CPU is in the span's.
-  Every mark prints `[cp-runtime] <mark> built=... refused=... hits=...
-  batches=... bytes=... lift_ms=... compile_ms=... extract_ms=...`
-  (cumulative), and `op1prof compile` reports the blocks of stencils, those
-  with run-time ones, the stencils built and the tier-0 blocks LLVM still
-  compiled. On the boot to the main display: 8,574 stencils built, 24
-  tier-0 blocks left to LLVM, the CPU thread's compile time 15.0 to 6.7 s.
+- Every instruction has stencils built with the emulator: the 16-bit ones,
+  every 32-bit one (register fields as holes), and a parallel packet as its
+  pieces (each slot, slot 0's instruction alone, the slots' commits, the
+  packet's tail). A block with a packet that has none (an illegal parallel
+  packet, SEARCH in slot 0) compiles with LLVM, and `op1prof compile`
+  reports the blocks of stencils and the tier-0 blocks LLVM still
+  compiled. Nothing is compiled for them at run time any more: on the boot
+  to the main display the CPU thread's compile time went 5.25 to 0.45 s
+  (the 8,602 packets whose stencils LLVM built at -O0, 2026-10).
 - Marks (category `mark`) are instant events carrying the same counters as the
   `[mark]` line (including `invalidations`, the cache flushes so far), with `args.thread_cpu_ns`, `args.process_cpu_ns`,
   `args.irq_levels` (entries per IVG level, 0 = EMU ... 15 = IVG15) and
