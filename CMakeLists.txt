@@ -200,6 +200,9 @@ if(OP1_BUILD_HEADLESS_TESTS)
     add_executable(op1-cpu-chain-test tests/cpu_chain_test.cpp)
     target_link_libraries(op1-cpu-chain-test PRIVATE emulator bfin-core Threads::Threads)
     add_test(NAME op1-cpu-chain-test COMMAND op1-cpu-chain-test)
+    # Its real-time case wants a key within 6 ms of its wall time: alone,
+    # not beside JIT-heavy tests on a loaded runner.
+    set_tests_properties(op1-cpu-chain-test PROPERTIES RUN_SERIAL TRUE)
     add_executable(op1-headless-test tests/headless_test.cpp gui/headless.cpp)
     target_include_directories(op1-headless-test PRIVATE gui)
     target_link_libraries(op1-headless-test PRIVATE emulator nlohmann_json::nlohmann_json Threads::Threads)
@@ -248,7 +251,11 @@ if(OP1_BUILD_HEADLESS_TESTS)
             add_test(NAME op1-profile-smoke
                 COMMAND ${Python3_EXECUTABLE} tests/profile_smoke.py $<TARGET_FILE:op1emu>
                 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+            set_tests_properties(op1-profile-smoke PROPERTIES RESOURCE_LOCK usbip-port)
         endif()
+        # op1emu listens on the USB/IP port even headless: one at a time
+        # under ctest -j.
+        set_tests_properties(op1-ldr-smoke PROPERTIES RESOURCE_LOCK usbip-port)
     endif()
 endif()
 
