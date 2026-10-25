@@ -11,6 +11,7 @@ FetchContent_Declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
     GIT_TAG v1.11.0
+    GIT_SHALLOW TRUE
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(spdlog)
@@ -26,6 +27,7 @@ FetchContent_Declare(
     glfw
     GIT_REPOSITORY https://github.com/glfw/glfw.git
     GIT_TAG        3.3.8
+    GIT_SHALLOW    TRUE
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(glfw)
@@ -38,6 +40,7 @@ FetchContent_Declare(
     json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
     GIT_TAG v3.12.0
+    GIT_SHALLOW TRUE
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(json)
@@ -49,6 +52,7 @@ FetchContent_Declare(
     stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
     GIT_TAG master
+    GIT_SHALLOW TRUE
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(stb)
@@ -59,6 +63,7 @@ message(STATUS "Fetching cqueue...")
 FetchContent_Declare(cqueue
   GIT_REPOSITORY https://github.com/torrentg/cqueue.git
   GIT_TAG        1.0.6
+  GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(cqueue)
 message(STATUS "cqueue fetched successfully")
@@ -71,6 +76,7 @@ FetchContent_Declare(
     uvw
     GIT_REPOSITORY https://github.com/skypjack/uvw.git
     GIT_TAG        v3.4.0_libuv_v1.48
+    GIT_SHALLOW    TRUE
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 set(BUILD_UVW_LIBS ON CACHE BOOL "" FORCE)
@@ -87,6 +93,7 @@ FetchContent_Declare(
     miniaudio
     GIT_REPOSITORY https://github.com/mackron/miniaudio.git
     GIT_TAG 0.11.21
+    GIT_SHALLOW TRUE
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(miniaudio)
@@ -109,6 +116,7 @@ if(OP1_MIMALLOC)
         mimalloc
         GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
         GIT_TAG v2.1.7
+        GIT_SHALLOW TRUE
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
     FetchContent_MakeAvailable(mimalloc)

@@ -65,18 +65,47 @@ jobs:
           key: ccache-${{ matrix.profiling }}-${{ github.sha }}
           restore-keys: ccache-${{ matrix.profiling }}-
 
+      # The FetchContent dependencies' sources, keyed by the CMakeLists.txt
+      # that names their tags: with them Configure takes seconds, not a
+      # minute of cloning, and needs no network.
+      - name: Restore dependency sources
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/op1-deps
+          key: deps-${{ hashFiles('CMakeLists.txt') }}
+
       - name: Configure
         env:
           CCACHE_BASEDIR: ${{ github.workspace }}
           CCACHE_MAXSIZE: 500M
         run: |
           ccache --zero-stats
+          deps=()
+          for d in ~/.cache/op1-deps/*/; do
+            [ -d "$d" ] || continue
+            name=$(basename "$d")
+            deps+=("-DFETCHCONTENT_SOURCE_DIR_${name^^}=${d%/}")
+          done
           cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DLLVM_DIR=/usr/lib/llvm-15/lib/cmake/llvm \
             -DOP1_BUILD_HEADLESS_TESTS=ON \
             -DOP1_BUILD_DMA_TESTS=ON \
-            -DENABLE_PROFILING=${{ matrix.profiling }}
+            -DENABLE_PROFILING=${{ matrix.profiling }} \
+            "${deps[@]}"
+
+      # A miss: keep what Configure cloned (without .git) for the next run.
+      - name: Keep dependency sources
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.cache/op1-deps
+          for d in build/_deps/*-src; do
+            name=$(basename "$d" -src)
+            cp -a "$d" ~/.cache/op1-deps/"$name"
+            rm -rf ~/.cache/op1-deps/"$name"/.git
+          done
+          du -sh ~/.cache/op1-deps
 
       - name: Build
         env:
