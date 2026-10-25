@@ -58,10 +58,15 @@ jobs:
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
             libgl1-mesa-dev ccache
 
+      # With ccache's objects go the stencils of the last bcore-stencilgen
+      # (ext/bcore/cmake/StencilCache.cmake): the same generator relinked
+      # from them copies its stencils instead of building them for minutes.
       - name: Restore ccache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ccache
+          path: |
+            ~/.cache/ccache
+            ~/.cache/bcore-stencils
           key: ccache-${{ matrix.profiling }}-${{ github.sha }}
           restore-keys: ccache-${{ matrix.profiling }}-
 
@@ -92,6 +97,7 @@ jobs:
             -DLLVM_DIR=/usr/lib/llvm-15/lib/cmake/llvm \
             -DOP1_BUILD_HEADLESS_TESTS=ON \
             -DOP1_BUILD_DMA_TESTS=ON \
+            -DBCORE_STENCIL_CACHE_DIR=$HOME/.cache/bcore-stencils \
             -DENABLE_PROFILING=${{ matrix.profiling }} \
             "${deps[@]}"
 
