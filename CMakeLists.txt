@@ -74,6 +74,10 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 set(BUILD_UVW_LIBS ON CACHE BOOL "" FORCE)
+# libuv's include(CTest) would turn BUILD_TESTING on, and with it uvw's own
+# tests (googletest downloaded, built and registered with op1emu's). op1emu's
+# tests do not use it.
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(uvw)
 message(STATUS "uvw fetched successfully")
 
