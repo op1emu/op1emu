@@ -27,7 +27,9 @@ public:
 private:
     static void DataCallback(void* pDevice, void* pOutput, const void* pInput, unsigned int frameCount);
     void ReportLatency();
+    void ReportThread();
 
+    void* context_ = nullptr;  // ma_context*
     void* device_;      // ma_device*
     void* ringBuffer_;  // ma_pcm_rb*
     std::atomic<bool> active_{false};
@@ -40,6 +42,9 @@ private:
     std::atomic<uint32_t> request_{0};
     std::atomic<bool> playing_{false};
     std::atomic<uint64_t> lastCallbackNs_{0};
+    // Its thread's scheduling policy (-1 until known) and priority.
+    std::atomic<int> threadPolicy_{-1};
+    std::atomic<int> threadPriority_{0};
     // PulseAudio's latency measure (the data callback's), else miniaudio's
     // estimate.
     std::unique_ptr<PulseLatency> pulse_;
@@ -47,6 +52,7 @@ private:
     // The CPU thread only.
     uint64_t reportedUs_ = 0;
     uint32_t reportedUnderflows_ = 0;
+    bool threadReported_ = false;
     std::chrono::steady_clock::time_point reportedAt_{};
     LevelServo servo_;
     uint64_t lastWriteNs_ = 0;

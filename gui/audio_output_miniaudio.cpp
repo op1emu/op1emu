@@ -1,3 +1,7 @@
+// The device thread's real-time priority (ma_thread_priority_realtime) on
+// POSIX: low, below the sound server's, as Chromium's audio threads (8);
+// miniaudio's own default is the highest.
+#define MA_PTHREAD_REALTIME_THREAD_PRIORITY 8
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 #include "audio_output_miniaudio.h"
@@ -8,6 +12,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#include <sys/resource.h>
+#endif
 
 // Steady clock ns from then to now, 0 for a then after it.
 static uint64_t Since(uint64_t now, uint64_t then) { return now > then ? now - then : 0; }
@@ -92,6 +101,7 @@ MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
 
     auto* rb = new ma_pcm_rb;
     auto* dev = new ma_device;
+    auto* context = new ma_context;
 
     // Initialize the ring buffer (float32, stereo)
     ma_result result = ma_pcm_rb_init(ma_format_f32, CHANNELS, RING_BUFFER_FRAMES, nullptr, nullptr, rb);
@@ -99,6 +109,22 @@ MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
         LogError("Failed to initialize audio ring buffer: %d", result);
         delete rb;
         delete dev;
+        delete context;
+        return;
+    }
+
+    // The thread miniaudio runs a device on (PulseAudio's, ALSA's; WASAPI's
+    // too, at TIME_CRITICAL) real-time where the host allows it, else a
+    // normal one: it has the card's period to refill the card in.
+    ma_context_config contextConfig = ma_context_config_init();
+    contextConfig.threadPriority = ma_thread_priority_realtime;
+    result = ma_context_init(nullptr, 0, &contextConfig, context);
+    if (result != MA_SUCCESS) {
+        LogError("Failed to initialize audio context: %d", result);
+        ma_pcm_rb_uninit(rb);
+        delete rb;
+        delete dev;
+        delete context;
         return;
     }
 
@@ -109,8 +135,8 @@ MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
     config.sampleRate = SAMPLE_RATE;
     // The card's share. miniaudio asks PulseAudio for a period of it in all
     // (ADJUST_LATENCY), which gives a quarter to the sink and three quarters
-    // to the stream's queue (its tlength): what the callback thread, which
-    // is not real-time, has to refill it in time. Measured on a desktop: at
+    // to the stream's queue (its tlength): what the callback thread has to
+    // refill it in time. Measured on a desktop, the thread not real-time: at
     // 5.8ms (4.4ms queued) it was late about once a minute, the card playing
     // silence the ring never saw; at 8.7ms not in three.
     config.periodSizeInMilliseconds = latency_.cardMs;
@@ -119,15 +145,19 @@ MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
     // more of latency. (Measured: no more underruns.) The gate's target
     // grows with the requests.
     config.noFixedSizedCallback = MA_TRUE;
+    // Windows: the thread in MMCSS's "Pro Audio" class.
+    config.wasapi.usage = ma_wasapi_usage_pro_audio;
     config.dataCallback = reinterpret_cast<ma_device_data_proc>(DataCallback);
     config.pUserData = this;
 
-    result = ma_device_init(nullptr, &config, dev);
+    result = ma_device_init(context, &config, dev);
     if (result != MA_SUCCESS) {
         LogError("Failed to initialize audio device: %d", result);
+        ma_context_uninit(context);
         ma_pcm_rb_uninit(rb);
         delete rb;
         delete dev;
+        delete context;
         return;
     }
 
@@ -158,14 +188,17 @@ MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
     if (result != MA_SUCCESS) {
         LogError("Failed to start audio device: %d", result);
         ma_device_uninit(dev);
+        ma_context_uninit(context);
         ma_pcm_rb_uninit(rb);
         delete rb;
         delete dev;
+        delete context;
         ringBuffer_ = nullptr;
         return;
     }
 
     device_ = dev;
+    context_ = context;
     active_.store(true);
     LogInfo("Audio output initialized: %dHz, %dch, period=%u frames x %u",
             SAMPLE_RATE, CHANNELS, dev->playback.internalPeriodSizeInFrames, dev->playback.internalPeriods);
@@ -175,6 +208,10 @@ MiniaudioOutput::~MiniaudioOutput() {
     if (device_) {
         ma_device_uninit(static_cast<ma_device*>(device_));
         delete static_cast<ma_device*>(device_);
+    }
+    if (context_) {
+        ma_context_uninit(static_cast<ma_context*>(context_));
+        delete static_cast<ma_context*>(context_);
     }
     if (ringBuffer_) {
         ma_pcm_rb_uninit(static_cast<ma_pcm_rb*>(ringBuffer_));
@@ -197,6 +234,17 @@ void MiniaudioOutput::DataCallback(void* pDevice, void* pOutput, const void* pIn
     self->playing_.store(playing, std::memory_order_relaxed);
     self->lastCallbackNs_.store(SteadyNs(), std::memory_order_relaxed);
     if (self->pulse_) self->pulse_->Measure(playing);
+#ifdef __linux__
+    // What the thread got: miniaudio falls back to a normal one silently.
+    if (self->threadPolicy_.load(std::memory_order_relaxed) < 0) {
+        int policy = 0;
+        sched_param param{};
+        if (pthread_getschedparam(pthread_self(), &policy, &param) == 0) {
+            self->threadPriority_.store(param.sched_priority, std::memory_order_relaxed);
+            self->threadPolicy_.store(policy, std::memory_order_release);
+        }
+    }
+#endif
     if (frames.skip) ma_pcm_rb_seek_read(rb, frames.skip);
     ma_uint32 framesRemaining = frames.play;
     ma_uint32 framesWritten = 0;
@@ -229,6 +277,7 @@ void MiniaudioOutput::WriteSamples(const void* data, size_t samples, int channel
 
     ma_pcm_rb* rb = static_cast<ma_pcm_rb*>(ringBuffer_);
     lastWriteNs_ = SteadyNs();
+    ReportThread();
     ReportLatency();
 
     // Convert input PCM to float32 stereo and push to ring buffer.
@@ -258,6 +307,25 @@ void MiniaudioOutput::WriteSamples(const void* data, size_t samples, int channel
         framesRemaining -= framesToProcess;
         src += framesToProcess * srcStride;
     }
+}
+
+// The device thread's scheduling, once known (Linux).
+void MiniaudioOutput::ReportThread() {
+#ifdef __linux__
+    if (threadReported_) return;
+    const int policy = threadPolicy_.load(std::memory_order_acquire);
+    if (policy < 0) return;
+    threadReported_ = true;
+    if (policy == SCHED_FIFO || policy == SCHED_RR) {
+        LogInfo("Audio thread: real-time (%s %d)", policy == SCHED_FIFO ? "SCHED_FIFO" : "SCHED_RR",
+                threadPriority_.load(std::memory_order_relaxed));
+        return;
+    }
+    rlimit limit{};
+    getrlimit(RLIMIT_RTPRIO, &limit);
+    LogInfo("Audio thread: not real-time (RLIMIT_RTPRIO %llu, priority %d asked)", (unsigned long long)limit.rlim_cur,
+            MA_PTHREAD_REALTIME_THREAD_PRIORITY);
+#endif
 }
 
 double MiniaudioOutput::GuestRate(uint64_t wallNs) {
