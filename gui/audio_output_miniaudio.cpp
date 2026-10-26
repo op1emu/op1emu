@@ -33,17 +33,20 @@ static constexpr ma_uint32 CHANNELS = 2;
 // Room for twice the longest ring share (MiniaudioOutput::kMaxBufferMs) and
 // the card's requests.
 static constexpr ma_uint32 RING_BUFFER_FRAMES = 16384; // ~372ms at 44.1kHz
-static_assert(2 * (SAMPLE_RATE * SplitLatencyMs(MiniaudioOutput::kMaxBufferMs).ringMs / 1000) + 4096 <= RING_BUFFER_FRAMES,
-              "the ring holds twice the target and a request");
+static_assert(2 * TargetLevel(SAMPLE_RATE * SplitLatencyMs(MiniaudioOutput::kMaxBufferMs).ringMs / 1000,
+                              kMaxRequestFrames) + 256 <= RING_BUFFER_FRAMES,
+              "the ring holds twice the target and a write");
 // Guest time up to 0.1% (1.7 cents) slower or faster for the level's error,
 // at 0.5% for all of the target, and up to 0.1% more for the clocks' drift
 // (a desktop's card: 56 ppm); the level is followed over ~0.25s and its
-// error summed over ~15s.
+// error summed over ~15s. (For the longest ring the loop is underdamped,
+// the level's own time constant then ~27s; tested, it settles closer than
+// with the integral slowed to match.)
+static constexpr double INTEGRAL_FRAMES = SAMPLE_RATE * 15;
 static constexpr double GAIN = 0.005;
 static constexpr double MAX_PULL = 0.001;
 static constexpr double MAX_DRIFT = 0.001;
 static constexpr double SMOOTH_FRAMES = SAMPLE_RATE / 4;
-static constexpr double INTEGRAL_FRAMES = SAMPLE_RATE * 15;
 
 // PulseAudio's measure of the card's latency (pa_stream_get_latency: the
 // stream's queue and the sink's), which miniaudio does not report, and its
@@ -138,8 +141,14 @@ MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
     // to the stream's queue (its tlength): what the callback thread has to
     // refill it in time. Measured on a desktop, the thread not real-time: at
     // 5.8ms (4.4ms queued) it was late about once a minute, the card playing
-    // silence the ring never saw; at 8.7ms not in three.
-    config.periodSizeInMilliseconds = latency_.cardMs;
+    // silence the ring never saw; at 8.7ms not in three. Other backends
+    // buffer periods of it (ALSA, WASAPI): two of half.
+    if (context->backend == ma_backend_pulseaudio) {
+        config.periodSizeInMilliseconds = latency_.cardMs;
+    } else {
+        config.periods = 2;
+        config.periodSizeInMilliseconds = (latency_.cardMs + 1) / 2;
+    }
     // The callback takes what PulseAudio asks for, not miniaudio's periods
     // cut from it: those keep what is left of the last one, up to a period
     // more of latency. (Measured: no more underruns.) The gate's target
@@ -194,6 +203,7 @@ MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
         delete dev;
         delete context;
         ringBuffer_ = nullptr;
+        pulse_.reset();
         return;
     }
 
@@ -344,7 +354,7 @@ void MiniaudioOutput::ReportLatency() {
     const double ms = us / 1000.0;
     if (!reportedUs_) {
         const char* source = pulse_ ? "PulseAudio" : "estimate";
-        if (ms > latency_.cardMs + 1.0)
+        if (pulse_ && ms > latency_.cardMs + 1.0)
             LogWarn("Audio latency: card %.1f ms (%s), above the %u ms asked; ring %u ms", ms, source, latency_.cardMs,
                     latency_.ringMs);
         else

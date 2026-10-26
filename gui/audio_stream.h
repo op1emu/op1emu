@@ -27,9 +27,12 @@ constexpr LatencySplit SplitLatencyMs(unsigned totalMs) {
 }
 
 // The level the ring is kept at for the card's requests of up to request
-// frames: base, or more when a request alone would take most of it.
-inline uint32_t TargetLevel(uint32_t base, uint32_t request) {
-    return std::max(base, request + base / 2);
+// frames: base, or more when a request alone would take most of it -- for
+// requests of up to kMaxRequestFrames, so that a backend asking for its
+// whole buffer at once does not raise it past what the ring holds.
+constexpr uint32_t kMaxRequestFrames = 4096;
+constexpr uint32_t TargetLevel(uint32_t base, uint32_t request) {
+    return std::max(base, std::min(request, kMaxRequestFrames) + base / 2);
 }
 
 // The sound card's side (its data callback): which of the ring's frames a

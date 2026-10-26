@@ -40,6 +40,7 @@ static void Gate() {
 
     PlaybackGate large(100);
     check(TargetLevel(100, 150) == 200, "a large request raises the level");
+    check(TargetLevel(100, 100000) == kMaxRequestFrames + 50, "by up to kMaxRequestFrames");
     check(large.Take(199, 150).play == 0, "which the gate waits for");
     check(large.Take(200, 150).play == 150, "and then plays");
     check(large.Take(200, 150).play == 150 && large.Playing(), "a request at a time");
@@ -68,8 +69,10 @@ static void Fallback() {
 // servo's pull. With suspendS, the card stops asking for that long at 50 s
 // (suspended): guest time goes at the drift learned meanwhile, and the card
 // comes back to the target.
-static void Loop(double drift, double stallMs, const char* what, uint32_t request = 256, double suspendS = 0) {
-    constexpr double kRate = 44100, kBase = 768, kRing = 16384;  // MiniaudioOutput's
+static void Loop(double drift, double stallMs, const char* what, uint32_t request = 256, double suspendS = 0,
+                 uint32_t base = 768, double seconds = 120) {
+    constexpr double kRate = 44100, kRing = 16384;  // MiniaudioOutput's
+    const double kBase = base;
     constexpr double kGain = 0.005, kPull = 0.001, kMaxDrift = 0.001;
     constexpr uint64_t kStep = 22676;  // ns: about a frame
     const double kTarget = TargetLevel(uint32_t(kBase), request);
@@ -85,7 +88,6 @@ static void Loop(double drift, double stallMs, const char* what, uint32_t reques
     double maxRateLate = 0, minRateLate = 2, maxRateSettled = 0, minRateSettled = 2;
     double lo = kRing, hi = 0, settledLo = kRing, settledHi = 0;
     double suspendedOff = 0, learned = 0;
-    const double seconds = 120;
     for (uint64_t wall = 0; wall < uint64_t(seconds * 1e9); wall += kStep) {
         const double t = wall / 1e9;
         if (suspendS > 0 && t >= 50 && t < 50 + suspendS) nextCard = std::max(nextCard, (50 + suspendS) * 1e9);
@@ -97,8 +99,8 @@ static void Loop(double drift, double stallMs, const char* what, uint32_t reques
             level -= take.skip + take.play;
             lastCallback = uint64_t(nextCard);
             nextCard += cardPeriod;
-            if (t > 20) { lo = std::min(lo, level); hi = std::max(hi, level); }
-            if (t > 80) { settledLo = std::min(settledLo, level); settledHi = std::max(settledHi, level); }
+            if (t > seconds / 6) { lo = std::min(lo, level); hi = std::max(hi, level); }
+            if (t > seconds * 2 / 3) { settledLo = std::min(settledLo, level); settledHi = std::max(settledHi, level); }
         }
         // Every 10 s the CPU thread is stallMs late, then catches up.
         const double inStall = std::fmod(t, 10.0);
@@ -117,8 +119,8 @@ static void Loop(double drift, double stallMs, const char* what, uint32_t reques
         if (suspendS > 0 && t >= 50.2 && t < 50 + suspendS)
             suspendedOff = std::max(suspendedOff, std::fabs(rate - learned));
         if (suspendS > 0 && t >= 50 && t < 52 + suspendS) continue;
-        if (t > 20) { maxRateLate = std::max(maxRateLate, rate); minRateLate = std::min(minRateLate, rate); }
-        if (t > 80) { maxRateSettled = std::max(maxRateSettled, rate); minRateSettled = std::min(minRateSettled, rate); }
+        if (t > seconds / 6) { maxRateLate = std::max(maxRateLate, rate); minRateLate = std::min(minRateLate, rate); }
+        if (t > seconds * 2 / 3) { maxRateSettled = std::max(maxRateSettled, rate); minRateSettled = std::min(minRateSettled, rate); }
     }
     std::printf("%s: level %.0f..%.0f, underruns %llu, skipped %llu, dropped %llu, rate %.5f..%.5f\n", what, lo, hi,
                 (unsigned long long)underruns, (unsigned long long)skipped, (unsigned long long)dropped, minRateLate,
@@ -148,7 +150,8 @@ static void Loop(double drift, double stallMs, const char* what, uint32_t reques
     check((stallMs > 8 || lo > 0) && hi < kRing, "level between the rails");
     // Sampled after each request: the target less up to a request.
     if (stallMs == 0)
-        check(settledLo > kTarget - request - 64 && settledHi < kTarget + 64, "the level settles at its target");
+        check(settledLo > kTarget - request - kTarget / 12 && settledHi < kTarget + kTarget / 12,
+              "the level settles at its target");
     if (stallMs >= 60) check(skipped > 0, "the catch-up past twice the target is skipped");
 }
 
@@ -170,6 +173,9 @@ int main() {
     Loop(0.0005, 250, "card 0.05% fast, producer 250 ms late every 10 s");
     Loop(0.0005, 0, "card 0.05% fast, suspended for 3 s", 256, 3);
     Loop(0.0005, 0, "card 0.05% fast, requests of 4096 frames", 4096);
+    // The longest ring (--audio-buffer 200): 133 ms.
+    Loop(0.0005, 0, "card 0.05% fast, a 133 ms ring", 256, 0, 5865, 600);
+    Loop(-0.0005, 30, "card 0.05% slow, a 133 ms ring, producer 30 ms late", 256, 0, 5865, 600);
     Loop(0.0005, 8, "card 0.05% fast, requests of 4096 frames, producer 8 ms late", 4096);
     std::puts("Audio stream: PASS");
 }
