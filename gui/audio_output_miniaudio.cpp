@@ -9,6 +9,14 @@
 #include <chrono>
 #include <cmath>
 
+// Steady clock ns from then to now, 0 for a then after it.
+static uint64_t Since(uint64_t now, uint64_t then) { return now > then ? now - then : 0; }
+
+static uint64_t SteadyNs() {
+    return uint64_t(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 // SPORT's frame rate, the OP-1 codec's; miniaudio resamples for a device
 // that does not take it.
 static constexpr ma_uint32 SAMPLE_RATE = 44100;
@@ -18,11 +26,13 @@ static constexpr ma_uint32 CHANNELS = 2;
 static constexpr ma_uint32 RING_BUFFER_FRAMES = 16384; // ~372ms at 44.1kHz
 static_assert(2 * (SAMPLE_RATE * SplitLatencyMs(MiniaudioOutput::kMaxBufferMs).ringMs / 1000) + 4096 <= RING_BUFFER_FRAMES,
               "the ring holds twice the target and a request");
-// Up to 0.5% (9 cents) faster or slower for the level's error, and up to
-// 0.5% more for the clocks' drift; the level is followed over ~0.25s and its
+// Guest time up to 0.1% (1.7 cents) slower or faster for the level's error,
+// at 0.5% for all of the target, and up to 0.1% more for the clocks' drift
+// (a desktop's card: 56 ppm); the level is followed over ~0.25s and its
 // error summed over ~15s.
 static constexpr double GAIN = 0.005;
-static constexpr double MAX_DRIFT = 0.005;
+static constexpr double MAX_PULL = 0.001;
+static constexpr double MAX_DRIFT = 0.001;
 static constexpr double SMOOTH_FRAMES = SAMPLE_RATE / 4;
 static constexpr double INTEGRAL_FRAMES = SAMPLE_RATE * 15;
 
@@ -78,7 +88,7 @@ MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
     : device_(nullptr), ringBuffer_(nullptr),
       latency_(SplitLatencyMs(std::clamp(bufferMs, kMinBufferMs, kMaxBufferMs))),
       targetFrames_(SAMPLE_RATE * latency_.ringMs / 1000), gate_(targetFrames_),
-      servo_(targetFrames_, GAIN, MAX_DRIFT, SMOOTH_FRAMES, INTEGRAL_FRAMES) {
+      servo_(targetFrames_, GAIN, MAX_PULL, MAX_DRIFT, SMOOTH_FRAMES, INTEGRAL_FRAMES) {
 
     auto* rb = new ma_pcm_rb;
     auto* dev = new ma_device;
@@ -183,7 +193,10 @@ void MiniaudioOutput::DataCallback(void* pDevice, void* pOutput, const void* pIn
     if (frameCount > self->request_.load(std::memory_order_relaxed))
         self->request_.store(frameCount, std::memory_order_relaxed);
     const PlaybackGate::Frames frames = self->gate_.Take(ma_pcm_rb_available_read(rb), frameCount);
-    if (self->pulse_) self->pulse_->Measure(self->gate_.Playing());
+    const bool playing = self->gate_.Playing();
+    self->playing_.store(playing, std::memory_order_relaxed);
+    self->lastCallbackNs_.store(SteadyNs(), std::memory_order_relaxed);
+    if (self->pulse_) self->pulse_->Measure(playing);
     if (frames.skip) ma_pcm_rb_seek_read(rb, frames.skip);
     ma_uint32 framesRemaining = frames.play;
     ma_uint32 framesWritten = 0;
@@ -215,6 +228,7 @@ void MiniaudioOutput::WriteSamples(const void* data, size_t samples, int channel
     }
 
     ma_pcm_rb* rb = static_cast<ma_pcm_rb*>(ringBuffer_);
+    lastWriteNs_ = SteadyNs();
     ReportLatency();
 
     // Convert input PCM to float32 stereo and push to ring buffer.
@@ -230,19 +244,26 @@ void MiniaudioOutput::WriteSamples(const void* data, size_t samples, int channel
         size_t framesToProcess = std::min(framesRemaining, CHUNK_FRAMES);
         PcmToStereo(src, framesToProcess, channels, bitsPerSample, stereo, chunk);
 
-        // To the ring at the rate that keeps its level (audio_stream.h)
-        servo_.SetTarget(TargetLevel(targetFrames_, request_.load(std::memory_order_relaxed)));
-        const double ratio = servo_.Update(ma_pcm_rb_available_read(rb), framesToProcess);
-        resampled_.clear();
-        resampler_.Push(chunk, framesToProcess, ratio, resampled_);
-
         // A write may stop at the physical end even when the ring has free
         // space at the start. Continue there; drop only when the ring is full.
-        WriteAudioFrames(*rb, resampled_.data(), static_cast<ma_uint32>(resampled_.size() / CHANNELS), CHANNELS);
+        WriteAudioFrames(*rb, chunk, static_cast<ma_uint32>(framesToProcess), CHANNELS);
+
+        // The pacer's rate that keeps the ring's level (audio_stream.h)
+        if (FollowsCard(playing_.load(std::memory_order_relaxed), 0,
+                        Since(lastWriteNs_, lastCallbackNs_.load(std::memory_order_relaxed)))) {
+            servo_.SetTarget(TargetLevel(targetFrames_, request_.load(std::memory_order_relaxed)));
+            servo_.Update(ma_pcm_rb_available_read(rb), framesToProcess);
+        }
 
         framesRemaining -= framesToProcess;
         src += framesToProcess * srcStride;
     }
+}
+
+double MiniaudioOutput::GuestRate(uint64_t wallNs) {
+    if (!active_.load()) return 1.0;
+    return PaceRate(servo_, FollowsCard(playing_.load(std::memory_order_relaxed), Since(wallNs, lastWriteNs_),
+                                        Since(wallNs, lastCallbackNs_.load(std::memory_order_relaxed))));
 }
 
 // The card's latency as measured, once it is and then on a change: PulseAudio

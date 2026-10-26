@@ -284,6 +284,8 @@ protected:
     uint64_t Pace(uint64_t targetNs);
     bool OffThreadWork();
     RealtimePacer pacer_;
+    // Its rate (AudioOutput::GuestRate); set before the CPU thread starts.
+    std::shared_ptr<AudioOutput> audioOutput_;
     // HostWork() paces the guest every kPaceCycles of guest time.
     static constexpr uint64_t kPaceCycles = TimeSource::kHz / 1000;
     uint64_t nextPaceCycles_ = 0;

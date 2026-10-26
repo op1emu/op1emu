@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 // Real-time mode: which guest time the host's clock stands for, so that the
@@ -10,6 +12,11 @@
 // than kMaxLagNs: after a host stall (JIT compilation, a descheduled thread)
 // the rest is let off, or the guest would see the stall's time rush by, as
 // the GP timers' kMaxCatchupTicks drops a long gap's ticks.
+//
+// Guest time goes at the rate SetRate gives, 1 by default: the sound card's
+// against the host's clock (AudioOutput::GuestRate), so that the SPORT makes
+// frames as fast as the card plays them, as the codec clocks it on the
+// device.
 class RealtimePacer {
 public:
     static constexpr uint64_t kMaxLagNs = 100000000;
@@ -20,7 +27,23 @@ public:
     // USB) is seen that soon.
     static constexpr uint64_t kSliceNs = 1000000;
 
+    // Rates are kept to a millionth, at most kMaxRatePpm off 1.
+    static constexpr int64_t kMaxRatePpm = 10000;
+
     bool Started() const { return started_; }
+
+    // From wall time wallNs on, guest ns per wall ns: the guest time due then
+    // stays, and goes on at the new rate.
+    void SetRate(double rate, uint64_t wallNs) {
+        const int64_t ppm = std::clamp<int64_t>(std::llround((rate - 1.0) * 1e6), -kMaxRatePpm, kMaxRatePpm);
+        if (ppm == ratePpm_) return;
+        if (started_ && wallNs > startWall_) {
+            startGuest_ = GuestNsAt(wallNs);
+            startWall_ = wallNs;
+        }
+        ratePpm_ = ppm;
+    }
+    int64_t RatePpm() const { return ratePpm_; }
 
     // The guest is at guestNs at wall time wallNs: the first call lines the
     // two up, later ones let a guest more than kMaxLagNs behind off the rest.
@@ -31,17 +54,24 @@ public:
             startWall_ = wallNs;
             return;
         }
-        const uint64_t due = GuestNsAt(wallNs);
-        if (due > guestNs + kMaxLagNs) startWall_ += due - guestNs - kMaxLagNs;
+        if (GuestNsAt(wallNs) > guestNs + kMaxLagNs) {
+            startGuest_ = guestNs + kMaxLagNs;
+            startWall_ = wallNs;
+        }
     }
 
     // The guest time due at wall time wallNs.
     uint64_t GuestNsAt(uint64_t wallNs) const {
-        return wallNs <= startWall_ ? startGuest_ : startGuest_ + (wallNs - startWall_);
+        if (wallNs <= startWall_) return startGuest_;
+        const uint64_t wall = wallNs - startWall_;
+        // wall * ratePpm_ / 1e6 without overflow, rounded to zero: never back.
+        const int64_t off = int64_t(wall / 1000000) * ratePpm_ + int64_t(wall % 1000000) * ratePpm_ / 1000000;
+        return startGuest_ + uint64_t(int64_t(wall) + off);
     }
 
 private:
     bool started_ = false;
     uint64_t startGuest_ = 0;
     uint64_t startWall_ = 0;
+    int64_t ratePpm_ = 0;
 };

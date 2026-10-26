@@ -5,7 +5,6 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
-#include <vector>
 
 struct PulseLatency;
 
@@ -23,6 +22,7 @@ public:
     ~MiniaudioOutput() override;
 
     void WriteSamples(const void* data, size_t samples, int channels, int bitsPerSample, bool stereo) override;
+    double GuestRate(uint64_t wallNs) override;
 
 private:
     static void DataCallback(void* pDevice, void* pOutput, const void* pInput, unsigned int frameCount);
@@ -35,8 +35,11 @@ private:
     uint32_t targetFrames_;
     // The card's data callback only.
     PlaybackGate gate_;
-    // Its largest request, for the CPU thread's target level.
+    // Its largest request, for the CPU thread's target level; whether it
+    // plays and when it last asked (steady clock ns), for the pacer's rate.
     std::atomic<uint32_t> request_{0};
+    std::atomic<bool> playing_{false};
+    std::atomic<uint64_t> lastCallbackNs_{0};
     // PulseAudio's latency measure (the data callback's), else miniaudio's
     // estimate.
     std::unique_ptr<PulseLatency> pulse_;
@@ -46,6 +49,5 @@ private:
     uint32_t reportedUnderflows_ = 0;
     std::chrono::steady_clock::time_point reportedAt_{};
     LevelServo servo_;
-    StreamResampler resampler_;
-    std::vector<float> resampled_;
+    uint64_t lastWriteNs_ = 0;
 };

@@ -40,6 +40,35 @@ int main() {
             last = at;
         }
     }
+    {
+        RealtimePacer pacer;
+        pacer.Sync(0, 0);
+        pacer.SetRate(1.001, 0);
+        Require(pacer.RatePpm() == 1000, "a rate kept to a millionth");
+        Require(pacer.GuestNsAt(1000 * kMs) == 1001 * kMs, "guest time at the rate");
+        pacer.SetRate(0.999, 1000 * kMs);
+        Require(pacer.GuestNsAt(1000 * kMs) == 1001 * kMs, "a new rate keeps the guest time due");
+        Require(pacer.GuestNsAt(2000 * kMs) == 2000 * kMs, "and goes on at it");
+        pacer.SetRate(0.9990004, 2000 * kMs);
+        Require(pacer.GuestNsAt(3000 * kMs) == 2999 * kMs, "a change under a millionth is none");
+        pacer.SetRate(2.0, 3000 * kMs);
+        Require(pacer.RatePpm() == RealtimePacer::kMaxRatePpm, "at most kMaxRatePpm off 1");
+        uint64_t last = 0;
+        int step = 0;
+        for (uint64_t wall = 3000 * kMs; wall < 6000 * kMs; wall += step < 100000 ? 7 : 9973) {
+            if (++step % 1000 == 0) pacer.SetRate(step % 2000 ? 0.9995 : 1.0005, wall);
+            const uint64_t at = pacer.GuestNsAt(wall);
+            Require(at >= last, "across changes of rate, the guest time due never goes back");
+            last = at;
+        }
+        pacer.SetRate(1.0005, 6000 * kMs);
+        pacer.Sync(0, 6000 * kMs + RealtimePacer::kMaxLagNs * 3);
+        Require(pacer.GuestNsAt(6000 * kMs + RealtimePacer::kMaxLagNs * 3) == RealtimePacer::kMaxLagNs,
+                "a guest far behind is let off the rest at any rate");
+        Require(pacer.GuestNsAt(6000 * kMs + RealtimePacer::kMaxLagNs * 3 + 1000 * kMs) ==
+                    RealtimePacer::kMaxLagNs + 1000500 * 1000,
+                "and goes on at the rate");
+    }
     std::puts("RealtimePacer tests passed");
     return 0;
 }

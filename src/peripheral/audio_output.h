@@ -16,4 +16,12 @@ public:
     //                right-justified in 32
     // stereo: the frame's halves are left and right
     virtual void WriteSamples(const void* data, size_t samples, int channels, int bitsPerSample, bool stereo) = 0;
+
+    // Called from the CPU thread (BlackFinCpu::Pace), at wallNs on the
+    // steady clock: guest ns per wall ns from then on (RealtimePacer::SetRate),
+    // so that the frames come as fast as the card plays them.
+    virtual double GuestRate(uint64_t wallNs) {
+        (void)wallNs;
+        return 1.0;
+    }
 };

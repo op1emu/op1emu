@@ -725,13 +725,15 @@ void BlackFinCpu::Wait() {
 // until the clock is there, so that the next sleep comes about kAheadNs of
 // guest time later, in slices: work from another thread (a key, USB) ends
 // the sleep. Returns how far guest time may go: targetNs, or on such work the
-// host clock's guest time if that is less.
+// host clock's guest time if that is less. Guest time goes at the audio
+// output's rate.
 uint64_t BlackFinCpu::Pace(uint64_t targetNs) {
     auto wallNs = [] {
         return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                             std::chrono::steady_clock::now().time_since_epoch()).count());
     };
     const uint64_t wall = wallNs();
+    if (audioOutput_) pacer_.SetRate(audioOutput_->GuestRate(wall), wall);
     pacer_.Sync(time_.Nanoseconds(), wall);
     uint64_t clockNs = pacer_.GuestNsAt(wall);
     if (targetNs <= clockNs + RealtimePacer::kAheadNs) return targetNs;
@@ -1208,6 +1210,7 @@ void BlackFinCpu::AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard) {
 }
 
 void BlackFinCpu::AttachAudioOutput(const std::shared_ptr<AudioOutput>& audioOutput) {
+    audioOutput_ = audioOutput;
     auto cb = [audioOutput](const void* data, size_t samples, int channels, int bitsPerSample, bool stereo) {
         audioOutput->WriteSamples(data, samples, channels, bitsPerSample, stereo);
     };

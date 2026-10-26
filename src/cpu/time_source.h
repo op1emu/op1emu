@@ -58,7 +58,10 @@ public:
     uint64_t Nanoseconds() const { return Cycles() * 5 / 2; }
 
     // Calendar time for the RTC: the epoch plus guest time. In real-time mode
-    // that falls behind the host's calendar by the lag RealtimePacer let off.
+    // that falls behind the host's calendar by the lag RealtimePacer let off,
+    // and drifts from it with the sound card's crystal, which guest time
+    // follows (a desktop's: 56 ppm, 5 s a day), as the device's RTC and codec
+    // crystals do.
     SystemClock::time_point SystemNow() const {
         return epoch_ + std::chrono::duration_cast<SystemClock::duration>(std::chrono::nanoseconds(Nanoseconds()));
     }
