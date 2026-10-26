@@ -234,18 +234,24 @@ static void RealTimeIdleKeepsToTheHostClock() {
     }
     Require(rounds[1] == rounds[0] + 1, "the RTC's next second wakes the idle loop once more");
 
+    // From when the key is queued, not when the thread meant to queue it:
+    // a sleeping thread wakes late on a loaded host (a macOS CI runner's
+    // overslept by more than the slack).
     std::thread key;
-    std::atomic<int64_t> keyedNs{-1};
+    std::atomic<int64_t> keyedNs{-1}, queuedNs{-1};
     Scenario(true, Loop::Idle, kDueNs, false, false, [&](TestCpu& cpu) {
         start = Clock::now();
         key = std::thread([&] {
             std::this_thread::sleep_until(start + std::chrono::nanoseconds(kKeyNs));
+            queuedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count();
             cpu.QueueEvent([&] { keyedNs = int64_t(cpu.Time().Nanoseconds()); });
         });
         // A late key thread holds the CPU up here rather than outliving it.
         cpu.QueueEvent([&] { key.join(); }, std::chrono::nanoseconds(kDueNs - 1000000));
     });
-    Require(keyedNs >= 0 && keyedNs < int64_t(kKeyNs) + 6000000, "the key arrives within a few ms of its wall time");
+    if (!(keyedNs >= 0 && keyedNs < queuedNs + 6000000))
+        std::fprintf(stderr, "key queued at %.3f ms, reached the guest at %.3f ms\n", queuedNs / 1e6, keyedNs / 1e6);
+    Require(keyedNs >= 0 && keyedNs < queuedNs + 6000000, "the key arrives within a few ms of its wall time");
 }
 
 // TMRCLK (TIMER7's output, ~5.7 MHz) is counted at the host's work, many
