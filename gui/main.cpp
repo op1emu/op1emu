@@ -210,9 +210,10 @@ static int RunEmulator(int argc, char* argv[]) {
             size_t used = 0;
             long long ms = -1;
             try { ms = std::stoll(argv[i], &used); } catch (const std::exception&) {}
-            if (used == 0 || argv[i][used] != '\0' || ms < 1 || ms > MiniaudioOutput::kMaxBufferMs)
-                throw std::runtime_error("Invalid --audio-buffer (1.." + std::to_string(MiniaudioOutput::kMaxBufferMs) +
-                                         "): " + argv[i]);
+            if (used == 0 || argv[i][used] != '\0' || ms < MiniaudioOutput::kMinBufferMs ||
+                ms > MiniaudioOutput::kMaxBufferMs)
+                throw std::runtime_error("Invalid --audio-buffer (" + std::to_string(MiniaudioOutput::kMinBufferMs) +
+                                         ".." + std::to_string(MiniaudioOutput::kMaxBufferMs) + "): " + argv[i]);
             audioBufferMs = static_cast<unsigned>(ms);
         }
         else if (options && arg == "--perf-jitdump") perfJitdump = anyProfiling = true;
@@ -276,9 +277,9 @@ static int RunEmulator(int argc, char* argv[]) {
                      "                        (bcore loop blocks off; same results, slower)\n"
                      "  --twi-speedup N       Run the I2C bus N times faster than programmed\n"
                      "                        (default 10; 1 is the hardware's rate)\n"
-                     "  --audio-buffer MS     Audio kept ahead of the sound card, against the\n"
-                     "                        emulator running late (default 17; more: later\n"
-                     "                        sound, fewer gaps on a busy host)\n"
+                     "  --audio-buffer MS     Audio latency, from the emulator to the sound card's\n"
+                     "                        output (default 26, 9..200; more: later sound,\n"
+                     "                        fewer gaps on a busy host)\n"
                      "  --build-info          Print what this binary was built from (JSON) and exit\n"
                      "Profiling builds (-DENABLE_PROFILING=ON, see docs/profiling.md):\n"
                      "  --profile-marks FILE  Phase marks (firmware PC ranges, verified frame)\n"

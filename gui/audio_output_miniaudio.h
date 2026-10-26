@@ -7,11 +7,13 @@
 
 class MiniaudioOutput : public AudioOutput {
 public:
-    // The audio kept ahead of the card (audio_stream.h's target), against the
-    // CPU thread running late (it compiles blocks: 8-25ms); more is heard
+    // The latency in all, split between the card and the ring
+    // (SplitLatencyMs): the ring's share is kept ahead of the card against
+    // the CPU thread running late (it compiles blocks: 8-25ms); more is heard
     // later.
-    static constexpr unsigned kDefaultBufferMs = 17;
-    static constexpr unsigned kMaxBufferMs = 150;
+    static constexpr unsigned kDefaultBufferMs = 26;
+    static constexpr unsigned kMinBufferMs = 9;
+    static constexpr unsigned kMaxBufferMs = 200;
 
     explicit MiniaudioOutput(unsigned bufferMs = kDefaultBufferMs);
     ~MiniaudioOutput() override;
@@ -24,6 +26,7 @@ private:
     void* device_;      // ma_device*
     void* ringBuffer_;  // ma_pcm_rb*
     std::atomic<bool> active_{false};
+    LatencySplit latency_;
     uint32_t targetFrames_;
     // The card's data callback only.
     PlaybackGate gate_;

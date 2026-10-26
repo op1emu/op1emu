@@ -13,6 +13,18 @@
 // again) only once the ring holds it, and the producer resamples by up to 1%
 // so that the two clocks' drift does not move it.
 
+// The latency asked for in all (--audio-buffer), from the CPU thread's
+// write to the card's output: a third, rounded up, to the card (its period;
+// see MiniaudioOutput) and the rest to the ring, which the producer running
+// late draws on. (DuckStation's defaults give the card 2/7, Dolphin's 1/5.)
+struct LatencySplit {
+    unsigned cardMs, ringMs;
+};
+constexpr LatencySplit SplitLatencyMs(unsigned totalMs) {
+    const unsigned card = (totalMs + 2) / 3;
+    return {card, totalMs - card};
+}
+
 // The level the ring is kept at for the card's requests of up to request
 // frames: base, or more when a request alone would take most of it.
 inline uint32_t TargetLevel(uint32_t base, uint32_t request) {

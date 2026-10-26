@@ -8,6 +8,17 @@ static void check(bool ok, const char* message) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); }
 }
 
+static void Split() {
+    auto split = [](unsigned total, unsigned card, unsigned ring) {
+        const LatencySplit s = SplitLatencyMs(total);
+        return s.cardMs == card && s.ringMs == ring;
+    };
+    check(split(26, 9, 17), "the default: the card and ring measured on a desktop");
+    check(split(9, 3, 6), "a third to the card");
+    check(split(10, 4, 6), "rounded up");
+    check(split(200, 67, 133), "the most");
+}
+
 static void Gate() {
     PlaybackGate gate(100);
     auto take = [&](uint32_t available, uint32_t requested, uint32_t skip, uint32_t play) {
@@ -156,6 +167,7 @@ static void Loop(double drift, double stallMs, const char* what, uint32_t reques
 }
 
 int main() {
+    Split();
     Gate();
     Resampler();
     Highs();

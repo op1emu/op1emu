@@ -11,9 +11,11 @@
 // that does not take it.
 static constexpr ma_uint32 SAMPLE_RATE = 44100;
 static constexpr ma_uint32 CHANNELS = 2;
-// Room for twice the longest buffer (MiniaudioOutput::kMaxBufferMs) and the
-// card's requests.
+// Room for twice the longest ring share (MiniaudioOutput::kMaxBufferMs) and
+// the card's requests.
 static constexpr ma_uint32 RING_BUFFER_FRAMES = 16384; // ~372ms at 44.1kHz
+static_assert(2 * (SAMPLE_RATE * SplitLatencyMs(MiniaudioOutput::kMaxBufferMs).ringMs / 1000) + 4096 <= RING_BUFFER_FRAMES,
+              "the ring holds twice the target and a request");
 // Up to 0.5% (9 cents) faster or slower for the level's error, and up to
 // 0.5% more for the clocks' drift; the level is followed over ~0.25s and its
 // error summed over ~15s.
@@ -21,17 +23,12 @@ static constexpr double GAIN = 0.005;
 static constexpr double MAX_DRIFT = 0.005;
 static constexpr double SMOOTH_FRAMES = SAMPLE_RATE / 4;
 static constexpr double INTEGRAL_FRAMES = SAMPLE_RATE * 15;
-// The card's latency. miniaudio asks PulseAudio for a period of it in all
-// (ADJUST_LATENCY), which gives a quarter to the sink and three quarters to
-// the stream's queue (its tlength): what the callback thread, which is not
-// real-time, has to refill it in time. Measured on a desktop: at 5.8ms
-// (4.4ms queued) it was late about once a minute, the card playing silence
-// the ring never saw; at 8.7ms not in three.
-static constexpr ma_uint32 CARD_LATENCY_MS = 9;
 
 MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
-    : device_(nullptr), ringBuffer_(nullptr), targetFrames_(SAMPLE_RATE * std::clamp(bufferMs, 1u, kMaxBufferMs) / 1000),
-      gate_(targetFrames_), servo_(targetFrames_, GAIN, MAX_DRIFT, SMOOTH_FRAMES, INTEGRAL_FRAMES) {
+    : device_(nullptr), ringBuffer_(nullptr),
+      latency_(SplitLatencyMs(std::clamp(bufferMs, kMinBufferMs, kMaxBufferMs))),
+      targetFrames_(SAMPLE_RATE * latency_.ringMs / 1000), gate_(targetFrames_),
+      servo_(targetFrames_, GAIN, MAX_DRIFT, SMOOTH_FRAMES, INTEGRAL_FRAMES) {
 
     auto* rb = new ma_pcm_rb;
     auto* dev = new ma_device;
@@ -50,7 +47,18 @@ MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
     config.playback.format = ma_format_f32;
     config.playback.channels = CHANNELS;
     config.sampleRate = SAMPLE_RATE;
-    config.periodSizeInMilliseconds = CARD_LATENCY_MS;
+    // The card's share. miniaudio asks PulseAudio for a period of it in all
+    // (ADJUST_LATENCY), which gives a quarter to the sink and three quarters
+    // to the stream's queue (its tlength): what the callback thread, which
+    // is not real-time, has to refill it in time. Measured on a desktop: at
+    // 5.8ms (4.4ms queued) it was late about once a minute, the card playing
+    // silence the ring never saw; at 8.7ms not in three.
+    config.periodSizeInMilliseconds = latency_.cardMs;
+    // The callback takes what PulseAudio asks for, not miniaudio's periods
+    // cut from it: those keep what is left of the last one, up to a period
+    // more of latency. (Measured: no more underruns.) The gate's target
+    // grows with the requests.
+    config.noFixedSizedCallback = MA_TRUE;
     config.dataCallback = reinterpret_cast<ma_device_data_proc>(DataCallback);
     config.pUserData = this;
 
