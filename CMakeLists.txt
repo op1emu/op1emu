@@ -103,8 +103,14 @@ message(STATUS "miniaudio fetched successfully")
 # value, machine instruction and MC fragment it makes while compiling a
 # block: with glibc's allocator, malloc and free were 8% of a boot's JIT
 # compilation, and mimalloc took 6% of its instructions away. OFF keeps the C
-# library's allocator.
-option(OP1_MIMALLOC "Link mimalloc as the process's malloc" ON)
+# library's allocator, the default on macOS, where a static override of malloc
+# goes through the system's malloc zones.
+if(APPLE)
+    set(OP1_MIMALLOC_DEFAULT OFF)
+else()
+    set(OP1_MIMALLOC_DEFAULT ON)
+endif()
+option(OP1_MIMALLOC "Link mimalloc as the process's malloc" ${OP1_MIMALLOC_DEFAULT})
 if(OP1_MIMALLOC)
     message(STATUS "Fetching mimalloc...")
     set(MI_OVERRIDE ON CACHE BOOL "" FORCE)
@@ -128,6 +134,10 @@ find_package(Threads REQUIRED)
 # Measurement build (docs/profiling.md). OFF compiles every profiling hook out
 # of the emulator and of bcore, so a normal build carries none of it.
 option(ENABLE_PROFILING "Build the profiling hooks: phase marks, trace, census, perf/jitdump" OFF)
+if(ENABLE_PROFILING AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # perf_event_open, gettid and the perf JIT listener are Linux's.
+    message(FATAL_ERROR "ENABLE_PROFILING needs a Linux host")
+endif()
 set(BCORE_ENABLE_PROFILE ${ENABLE_PROFILING} CACHE BOOL "bcore observability API (follows ENABLE_PROFILING)" FORCE)
 set(BCORE_PERF_JIT_EVENTS ${ENABLE_PROFILING} CACHE BOOL "bcore jitdump support (follows ENABLE_PROFILING)" FORCE)
 if(ENABLE_PROFILING)
