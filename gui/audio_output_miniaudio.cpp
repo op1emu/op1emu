@@ -6,6 +6,8 @@
 #include "utils/log.h"
 #include <cstring>
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 
 // SPORT's frame rate, the OP-1 codec's; miniaudio resamples for a device
 // that does not take it.
@@ -23,6 +25,54 @@ static constexpr double GAIN = 0.005;
 static constexpr double MAX_DRIFT = 0.005;
 static constexpr double SMOOTH_FRAMES = SAMPLE_RATE / 4;
 static constexpr double INTEGRAL_FRAMES = SAMPLE_RATE * 15;
+
+// PulseAudio's measure of the card's latency (pa_stream_get_latency: the
+// stream's queue and the sink's), which miniaudio does not report, and its
+// count of the card running dry. miniaudio runs the stream on a pa_mainloop
+// of its own, which its device thread iterates and calls the data callback
+// from: the stream is used only there (Measure, and the callbacks it
+// registers).
+struct PulseLatency {
+    using SuccessCallback = void (*)(void* stream, int success, void* userdata);
+    using NotifyCallback = void (*)(void* stream, void* userdata);
+    void* (*updateTimingInfo)(void* stream, SuccessCallback callback, void* userdata) = nullptr;
+    int (*getLatency)(void* stream, uint64_t* usec, int* negative) = nullptr;
+    void (*operationUnref)(void* operation) = nullptr;
+    void (*setUnderflowCallback)(void* stream, NotifyCallback callback, void* userdata) = nullptr;
+    void* stream = nullptr;
+
+    // For the CPU thread: the latency, 0 until measured, and the underflows.
+    std::atomic<uint64_t> latencyUs{0};
+    std::atomic<uint32_t> underflows{0};
+
+    // The data callback, while the card plays: about once a second asks
+    // for the stream's timing, whose reply gives the latency.
+    void Measure(bool playing) {
+        if (!hooked_) {
+            setUnderflowCallback(stream, OnUnderflow, this);
+            hooked_ = true;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!playing || now - asked_ < std::chrono::seconds(1)) return;
+        asked_ = now;
+        if (void* operation = updateTimingInfo(stream, OnTimingInfo, this)) operationUnref(operation);
+    }
+
+private:
+    static void OnUnderflow(void*, void* userdata) {
+        static_cast<PulseLatency*>(userdata)->underflows.fetch_add(1, std::memory_order_relaxed);
+    }
+    static void OnTimingInfo(void* stream, int success, void* userdata) {
+        auto* self = static_cast<PulseLatency*>(userdata);
+        uint64_t usec = 0;
+        int negative = 0;
+        if (success && self->getLatency(stream, &usec, &negative) == 0 && !negative && usec)
+            self->latencyUs.store(usec, std::memory_order_relaxed);
+    }
+
+    bool hooked_ = false;
+    std::chrono::steady_clock::time_point asked_{};
+};
 
 MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
     : device_(nullptr), ringBuffer_(nullptr),
@@ -71,6 +121,28 @@ MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
         return;
     }
 
+#ifdef MA_SUPPORT_PULSEAUDIO
+    if (dev->pContext->backend == ma_backend_pulseaudio) {
+        auto pulse = std::make_unique<PulseLatency>();
+        auto symbol = [dev](const char* name) {
+            return ma_dlsym(ma_device_get_log(dev), dev->pContext->pulse.pulseSO, name);
+        };
+        pulse->updateTimingInfo = reinterpret_cast<decltype(pulse->updateTimingInfo)>(symbol("pa_stream_update_timing_info"));
+        pulse->getLatency = reinterpret_cast<decltype(pulse->getLatency)>(symbol("pa_stream_get_latency"));
+        pulse->operationUnref = reinterpret_cast<decltype(pulse->operationUnref)>(symbol("pa_operation_unref"));
+        pulse->setUnderflowCallback =
+            reinterpret_cast<decltype(pulse->setUnderflowCallback)>(symbol("pa_stream_set_underflow_callback"));
+        pulse->stream = dev->pulse.pStreamPlayback;
+        if (pulse->updateTimingInfo && pulse->getLatency && pulse->operationUnref && pulse->setUnderflowCallback &&
+            pulse->stream)
+            pulse_ = std::move(pulse);
+    }
+#endif
+    // Elsewhere what miniaudio was given: its periods in all, an estimate.
+    if (!pulse_)
+        cardEstimateUs_ = uint64_t(dev->playback.internalPeriodSizeInFrames) * dev->playback.internalPeriods * 1000000 /
+                          dev->playback.internalSampleRate;
+
     ringBuffer_ = rb;
     result = ma_device_start(dev);
     if (result != MA_SUCCESS) {
@@ -111,6 +183,7 @@ void MiniaudioOutput::DataCallback(void* pDevice, void* pOutput, const void* pIn
     if (frameCount > self->request_.load(std::memory_order_relaxed))
         self->request_.store(frameCount, std::memory_order_relaxed);
     const PlaybackGate::Frames frames = self->gate_.Take(ma_pcm_rb_available_read(rb), frameCount);
+    if (self->pulse_) self->pulse_->Measure(self->gate_.Playing());
     if (frames.skip) ma_pcm_rb_seek_read(rb, frames.skip);
     ma_uint32 framesRemaining = frames.play;
     ma_uint32 framesWritten = 0;
@@ -142,6 +215,7 @@ void MiniaudioOutput::WriteSamples(const void* data, size_t samples, int channel
     }
 
     ma_pcm_rb* rb = static_cast<ma_pcm_rb*>(ringBuffer_);
+    ReportLatency();
 
     // Convert input PCM to float32 stereo and push to ring buffer.
     // Process in chunks to avoid large stack allocations.
@@ -169,4 +243,30 @@ void MiniaudioOutput::WriteSamples(const void* data, size_t samples, int channel
         framesRemaining -= framesToProcess;
         src += framesToProcess * srcStride;
     }
+}
+
+// The card's latency as measured, once it is and then on a change: PulseAudio
+// raises it after the card ran dry.
+void MiniaudioOutput::ReportLatency() {
+    const uint64_t us = pulse_ ? pulse_->latencyUs.load(std::memory_order_relaxed) : cardEstimateUs_;
+    const uint32_t underflows = pulse_ ? pulse_->underflows.load(std::memory_order_relaxed) : 0;
+    if (us == 0) return;
+    const auto now = std::chrono::steady_clock::now();
+    const double ms = us / 1000.0;
+    if (!reportedUs_) {
+        const char* source = pulse_ ? "PulseAudio" : "estimate";
+        if (ms > latency_.cardMs + 1.0)
+            LogWarn("Audio latency: card %.1f ms (%s), above the %u ms asked; ring %u ms", ms, source, latency_.cardMs,
+                    latency_.ringMs);
+        else
+            LogInfo("Audio latency: card %.1f ms (%s) + ring %u ms", ms, source, latency_.ringMs);
+    } else if (std::fabs(ms - reportedUs_ / 1000.0) > 2.0 ||
+               (underflows != reportedUnderflows_ && now - reportedAt_ >= std::chrono::seconds(10))) {
+        LogInfo("Audio latency: card %.1f ms, %u underflows", ms, underflows);
+    } else {
+        return;
+    }
+    reportedUs_ = us;
+    reportedUnderflows_ = underflows;
+    reportedAt_ = now;
 }

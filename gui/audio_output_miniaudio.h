@@ -3,7 +3,11 @@
 #include "peripheral/audio_output.h"
 #include "audio_stream.h"
 #include <atomic>
+#include <chrono>
+#include <memory>
 #include <vector>
+
+struct PulseLatency;
 
 class MiniaudioOutput : public AudioOutput {
 public:
@@ -22,6 +26,7 @@ public:
 
 private:
     static void DataCallback(void* pDevice, void* pOutput, const void* pInput, unsigned int frameCount);
+    void ReportLatency();
 
     void* device_;      // ma_device*
     void* ringBuffer_;  // ma_pcm_rb*
@@ -32,7 +37,14 @@ private:
     PlaybackGate gate_;
     // Its largest request, for the CPU thread's target level.
     std::atomic<uint32_t> request_{0};
+    // PulseAudio's latency measure (the data callback's), else miniaudio's
+    // estimate.
+    std::unique_ptr<PulseLatency> pulse_;
+    uint64_t cardEstimateUs_ = 0;
     // The CPU thread only.
+    uint64_t reportedUs_ = 0;
+    uint32_t reportedUnderflows_ = 0;
+    std::chrono::steady_clock::time_point reportedAt_{};
     LevelServo servo_;
     StreamResampler resampler_;
     std::vector<float> resampled_;
