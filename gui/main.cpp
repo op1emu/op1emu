@@ -101,6 +101,7 @@ static int RunEmulator(int argc, char* argv[]) {
     bool deterministic = false;
     std::optional<long long> rtcEpoch;
     unsigned twiSpeedup = TWI::kDefaultSpeedup;
+    unsigned audioBufferMs = MiniaudioOutput::kDefaultBufferMs;
     bool help = false;
     bool options = true;
     std::string inputScript;
@@ -204,6 +205,16 @@ static int RunEmulator(int argc, char* argv[]) {
                 throw std::runtime_error(std::string("Invalid --twi-speedup (1..100000): ") + argv[i]);
             twiSpeedup = static_cast<unsigned>(factor);
         }
+        else if (options && arg == "--audio-buffer") {
+            if (++i == argc) throw std::runtime_error("--audio-buffer requires milliseconds");
+            size_t used = 0;
+            long long ms = -1;
+            try { ms = std::stoll(argv[i], &used); } catch (const std::exception&) {}
+            if (used == 0 || argv[i][used] != '\0' || ms < 1 || ms > MiniaudioOutput::kMaxBufferMs)
+                throw std::runtime_error("Invalid --audio-buffer (1.." + std::to_string(MiniaudioOutput::kMaxBufferMs) +
+                                         "): " + argv[i]);
+            audioBufferMs = static_cast<unsigned>(ms);
+        }
         else if (options && arg == "--perf-jitdump") perfJitdump = anyProfiling = true;
         else if (options && arg == "--profile-counters") profileCounters = anyProfiling = true;
         else if (options && arg == "--profile-probes") profileProbes = anyProfiling = true;
@@ -265,6 +276,9 @@ static int RunEmulator(int argc, char* argv[]) {
                      "                        (bcore loop blocks off; same results, slower)\n"
                      "  --twi-speedup N       Run the I2C bus N times faster than programmed\n"
                      "                        (default 10; 1 is the hardware's rate)\n"
+                     "  --audio-buffer MS     Audio kept ahead of the sound card, against the\n"
+                     "                        emulator running late (default 17; more: later\n"
+                     "                        sound, fewer gaps on a busy host)\n"
                      "  --build-info          Print what this binary was built from (JSON) and exit\n"
                      "Profiling builds (-DENABLE_PROFILING=ON, see docs/profiling.md):\n"
                      "  --profile-marks FILE  Phase marks (firmware PC ranges, verified frame)\n"
@@ -405,7 +419,7 @@ static int RunEmulator(int argc, char* argv[]) {
     cpu.AttachKeyboard(keyboard);
     // SPORT still drains DMA and advances its sample accounting without a
     // host sink. Avoid opening ALSA/PulseAudio devices on headless hosts.
-    if (!headless) cpu.AttachAudioOutput(std::make_shared<MiniaudioOutput>());
+    if (!headless) cpu.AttachAudioOutput(std::make_shared<MiniaudioOutput>(audioBufferMs));
     cpu.SetBootMode(0x0D); // Set BMODE to 0b1101, boot from NAND flash with port H
 
     auto loop = uvw::loop::get_default();
