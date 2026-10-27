@@ -34,7 +34,8 @@ class __attribute__ ((__packed__)) BigEndian
     T value;
 
 public:
-    BigEndian() { }
+    // Zero, so that a USB/IP reply's `{}` leaves no field (its status) unset.
+    BigEndian() : value() { }
     BigEndian(const T& t) : value(swap(t)) { }
     operator T() const { return swap(value); }
 };
