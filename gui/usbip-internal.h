@@ -13,10 +13,8 @@ struct __attribute__ ((__packed__)) OP_REQ_IMPORT : public OP_REQ_HEADER {
     char busid[32];
 };
 
-struct  __attribute__ ((__packed__)) OP_REP_IMPORT {
-    be_uint16_t version;
-    be_uint16_t command;
-    be_uint32_t status;
+// What OP_REP_DEVLIST and OP_REP_IMPORT say about a device.
+struct __attribute__ ((__packed__)) USBIP_USB_DEVICE {
     char path[256];
     char busid[32];
     be_uint32_t busnum;
@@ -31,6 +29,24 @@ struct  __attribute__ ((__packed__)) OP_REP_IMPORT {
     uint8_t bConfigurationValue;
     uint8_t bNumConfigurations;
     uint8_t bNumInterfaces;
+};
+static_assert(sizeof(USBIP_USB_DEVICE) == 312);
+
+// OP_REP_DEVLIST: one per interface, after its device.
+struct __attribute__ ((__packed__)) USBIP_USB_INTERFACE {
+    uint8_t bInterfaceClass;
+    uint8_t bInterfaceSubClass;
+    uint8_t bInterfaceProtocol;
+    uint8_t padding;
+};
+
+// The devices follow it.
+struct __attribute__ ((__packed__)) OP_REP_DEVLIST : public OP_REQ_HEADER {
+    be_uint32_t ndev;
+};
+
+struct __attribute__ ((__packed__)) OP_REP_IMPORT : public OP_REQ_HEADER {
+    USBIP_USB_DEVICE udev;
 };
 
 struct  __attribute__ ((__packed__)) USBIP_HEADER_BASIC {

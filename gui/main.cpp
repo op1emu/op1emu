@@ -424,6 +424,9 @@ static int RunEmulator(int argc, char* argv[]) {
     cpu.SetBootMode(0x0D); // Set BMODE to 0b1101, boot from NAND flash with port H
 
     auto loop = uvw::loop::get_default();
+    // Its handles are made before the loop runs them, on its thread.
+    USBIPServer usbipd(*loop, cpu.GetUSB());
+    usbipd.Start();
     std::thread uvloop([loop]() {
         while (true) {
             loop->run();
@@ -433,8 +436,6 @@ static int RunEmulator(int argc, char* argv[]) {
     // std::thread destroyed at return would call std::terminate, masking the
     // exit code of a clean quit/SIGTERM shutdown.
     uvloop.detach();
-    USBIPServer usbipd(*loop, cpu.GetUSB());
-    usbipd.Start();
 
     // Load LDR file
     LDRParser parser;
