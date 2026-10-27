@@ -44,6 +44,10 @@ public:
     // The firmware has enabled the controller and connected to the bus (SOFT_CONN).
     // A host cannot enumerate the device before that: nothing answers its requests.
     virtual bool IsConnected() const { return true; }
+    // No control transfer is waiting on EP0 or under way. A setup sent before
+    // the last one is answered queues behind it, and the answer goes to the
+    // later one's callback.
+    virtual bool ControlIdle() { return true; }
 };
 
 
@@ -109,6 +113,7 @@ public:
     bool IsConnected() const override {
         return enabled.load(std::memory_order_relaxed) && connected.load(std::memory_order_relaxed);
     }
+    bool ControlIdle() override;
 
     void ProcessWithInterrupt(int ivg) override;
     // ProcessWithInterrupt() has work: the USB is enabled (GLOBAL_ENA), and

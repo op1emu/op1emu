@@ -94,8 +94,17 @@ void USBIPServer::Close(uvw::tcp_handle& client)
     client.close();
 }
 
+bool USBIPServer::EP0Claimed()
+{
+    // ControlIdle() takes the USB's lock: not under ours (the guest's
+    // answers take the two the other way round).
+    if (ep0Claimed && device.ControlIdle()) ep0Claimed = false;
+    return ep0Claimed;
+}
+
 bool USBIPServer::ReplyImport(OP_REQ_IMPORT& req, uvw::tcp_handle& client)
 {
+    const bool claimed = EP0Claimed();
     std::lock_guard lock(mutex);
     uint32_t status = 0;
     if (!device.IsConnected()) {
@@ -106,6 +115,11 @@ bool USBIPServer::ReplyImport(OP_REQ_IMPORT& req, uvw::tcp_handle& client)
     } else if (attached) {
         LogWarn("USBIP: refusing attach, another client is attached");
         status = kStatusBusy;
+    } else if (claimed) {
+        // Its host's requests would queue behind the server's, and each get
+        // the answer to the one before.
+        LogWarn("USBIP: refusing attach, the firmware has not answered the server's own request yet");
+        status = kStatusUnavailable;
     }
     if (status) {
         OP_REQ_HEADER rep{};
@@ -218,6 +232,17 @@ void USBIPServer::HandleDevList(uvw::tcp_handle& client)
             return;
         }
     }
+    if (!read) {
+        const bool claimed = EP0Claimed();
+        if (claimed || !device.ControlIdle()) {
+            // Requests are still waiting on EP0 (the server's last ones, or
+            // an earlier client's): one sent now would get their answers.
+            LogWarn("USBIP: list: the firmware has not answered earlier requests yet");
+            std::lock_guard lock(mutex);
+            ReplyDevList(client, known.Valid() ? &known : nullptr, known.Valid() ? 0 : kStatusError);
+            return;
+        }
+    }
     // Read them each time: the firmware may have connected again as another device.
     ReadDescriptors([weak = client.weak_from_this()] (const Descriptors* descriptors) {
         // A guest that does not answer, or not with descriptors, is not an empty bus.
@@ -309,6 +334,9 @@ void USBIPServer::FinishRead(bool ok)
     auto finished = std::move(*read);
     read.reset();
     const bool valid = ok && finished.got.Valid();
+    // What was asked may still be waiting on EP0: keep it from an attach
+    // until the guest has answered it.
+    if (!valid) ep0Claimed = true;
     if (valid) {
         std::lock_guard lock(mutex);
         known = finished.got;

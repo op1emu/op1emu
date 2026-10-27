@@ -404,6 +404,12 @@ void USB::HandleSetupPacket(USBSetupBytes setup, const u8* data, std::size_t len
     HostRequested();
 }
 
+bool USB::ControlIdle() {
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto& ep0 = endpoints[0];
+    return ep0.rxFifo.empty() && !ep0.dataPacketReceived && !ep0.dataEnded && !setupCallback;
+}
+
 void USB::HandleDataWrite(int ep, int interval, const u8* data, std::size_t length, WriteDoneCallback callback) {
     std::lock_guard<std::mutex> lock(mutex);
 

@@ -81,6 +81,10 @@ private:
     std::optional<std::pair<uint64_t, std::vector<uint8_t>>> answer; // under mutex
     std::shared_ptr<uvw::async_handle> answered;
     std::shared_ptr<uvw::timer_handle> readTimeout;
+    // After a read that did not finish: its requests may still be in the
+    // controller. Cleared once it is idle.
+    bool ep0Claimed = false;
+    bool EP0Claimed();
 
 private:
     // The attached client and which connection it is: a reply for an earlier
