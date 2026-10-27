@@ -37,9 +37,9 @@ private:
     uint32_t targetFrames_;
     // The card's data callback only.
     PlaybackGate gate_;
-    // Its largest request, for the CPU thread's target level; whether it
-    // plays and when it last asked (steady clock ns), for the pacer's rate.
-    std::atomic<uint32_t> request_{0};
+    // Its target level, for the CPU thread's servo; whether it plays and
+    // when it last asked (steady clock ns), for the pacer's rate.
+    std::atomic<uint32_t> target_;
     std::atomic<bool> playing_{false};
     std::atomic<uint64_t> lastCallbackNs_{0};
     // Its thread's scheduling policy (-1 until known) and priority.

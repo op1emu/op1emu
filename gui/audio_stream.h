@@ -36,31 +36,36 @@ constexpr uint32_t TargetLevel(uint32_t base, uint32_t request) {
 }
 
 // The sound card's side (its data callback): which of the ring's frames a
-// request plays. Nothing until the ring holds the target (TargetLevel); a
-// request it cannot fill plays what there is and waits for the target again,
-// so a late producer costs one gap, not a run of short ones. A producer
-// catching up after it was late can fill the ring past the target: on
-// starting again after a gap, and above twice the target, the oldest frames
-// are skipped down to where the servo holds the level -- between requests
-// it rises by one, so to the target and half a request before one -- a jump
-// instead of seconds at the servo's other rate.
+// request plays. Nothing until the ring holds the target (TargetLevel, for
+// the largest request of the last one to two windowFrames of the card's: a
+// backend's first, longer, one raises it only for that long); a request it
+// cannot fill plays what there is and waits for the target again, so a late
+// producer costs one gap, not a run of short ones. A producer catching up
+// after it was late can fill the ring past the target: on starting again
+// after a gap, and above twice the target, the oldest frames are skipped down
+// to where the servo holds the level -- between requests it rises by one, so
+// to the target and half a request before one -- a jump instead of seconds
+// at the servo's other rate; never below the request, which a skip must not
+// leave short. The servo's target is the gate's (Target()), or the two would
+// hold different levels and the gate skip what the servo makes up.
 class PlaybackGate {
 public:
-    explicit PlaybackGate(uint32_t baseFrames) : base_(baseFrames) {}
+    PlaybackGate(uint32_t baseFrames, uint32_t windowFrames) : base_(baseFrames), window_(windowFrames) {}
 
     struct Frames {
         uint32_t skip = 0, play = 0;
     };
     Frames Take(uint32_t available, uint32_t requested) {
-        const uint32_t target = TargetLevel(base_, requested);
+        Remember(requested);
+        const uint32_t target = Target();
         bool starting = false;
         if (!playing_) {
             if (available < target) return {};
             playing_ = starting = true;
         }
         Frames frames;
-        const uint32_t held = target + requested / 2;
-        if (available > (starting ? held : 2 * target)) {
+        const uint32_t held = std::max(target + requested / 2, requested);
+        if (available > (starting ? held : std::max(held, 2 * target))) {
             frames.skip = available - held;
             available = held;
         }
@@ -72,10 +77,23 @@ public:
         }
         return frames;
     }
+    uint32_t Target() const { return TargetLevel(base_, std::max(current_, previous_)); }
     bool Playing() const { return playing_; }
 
 private:
-    uint32_t base_;
+    // The largest request of this window and the last.
+    void Remember(uint32_t requested) {
+        current_ = std::max(current_, requested);
+        seen_ += requested;
+        if (seen_ >= window_) {
+            previous_ = current_;
+            current_ = seen_ = 0;
+        }
+    }
+
+    uint32_t base_, window_;
+    uint32_t current_ = 0, previous_ = 0;
+    uint64_t seen_ = 0;
     bool playing_ = false;
 };
 

@@ -43,6 +43,9 @@ static_assert(2 * TargetLevel(SAMPLE_RATE * SplitLatencyMs(MiniaudioOutput::kMax
 // the level's own time constant then ~27s; tested, it settles closer than
 // with the integral slowed to match.)
 static constexpr double INTEGRAL_FRAMES = SAMPLE_RATE * 15;
+// The card's requests the target level is for: the largest of the last
+// 2..4 s.
+static constexpr ma_uint32 REQUEST_WINDOW_FRAMES = SAMPLE_RATE * 2;
 static constexpr double GAIN = 0.005;
 static constexpr double MAX_PULL = 0.001;
 static constexpr double MAX_DRIFT = 0.001;
@@ -99,7 +102,8 @@ private:
 MiniaudioOutput::MiniaudioOutput(unsigned bufferMs)
     : device_(nullptr), ringBuffer_(nullptr),
       latency_(SplitLatencyMs(std::clamp(bufferMs, kMinBufferMs, kMaxBufferMs))),
-      targetFrames_(SAMPLE_RATE * latency_.ringMs / 1000), gate_(targetFrames_),
+      targetFrames_(SAMPLE_RATE * latency_.ringMs / 1000), gate_(targetFrames_, REQUEST_WINDOW_FRAMES),
+      target_(gate_.Target()),
       servo_(targetFrames_, GAIN, MAX_PULL, MAX_DRIFT, SMOOTH_FRAMES, INTEGRAL_FRAMES) {
 
     auto* rb = new ma_pcm_rb;
@@ -237,9 +241,8 @@ void MiniaudioOutput::DataCallback(void* pDevice, void* pOutput, const void* pIn
     ma_pcm_rb* rb = static_cast<ma_pcm_rb*>(self->ringBuffer_);
     float* output = static_cast<float*>(pOutput);
 
-    if (frameCount > self->request_.load(std::memory_order_relaxed))
-        self->request_.store(frameCount, std::memory_order_relaxed);
     const PlaybackGate::Frames frames = self->gate_.Take(ma_pcm_rb_available_read(rb), frameCount);
+    self->target_.store(self->gate_.Target(), std::memory_order_relaxed);
     const bool playing = self->gate_.Playing();
     self->playing_.store(playing, std::memory_order_relaxed);
     self->lastCallbackNs_.store(SteadyNs(), std::memory_order_relaxed);
@@ -310,7 +313,7 @@ void MiniaudioOutput::WriteSamples(const void* data, size_t samples, int channel
         // The pacer's rate that keeps the ring's level (audio_stream.h)
         if (FollowsCard(playing_.load(std::memory_order_relaxed), 0,
                         Since(lastWriteNs_, lastCallbackNs_.load(std::memory_order_relaxed)))) {
-            servo_.SetTarget(TargetLevel(targetFrames_, request_.load(std::memory_order_relaxed)));
+            servo_.SetTarget(target_.load(std::memory_order_relaxed));
             servo_.Update(ma_pcm_rb_available_read(rb), framesToProcess);
         }
 
