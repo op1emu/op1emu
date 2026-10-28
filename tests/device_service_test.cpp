@@ -305,26 +305,25 @@ static void NfcPioMatchesPolling(u32 irqmask) {
     Require(quiet * 2 > kSteps, "NFC PIO: most accesses leave the host nothing to do");
 }
 
-// A memory DMA the guest polls: it starts a transfer from MDMA_S0 to
-// MDMA_D0, reads MDMA_D0_IRQ_STATUS every block and acknowledges DMA_DONE
-// before the next one. Serviced through its contract (reads and the
-// acknowledgement give it no work), the DMA moves the same bytes at the same
-// guest times and shows the same status as one serviced after every block.
+// Memory DMA 0 (and 1) between SDRAM and L1, at the hardware's rate unless a
+// speedup is given.
 struct MdmaRig {
+    static constexpr u32 kL1 = 0xFF800000;
     TimeSource time{true};
     Emulator emulator;
     MemoryDevice ram{"SDRAM", 0, 0x10000};
+    MemoryDevice l1{"Data A", kL1, 0x4000};
     DMA dma{0xFFC00C00, emulator, &time};
-    std::shared_ptr<MemorySrcDMABus> src = std::make_shared<MemorySrcDMABus>();
-    std::shared_ptr<MemoryDestDMABus> dst = std::make_shared<MemoryDestDMABus>(*src);
-    int level = 0;
+    int level = 0, level1 = 0;
 
-    MdmaRig() {
+    explicit MdmaRig(unsigned speedup = 1) {
         emulator.BindDevice(&ram);
-        dma.AttachDMABus(DMAPeripheralMDMADest0, dst);
-        dma.AttachDMABus(DMAPeripheralMDMASrc0, src);
+        emulator.BindDevice(&l1);
+        dma.SetMdmaSpeedup(speedup);
         dma.BindInterrupt(12, 12, [this](int, int l) { level = l; });
-        for (u32 i = 0; i < 0x4000; i += 4) ram.Write32(i, i * 2654435761u);
+        dma.BindInterrupt(14, 14, [this](int, int l) { level1 = l; });
+        for (u32 i = 0; i < 0x10000; i += 4) ram.Write32(i, i * 2654435761u);
+        for (u32 i = 0; i < 0x4000; i += 4) l1.Write32(i, ~i * 40503u);
     }
     void Start(u32 from, u32 to, u32 words) {
         dma.Write32(0x344, from);   // MDMA_S0_START_ADDR
@@ -336,39 +335,77 @@ struct MdmaRig {
         dma.Write32(0x348, 0x09);         // DMAEN, 32-bit
         dma.Write32(0x308, 0x8B);         // DMAEN, WNR, 32-bit, DI_EN
     }
-    // Rows of x words, y of them, contiguous (2D where y > 1), armed in
-    // either order (Arm, then Arm(second) later or at once); the destination
-    // interrupts at its end, at each row (DI_SEL) or not at all; both restart
-    // at their ends (autobuffer) or stop.
+    // Rows of x elements of 1 << wsize bytes, y of them (2D where y > 1),
+    // on stream 0 or 1, armed in either order (Arm, then Arm(second) later
+    // or at once); the destination interrupts at its end, at each row
+    // (DI_SEL) or not at all; both restart at their ends (autobuffer) or
+    // stop, or the destination goes on through a list of two descriptors
+    // (listed: its START_ADDR, from kList). Modifies in bytes; kElement is
+    // the element's size.
+    static constexpr int16_t kElement = INT16_MIN;
+    static constexpr u32 kList = kL1 + 0x3F00;
     struct Shape {
         u32 from, to, x1, y1, x2, y2;
         bool destFirst, interrupt, eachRow, autobuffer;
-        int16_t ymod1 = 4, ymod2 = 4;  // Y_MODIFY: 4 is contiguous rows
+        int16_t ymod1 = 4, ymod2 = 4;
+        u32 wsize = 2;
+        u32 stream = 0;
+        int16_t xmod1 = kElement, xmod2 = kElement;
+        bool listed = false;
     };
     void Arm(const Shape& t, bool second = false) {
+        const u32 d = 0x300 + t.stream * 0x80, s = d + 0x40;
         const u32 flow = t.autobuffer ? 0x1000 : 0;
-        const u32 source = 0x09 | (t.y1 > 1 ? 0x10 : 0) | flow;
-        const u32 dest = 0x0B | (t.y2 > 1 ? 0x10 : 0) | (t.interrupt ? 0x80 : 0) | (t.eachRow ? 0x40 : 0) | flow;
+        const u32 size = t.wsize << 2;
+        const u32 source = 0x01 | size | (t.y1 > 1 ? 0x10 : 0) | flow;
+        // The large descriptor model, four halfwords: the link and START_ADDR.
+        const u32 destFlow = t.listed ? 0x7400 : flow;
+        const u32 dest = 0x03 | size | (t.y2 > 1 ? 0x10 : 0) | (t.interrupt ? 0x80 : 0) | (t.eachRow ? 0x40 : 0) | destFlow;
         if (second) {
-            dma.Write32(t.destFirst ? 0x348 : 0x308, t.destFirst ? source : dest);
+            dma.Write32(t.destFirst ? s + 0x08 : d + 0x08, t.destFirst ? source : dest);
             return;
         }
-        dma.Write32(0x344, t.from);
-        dma.Write32(0x350, t.x1);
-        dma.Write32(0x354, 4);
-        dma.Write32(0x358, t.y1);
-        dma.Write32(0x35C, u16(t.ymod1));
-        dma.Write32(0x304, t.to);
-        dma.Write32(0x310, t.x2);
-        dma.Write32(0x314, 4);
-        dma.Write32(0x318, t.y2);
-        dma.Write32(0x31C, u16(t.ymod2));
-        dma.Write32(t.destFirst ? 0x308 : 0x348, t.destFirst ? dest : source);
+        const int16_t e = int16_t(1 << t.wsize);
+        dma.Write32(s + 0x04, t.from);
+        dma.Write32(s + 0x10, t.x1);
+        dma.Write32(s + 0x14, u16(t.xmod1 == kElement ? e : t.xmod1));
+        dma.Write32(s + 0x18, t.y1);
+        dma.Write32(s + 0x1C, u16(t.ymod1));
+        if (t.listed) {
+            // Two descriptors in turn, each back to the destination's start.
+            const u32 list = kList + 0x20 * t.stream;
+            for (u32 i = 0; i < 2; ++i) {
+                emulator.MemoryWrite32(list + 0x10 * i, list + 0x10 * (1 - i));
+                emulator.MemoryWrite32(list + 0x10 * i + 4, t.to);
+            }
+            dma.Write32(d + 0x00, list);
+        }
+        dma.Write32(d + 0x04, t.to);
+        dma.Write32(d + 0x10, t.x2);
+        dma.Write32(d + 0x14, u16(t.xmod2 == kElement ? e : t.xmod2));
+        dma.Write32(d + 0x18, t.y2);
+        dma.Write32(d + 0x1C, u16(t.ymod2));
+        dma.Write32(t.destFirst ? d + 0x08 : s + 0x08, t.destFirst ? dest : source);
+    }
+    // Guest cycles from now until MDMA_D0's DMA_DONE, serviced as the host does.
+    uint64_t RunUntilDone(u32 status = 0x328, uint64_t limit = 1u << 22) {
+        const uint64_t from = time.Cycles();
+        while (!(dma.Read32(status) & 1)) {
+            Require(time.Cycles() - from < limit, "memory DMA: the transfer ends");
+            time.Retire(1);
+            if (dma.NeedsService(time.Nanoseconds())) dma.ProcessWithInterrupt(-1);
+        }
+        return time.Cycles() - from;
     }
 };
 
+// A memory DMA the guest polls: it starts a transfer from MDMA_S0 to
+// MDMA_D0, reads MDMA_D0_IRQ_STATUS every block and acknowledges DMA_DONE
+// before the next one. Serviced through its contract (reads and the
+// acknowledgement give it no work), the DMA moves the same bytes at the same
+// guest times and shows the same status as one serviced after every block.
 static void MdmaPollingMatchesPolling(uint32_t seed) {
-    MdmaRig polled, scheduled;
+    MdmaRig polled(10), scheduled(10);
     std::mt19937 rng(seed);
     uint64_t services = 0;
     int transfers = 0;
@@ -399,7 +436,7 @@ static void MdmaPollingMatchesPolling(uint32_t seed) {
                 "seed " + std::to_string(seed) + ": MDMA levels differ at step " + std::to_string(step));
     }
     for (u32 i = 0; i < 0x4000; i += 4)
-        Require(polled.ram.Read32(i) == scheduled.ram.Read32(i), "seed " + std::to_string(seed) + ": memory differs");
+        Require(polled.ram.Read32(i) == scheduled.emulator.MemoryRead32(i), "seed " + std::to_string(seed) + ": memory differs at " + std::to_string(i));
     Require(transfers > 100, "the guest ran transfers");
     Require(services * 2 < kSteps, "the polled MDMA is serviced when a row is due, not at every poll: " +
                                        std::to_string(services) + " of " + std::to_string(kSteps));
@@ -426,71 +463,211 @@ static void GuestWrite(Emulator& emulator, u32 addr, u32 value) {
     emulator.WriteAttended<u32>(addr, value, hostWork);
 }
 
+// The HRM's memory DMA timing (6-44 to 6-47): a stream moves a 16-bit word
+// per SCLK (five core cycles at the firmware's PLL_DIV) between L1 and
+// external memory and one per two SCLKs within either, a 32-bit element as
+// two words; it starts three SCLKs after the CONFIG write that completes the
+// pair, and a speedup divides all of it (rounded up to a cycle). The
+// source alone moves nothing; memory DMA 1 waits while memory DMA 0 runs.
+static void MdmaHrmTiming() {
+    struct Case { u32 from, to, wsize; unsigned speedup; uint64_t cycles; const char* what; };
+    const u32 L1 = MdmaRig::kL1;
+    const Case cases[] = {
+        {L1, 0x1000, 2, 1, 15 + 100 * 10, "32-bit, L1 to SDRAM"},
+        {0x1000, L1 + 0x1000, 2, 1, 15 + 100 * 10, "32-bit, SDRAM to L1"},
+        {0x1000, 0x8000, 2, 1, 15 + 100 * 20, "32-bit, SDRAM to SDRAM"},
+        {L1, L1 + 0x1000, 2, 1, 15 + 100 * 20, "32-bit, L1 to L1"},
+        {L1, 0x1000, 1, 1, 15 + 100 * 5, "16-bit, L1 to SDRAM"},
+        {0x1000, 0x8000, 0, 1, 15 + 100 * 10, "8-bit, SDRAM to SDRAM"},
+        {L1, 0x1000, 2, 10, (15 + 100 * 10 + 9) / 10, "32-bit, L1 to SDRAM, ten times faster"},
+        {0x1000, 0x8000, 1, 3, (15 + 100 * 10 + 2) / 3, "16-bit, SDRAM to SDRAM, three times faster"},
+    };
+    for (const Case& c : cases) {
+        MdmaRig rig(c.speedup);
+        rig.time.Retire(1000);
+        const MdmaRig::Shape t{c.from, c.to, 100, 1, 100, 1, false, true, false, false, 0, 0, c.wsize};
+        rig.Arm(t);
+        rig.time.Retire(3);  // the firmware's gap: the source, then the destination
+        rig.Arm(t, true);
+        const uint64_t took = rig.RunUntilDone();
+        Require(took == c.cycles, std::string("memory DMA timing, ") + c.what + ": " + std::to_string(took) +
+                                      " cycles, not " + std::to_string(c.cycles));
+        for (u32 i = 0; i < 100u << c.wsize; ++i) {
+            u8 a, b;
+            rig.emulator.MemoryRead(c.from + i, &a, 1);
+            rig.emulator.MemoryRead(c.to + i, &b, 1);
+            Require(a == b, std::string("memory DMA timing, ") + c.what + ": the copy");
+        }
+    }
+    {
+        // A descriptor fetched at a work unit's end: an SCLK per halfword,
+        // four of them (the link and START_ADDR), before the next element.
+        MdmaRig rig;
+        MdmaRig::Shape t{L1, 0x1000, 100, 1, 100, 1, false, true, false, true};
+        t.listed = true;
+        rig.Arm(t);
+        rig.Arm(t, true);
+        Require(rig.RunUntilDone() == 15 + 100 * 10, "memory DMA through descriptors: the first work unit");
+        rig.dma.Write32(0x328, 1);
+        Require(rig.RunUntilDone() == 4 * 5 + 100 * 10, "memory DMA through descriptors: the next one, after its descriptor");
+    }
+    {
+        // The destination is what starts it.
+        MdmaRig rig;
+        const MdmaRig::Shape t{L1, 0x1000, 100, 1, 100, 1, false, true, false, false};
+        rig.Arm(t);
+        for (int i = 0; i < 500; ++i) {
+            rig.time.Retire(1);
+            if (rig.dma.NeedsService(rig.time.Nanoseconds())) rig.dma.ProcessWithInterrupt(-1);
+        }
+        Require(rig.dma.Read32(0x370) == 100 && (rig.dma.Read32(0x368) & 8),
+                "memory DMA: the source alone reads nothing and keeps running");
+        rig.Arm(t, true);
+        Require(rig.RunUntilDone() == 15 + 100 * 10, "memory DMA: it starts at the destination's CONFIG write");
+    }
+    {
+        // Fixed priority (DMA_TC_PER's MDMA_ROUND_ROBIN_PERIOD 0, as the
+        // firmware sets it): memory DMA 1 stops while memory DMA 0 runs.
+        MdmaRig rig;
+        MdmaRig::Shape one{L1, 0x4000, 100, 1, 100, 1, false, false, false, false};
+        one.stream = 1;
+        const MdmaRig::Shape zero{L1 + 0x1000, 0x1000, 100, 1, 100, 1, false, false, false, false};
+        rig.Arm(one);
+        rig.Arm(one, true);
+        rig.time.Retire(300);
+        rig.Arm(zero);
+        rig.Arm(zero, true);
+        const uint64_t zeroDone = rig.RunUntilDone();
+        Require(zeroDone == 15 + 1000, "memory DMA 0 runs at its own rate beside memory DMA 1");
+        Require(!(rig.dma.Read32(0x3A8) & 1), "memory DMA 1 is not done while memory DMA 0 ran");
+        // Memory DMA 1 moved 28 elements in the 285 cycles before (10 each),
+        // and the remaining 72 after memory DMA 0's end.
+        Require(rig.RunUntilDone(0x3A8) == 72 * 10, "memory DMA 1 goes on where memory DMA 0 ends");
+    }
+}
+
 // A memory DMA settles its rows (DMA::SetSettling): serviced only at the
 // cycles NeedsService() says, it moves the same bytes, interrupts at the
 // same cycles and shows the same status, counts and memory at every guest
 // access -- loads and stores of what it copies included, by generated code
-// or the host -- as the DMA that moves each row when it is due, serviced
-// every cycle; with a service about once a transfer, not once a row. Like
-// the synth's copy (8-byte source rows into 99-word ones), with rows apart
-// or backwards, and transfers aborted now and then.
+// or the host -- as the DMA that moves each element at its own slot,
+// serviced every cycle; with a service about once a transfer, not once a
+// row. Like the synth's fill (8-byte source rows read over and over into 99-word
+// ones), with elements of any size, rows apart, backwards or the same,
+// copies within one memory and across, overlapping, both streams at once,
+// sparse accesses or dense, and transfers aborted now and then.
 static void MdmaSettlesLikeEveryCycle(uint32_t seed) {
-    MdmaRig every, settled;
-    every.dma.SetSettling(false);
     std::mt19937 rng(seed);
-    uint64_t services = 0, rows = 0;
-    int transfers = 0, reads = 0, accesses = 0;
-    bool autobuffer = false;
-    std::optional<std::pair<MdmaRig::Shape, uint64_t>> second;  // the side armed later, and when
+    static constexpr unsigned kSpeedups[] = {1, 3, 10};
+    const unsigned speedup = kSpeedups[seed % 3];
+    MdmaRig every(speedup), settled(speedup);
+    every.dma.SetSettling(false);
+    const u32 accessEvery = seed % 2 ? 8 : 512;
+    uint64_t services = 0, rows = 0, rowEvents = 0;
+    int transfers = 0, reads = 0, accesses = 0, listed = 0, still = 0, backwards = 0;
+    bool autobuffer[2] = {false, false};
+    std::optional<std::pair<MdmaRig::Shape, uint64_t>> second[2];  // the side armed later, and when
     constexpr int kSteps = 20000;
     const auto where = [&](int step) { return "seed " + std::to_string(seed) + " step " + std::to_string(step); };
+    // Where a side's elements lie relative to its start: x of them xmod
+    // apart, rows `stride` apart (Y_MODIFY is stride - (x - 1) * xmod), as
+    // far below the start as above it at most.
+    const auto reach = [](u32 x, u32 y, int xmod, int stride, int e) {
+        return u32((int(x) - 1) * std::abs(xmod) + (int(y) - 1) * std::abs(stride) + e);
+    };
+    // An address in SDRAM or L1 with `bytes` on either side (L1's top holds
+    // the descriptor lists).
+    const auto place = [&](u32 bytes, bool l1) {
+        const u32 room = l1 ? MdmaRig::kList - MdmaRig::kL1 : 0x10000;
+        if (2 * bytes + 64 > room) return u32(UINT32_MAX);
+        const u32 at = bytes + (rng() % ((room - 2 * bytes) / 4)) * 4;
+        return (l1 ? MdmaRig::kL1 : 0) + at;
+    };
     for (int step = 0; step < kSteps; ++step) {
-        const u32 status = every.dma.Read32(0x328);
-        Require(status == settled.dma.Read32(0x328), "settling MDMA: MDMA_D0_IRQ_STATUS differs, " + where(step));
-        if (rng() % 3 == 0) {
-            static constexpr u32 kCurrent[] = {0x24, 0x30, 0x38};
-            const u32 reg = (rng() % 2 ? 0x300 : 0x340) + kCurrent[rng() % 3];
-            Require(every.dma.Read32(reg) == settled.dma.Read32(reg), "settling MDMA: current registers differ, " + where(step));
-            ++reads;
-        }
-        if (status & 1) {
-            every.dma.Write32(0x328, 1);
-            settled.dma.Write32(0x328, 1);
-        }
-        if ((status & 8) && rng() % (autobuffer ? 40 : 400) == 0) {
-            for (auto* rig : {&every, &settled}) rig->dma.Write32(0x308, 0), rig->dma.Write32(0x348, 0);
-            second.reset();
-        } else if (!(status & 8) && !second && rng() % 4 == 0) {
-            MdmaRig::Shape t{};
-            t.x1 = 1 + rng() % 8;
-            t.y1 = 1 + rng() % 60;
-            const u32 total = t.x1 * t.y1;
-            t.x2 = 1 + rng() % total;
-            while (total % t.x2) --t.x2;
-            t.y2 = total / t.x2;
-            t.from = (rng() % 0x400) * 4;
-            t.to = 0x2000 + (rng() % 0x200) * 4;
-            t.destFirst = rng() % 2;
-            t.interrupt = rng() % 4 != 0;
-            t.eachRow = rng() % 4 == 0;
-            t.autobuffer = autobuffer = rng() % 8 == 0;
-            if (rng() % 3 == 0) t.ymod1 = 12;
-            if (rng() % 3 == 0) t.ymod2 = rng() % 2 ? 12 : int16_t(4 - 8 * int(t.x2));
-            if (t.ymod2 < 0) t.to += 0x800;
-            every.Arm(t);
-            settled.Arm(t);
-            second.emplace(t, every.time.Cycles() + (rng() % 2 ? 0 : rng() % 100));
-            ++transfers;
-            rows += t.y1;
+        for (u32 stream = 0; stream < 2; ++stream) {
+            const u32 d = 0x300 + stream * 0x80, s = d + 0x40;
+            const u32 status = every.dma.Read32(d + 0x28);
+            Require(status == settled.dma.Read32(d + 0x28), "settling MDMA: D_IRQ_STATUS differs, " + where(step));
+            Require(every.dma.Read32(s + 0x28) == settled.dma.Read32(s + 0x28),
+                    "settling MDMA: S_IRQ_STATUS differs, " + where(step));
+            if (rng() % 3 == 0) {
+                static constexpr u32 kCurrent[] = {0x24, 0x30, 0x38};
+                const u32 reg = (rng() % 2 ? d : s) + kCurrent[rng() % 3];
+                Require(every.dma.Read32(reg) == settled.dma.Read32(reg),
+                        "settling MDMA: current registers differ, " + where(step));
+                ++reads;
+            }
+            if (status & 1) {
+                every.dma.Write32(d + 0x28, 1);
+                settled.dma.Write32(d + 0x28, 1);
+            }
+            if ((status & 8) && rng() % (autobuffer[stream] ? 40 : 400) == 0) {
+                for (auto* rig : {&every, &settled}) rig->dma.Write32(d + 0x08, 0), rig->dma.Write32(s + 0x08, 0);
+                second[stream].reset();
+            } else if (!(status & 8) && !second[stream] && rng() % (stream ? 16 : 4) == 0) {
+                MdmaRig::Shape t{};
+                t.stream = stream;
+                t.wsize = rng() % 3;
+                const int16_t e = int16_t(1 << t.wsize);
+                t.x1 = 1 + rng() % 8;
+                t.y1 = 1 + rng() % 60;
+                const u32 total = t.x1 * t.y1;
+                t.x2 = 1 + rng() % total;
+                while (total % t.x2) --t.x2;
+                t.y2 = total / t.x2;
+                t.destFirst = rng() % 2;
+                t.interrupt = rng() % 4 != 0;
+                t.autobuffer = autobuffer[stream] = rng() % 8 == 0;
+                // Rows that interrupt in a transfer that restarts would do so
+                // until it is aborted: their services are not counted below.
+                t.eachRow = !t.autobuffer && rng() % 4 == 0;
+                // Elements next to each other, the same one, backwards or
+                // apart; rows next to each other, apart, the same ones again
+                // (the synth's fill) or backwards. The destination's
+                // elements as the source's, but never the same one.
+                static constexpr int kXmods[] = {1, 0, -1, 3};
+                static constexpr int kStrides[] = {1, 3, 0, -2};
+                const int xm1 = kXmods[rng() % 4] * e;
+                const int xm2 = kXmods[rng() % 3 == 0 ? 2 + rng() % 2 : 0] * e;
+                const int stride1 = kStrides[rng() % 4] * int(t.x1) * e;
+                const int stride2 = kStrides[rng() % 4 == 2 ? 3 : rng() % 2] * int(t.x2) * e;
+                t.xmod1 = int16_t(xm1);
+                t.xmod2 = int16_t(xm2);
+                t.ymod1 = int16_t(stride1 - (int(t.x1) - 1) * xm1);
+                t.ymod2 = int16_t(stride2 - (int(t.x2) - 1) * xm2);
+                const u32 reach1 = reach(t.x1, t.y1, xm1, stride1, e), reach2 = reach(t.x2, t.y2, xm2, stride2, e);
+                const bool l1 = rng() % 2;
+                const bool forward = xm1 >= 0 && xm2 > 0 && stride1 >= 0 && stride2 > 0;
+                if (rng() % 6 == 0 && forward) {
+                    // The destination within the elements the source is still to read.
+                    t.from = place(reach1 + reach2 + 64, l1);
+                    t.to = t.from + u32(e) * (1 + rng() % 8);
+                } else {
+                    t.from = place(reach1, l1);
+                    t.to = place(reach2, rng() % 2);
+                }
+                if (t.from == UINT32_MAX || t.to == UINT32_MAX) continue;  // too far apart for the memory
+                t.listed = t.autobuffer && rng() % 3 == 0;
+                listed += t.listed;
+                still += xm1 == 0;
+                backwards += xm1 < 0 || xm2 < 0;
+                every.Arm(t);
+                settled.Arm(t);
+                second[stream].emplace(t, every.time.Cycles() + (rng() % 2 ? rng() % 12 : rng() % 100));
+                ++transfers;
+                rows += t.y1;
+                if (t.interrupt && t.eachRow) rowEvents += t.y2;
+            }
         }
         // Cycle by cycle: the reference is serviced at each, the settling
         // DMA where it asks to be, and their interrupt levels agree at each.
         for (uint64_t i = 1 + rng() % 200; i; --i) {
-            if (second && every.time.Cycles() >= second->second) {
-                every.Arm(second->first, true);
-                settled.Arm(second->first, true);
-                second.reset();
-            }
+            for (auto& later : second)
+                if (later && every.time.Cycles() >= later->second) {
+                    every.Arm(later->first, true);
+                    settled.Arm(later->first, true);
+                    later.reset();
+                }
             every.time.Retire(1);
             every.dma.ProcessWithInterrupt(-1);
             settled.time.Retire(1);
@@ -498,9 +675,11 @@ static void MdmaSettlesLikeEveryCycle(uint32_t seed) {
                 settled.dma.ProcessWithInterrupt(-1);
                 ++services;
             }
-            Require(every.level == settled.level, "settling MDMA: levels differ, " + where(step));
-            if (rng() % 8 == 0) {
-                const u32 addr = (rng() % 2 ? rng() % 0x600 : 0x800 + rng() % 0x800) * 4;
+            Require(every.level == settled.level && every.level1 == settled.level1,
+                    "settling MDMA: levels differ, " + where(step));
+            if (rng() % accessEvery == 0) {
+                const bool l1 = rng() % 2;
+                const u32 addr = (l1 ? MdmaRig::kL1 + (rng() % 0x1000) * 4 : (rng() % 0x4000) * 4);
                 const bool host = rng() % 4 == 0;
                 if (rng() % 3 == 0) {
                     const u32 value = rng();
@@ -518,40 +697,85 @@ static void MdmaSettlesLikeEveryCycle(uint32_t seed) {
         }
     }
     // Read as the host does, which moves the rows due first.
-    for (u32 i = 0; i < 0x4000; i += 4)
+    for (u32 i = 0; i < 0x10000; i += 4)
         Require(every.ram.Read32(i) == settled.emulator.MemoryRead32(i),
-                "seed " + std::to_string(seed) + ": settled memory differs");
-    Require(transfers > 100 && reads > 1000 && accesses > 1000,
+                "seed " + std::to_string(seed) + ": settled SDRAM differs");
+    for (u32 i = 0; i < 0x4000; i += 4)
+        Require(every.l1.Read32(i) == settled.emulator.MemoryRead32(MdmaRig::kL1 + i),
+                "seed " + std::to_string(seed) + ": settled L1 differs");
+    Require(transfers > 100 && reads > 1000 && accesses > (accessEvery == 8 ? 1000 : 10),
             "the guest ran transfers, read their counts and accessed memory");
-    // Destination rows that interrupt (DI_SEL) need theirs: no closer bound.
-    Require(services < rows, "settling MDMA: fewer services than source rows");
+    Require(listed > 2 && still > 10 && backwards > 10, "transfers through descriptors, of one element, backwards");
+    // Destination rows that interrupt (DI_SEL) need a service each.
+    Require(services < rows + rowEvents, "settling MDMA: fewer services than source rows and rows that interrupt: " +
+                                             std::to_string(services) + " of " + std::to_string(rows) + " + " +
+                                             std::to_string(rowEvents));
 }
 
-// The synth's copy, as the firmware makes it: the destination armed first
-// (99-word rows, 40 of them, an interrupt at the end), then the source
-// (2-word rows) 60 cycles later, IRQ_STATUS polled every few cycles and
-// acknowledged. A transfer takes four services -- after each arming write,
-// at the source's end and at the destination's -- not one per source row.
-static void MdmaSynthCopyServices() {
+// The firmware's first fill of the synth phase: armed, then armed again with
+// another destination 12 cycles later, before the first moved much. Each
+// side starts over at its CONFIG write, and the pair at the destination's
+// (HRM 6-47): the source does not run on into the first destination in
+// between, at any speedup.
+static void MdmaArmedAgain() {
+    for (unsigned speedup : {1u, 3u, 10u, 100u}) {
+        MdmaRig rig(speedup);
+        rig.l1.Write32(0x100, 0x11223344);
+        rig.l1.Write32(0x104, 0x55667788);
+        MdmaRig::Shape fill{MdmaRig::kL1 + 0x100, 0x2000, 2, 1980, 99, 40, false, true, false, false, -4, 120};
+        rig.Arm(fill);
+        rig.time.Retire(3);
+        rig.Arm(fill, true);
+        rig.time.Retire(9);
+        fill.to = 0x8000;
+        rig.Arm(fill);
+        rig.time.Retire(3);
+        rig.Arm(fill, true);
+        const std::string what = "memory DMA armed again, " + std::to_string(speedup) + " times faster: ";
+        rig.RunUntilDone();
+        for (u32 i = 0; i < 99; ++i)
+            Require(rig.ram.Read32(0x8000 + 39 * 512 + i * 4) == ((39 * 99 + i) % 2 ? 0x55667788u : 0x11223344u),
+                    what + "the second fill");
+    }
+}
+
+// The synth's fill, as the firmware makes it: the source (2-word rows, the
+// same 8 bytes of L1 over and over) armed first, then the destination
+// (99-word rows of SDRAM, 40 of them, an interrupt at the end) 3 cycles
+// later, IRQ_STATUS polled every few cycles and acknowledged. A transfer
+// takes its HRM time, a few services (after each arming write, at its end)
+// and as few steps: its rows move together, not one by one.
+static void MdmaSynthFill() {
     MdmaRig rig;
     uint64_t services = 0;
     constexpr int kTransfers = 20;
+    rig.l1.Write32(0x100, 0x11223344);
+    rig.l1.Write32(0x104, 0x55667788);
+    const uint64_t steps = rig.dma.MdmaSteps();
     for (int n = 0; n < kTransfers; ++n) {
-        const MdmaRig::Shape copy{0, 0x8000, 2, 1980, 99, 40, true, true, false, false};
-        rig.Arm(copy);
-        for (int cycles = 0; !(rig.dma.Read32(0x328) & 1); cycles += 5) {
-            if (cycles == 60) rig.Arm(copy, true);
+        MdmaRig::Shape fill{MdmaRig::kL1 + 0x100, 0x4000, 2, 1980, 99, 40, false, true, false, false, -4, 120};
+        rig.Arm(fill);
+        uint64_t cycles = 0;
+        for (; !(rig.dma.Read32(0x328) & 1); cycles += 5) {
+            if (cycles == 0) rig.time.Retire(3), rig.Arm(fill, true);
             rig.time.Retire(5);
             if (rig.dma.NeedsService(rig.time.Nanoseconds())) {
                 rig.dma.ProcessWithInterrupt(-1);
                 ++services;
             }
         }
-        Require(rig.level == 1, "synth copy: the transfer's interrupt");
+        Require(cycles >= 15 + 3960 * 10 && cycles < 15 + 3960 * 10 + 5,
+                "synth fill: the HRM's time, " + std::to_string(cycles) + " cycles");
+        Require(rig.level == 1, "synth fill: the transfer's interrupt");
         rig.dma.Write32(0x328, 1);
     }
-    for (u32 i = 0; i < 3960 * 4; i += 4) Require(rig.ram.Read32(0x8000 + i) == rig.ram.Read32(i), "synth copy: the copy");
-    Require(services <= 4 * kTransfers, "synth copy: services per transfer: " + std::to_string(services));
+    for (u32 row = 0; row < 40; ++row)
+        for (u32 i = 0; i < 99; ++i)
+            Require(rig.ram.Read32(0x4000 + row * 512 + i * 4) == ((row * 99 + i) % 2 ? 0x55667788u : 0x11223344u),
+                    "synth fill: the pattern");
+    Require(services <= 4 * kTransfers, "synth fill: services per transfer: " + std::to_string(services));
+    Require(rig.dma.MdmaSteps() - steps <= 4 * kTransfers,
+            "synth fill: steps per transfer: " + std::to_string(rig.dma.MdmaSteps() - steps));
 }
 
 // SPORT0 audio through DMA channels 3 (receive) and 4 (transmit), autobuffer.
@@ -1019,7 +1243,9 @@ int main() {
     for (u32 irqmask : {0x1Fu, 0x17u, 0x16u, 0x00u}) NfcPioMatchesPolling(irqmask);
     for (uint32_t seed = 1; seed <= 10; ++seed) MdmaPollingMatchesPolling(seed);
     for (uint32_t seed = 1; seed <= 10; ++seed) MdmaSettlesLikeEveryCycle(seed);
-    MdmaSynthCopyServices();
+    MdmaHrmTiming();
+    MdmaArmedAgain();
+    MdmaSynthFill();
     for (uint32_t seed = 1; seed <= 10; ++seed) AudioMatchesPolling(seed);
     SportTransmitDeliversTheBuffer(2);
     SportTransmitDeliversTheBuffer(6);

@@ -131,9 +131,9 @@ public:
     // The JIT worker's CPU time so far (the profiler's per-mark count), or -1
     // where there is none or the platform cannot tell.
     int64_t JitWorkerCpuNs() const;
-    // Whether memory DMA moves its rows only when something could see them
-    // (DMA::SetSettling; on by default) or at each row's time. Before the
-    // first Run().
+    // Whether memory DMA moves its elements only when something could see
+    // them (DMA::SetSettling; on by default) or at each one's time. Before
+    // the first Run().
     void SetDmaSettling(bool on);
     // Steady iterations dry mode counted (CpuState::steady_iterations).
     uint64_t SteadyIterations() const;

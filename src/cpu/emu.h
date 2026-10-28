@@ -28,8 +28,8 @@ public:
 };
 
 // Sees every access to the guest pages it watches before it happens
-// (Emulator::WatchPages): memory DMA, whose rows lag behind their cycles
-// (DMA::SetSettling), moves the ones due first.
+// (Emulator::WatchPages): memory DMA, whose elements lag behind their
+// cycles (DMA::SetSettling), moves the ones due first.
 class PageWatcher {
 public:
     virtual ~PageWatcher() {}

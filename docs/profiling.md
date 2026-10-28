@@ -249,7 +249,7 @@ the host would continue, so a chained block is a host round trip without the
 host. Before each run the host computes the run's budget in packets
 (`BlackFinCpu::ChainBudget`), the earliest guest time at which it would act
 after a block: an event, the panel's TE edge, a DMA channel's next element
-(memory DMA: the next row end the guest is told of; see below),
+(memory DMA: the next element whose move the guest is told of; see below),
 the next TWI byte, the RTC's next calendar change, the core timer's expiry or
 the next GP timer tick. It is 0 when a device it services already has work, and
 at PCs where the host must see the block start: 0xFFA00000 (which drops every
@@ -321,8 +321,8 @@ channel that came due first), cumulative:
 
 That is the synth phase below, start to `end`, as it was: of 5.14M deadline
 returns, 4.17M waited for the next row of memory DMA 0's source. Memory DMA
-now settles its rows (`DMA::Settle`; `--no-dma-settle` turns it off): each
-moves as a service at its own cycle would have moved it, but only when
+now settles (`DMA::Settle`; `--no-dma-settle` turns it off): each element
+moves as a service at its own slot would have moved it, but only when
 something could see it -- a row end that interrupts or the transfer's end
 (the deadline), a write to the DMA, a read of the channel's current address
 or counts, an access to memory the transfer has yet to reach: from the
@@ -333,6 +333,17 @@ own cycle. Every
 mark's counters and digests are as before but for `mmio_r` (the poll of the
 channel's IRQ_STATUS now waits in one run); of 389,458 deadline returns,
 16,145 are memory DMA 0's.
+
+Memory DMA then still moved row by row, each of the two channels at its own
+pace through a 4096-byte FIFO: the synth's fill (2-word source rows read
+over and over into 40 rows of 99 words) cost a settling pass per 8-byte
+row, 12% of the CPU thread. It now has the HRM's timing (`DMA::SetMdmaSpeedup`,
+`--mdma-speedup`): a pair of channels is one stream, each slot an element
+read and written, a 16-bit word per SCLK between L1 and external memory or
+per two within either, starting three SCLKs after the CONFIG write that
+completes the pair (the destination's, written last), and a settling stream moves the elements up to the next one the guest
+is told of in one step (`DMA::MdmaSteps`), the rows of each side in one sweep
+where the two do not overlap.
 
 An `[idle]` line follows: the IDLE waits so far (BlackFinCpu::Wait), the
 guest cycles they let pass without a packet, and what woke them, by the
@@ -431,7 +442,7 @@ neither latched nor in service, when it rises and after every block.
   only); `published` interrupt levels and the `transitions` among them (a
   level that differs from the pin's last one); events `queued`, apart from
   the interrupt `raises` queued; `work`, the data a device moved (DMA: bytes,
-  but the row and transfer ends of memory DMA, which settles its rows,
+  but the row and transfer ends of memory DMA, which settles,
   reported through `Device::CountServiceWork`); and `productive` calls,
   those that changed a level, queued an event other than a raise, or moved
   data. Devices report what they move or complete through
