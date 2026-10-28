@@ -299,11 +299,10 @@ protected:
     static constexpr uint32_t kMaxChainPackets = 1u << 24;
     // The GP timers tick every kCyclesPerTimerTick guest cycles (see Run()),
     // but for TMRCLK's: it is TIMER7's output (GPTimer::TmrclkSclks), in
-    // SCLK cycles of kCyclesPerSclk core cycles (the firmware's PLL_DIV = 5:
-    // CCLK the VCO's 400 MHz, SCLK a fifth of it).
+    // SCLK cycles of kCyclesPerSclk core cycles.
     static constexpr uint64_t kCyclesPerTimerTick = 10000;
     static constexpr uint64_t kMaxCatchupTicks = 64;
-    static constexpr uint64_t kCyclesPerSclk = 5;
+    static constexpr uint64_t kCyclesPerSclk = TimeSource::kCyclesPerSclk;
     // The guest cycles of a TMRCLK cycle now, 0 while nothing clocks it, and
     // its ticks counted up to a guest cycle.
     uint64_t TmrclkCycles() const;

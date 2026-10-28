@@ -21,6 +21,9 @@ class TimeSource {
 public:
     using SystemClock = std::chrono::system_clock;
     static constexpr uint64_t kHz = 400000000;
+    // Core cycles per SCLK cycle: the firmware's PLL_DIV is 5 (CCLK the
+    // VCO's 400 MHz, SCLK a fifth of it).
+    static constexpr uint64_t kCyclesPerSclk = 5;
     // RTC wall time at guest time zero in deterministic mode (2024-01-01 UTC).
     static constexpr int64_t kDefaultEpochSeconds = 1704067200;
     // Latest epoch the RTC can show: its day field is 15 bits, counted here
