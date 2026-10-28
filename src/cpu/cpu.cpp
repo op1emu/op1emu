@@ -1226,6 +1226,8 @@ void BlackFinCpu::SetTwiSpeedup(unsigned speedup) {
     serviced_.twi->SetSpeedup(speedup);
 }
 
+void BlackFinCpu::SetMdmaSpeedup(unsigned speedup) { serviced_.dma->SetMdmaSpeedup(speedup); }
+
 void BlackFinCpu::SetBootMode(int mode) {
     sic->SetBootMode(mode);
 }

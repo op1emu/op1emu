@@ -126,7 +126,12 @@ public:
     // the hardware down. Channels of different word sizes (illegal) or of
     // the reserved one do not run, nor without a time source. A speedup
     // divides all of it.
-    static constexpr unsigned kDefaultMdmaSpeedup = 1;
+    // At the hardware's rate the stock boot executes 3.1% more packets to the
+    // main display than with memory DMA at 4 cycles an element, as it was
+    // (the boot ROM's copies and fills take twice as long), and its CPU
+    // thread 10% more instructions; ten times faster, 1.5% fewer packets and
+    // 7.5% fewer instructions. Every transfer keeps the shape of its timing.
+    static constexpr unsigned kDefaultMdmaSpeedup = 10;
     // Before any channel runs; 0 counts as 1, the hardware's rate.
     void SetMdmaSpeedup(unsigned speedup) { mdmaSpeedup_ = speedup ? speedup : 1; }
     // Steps the memory DMA streams took: each moves the slots due up to the

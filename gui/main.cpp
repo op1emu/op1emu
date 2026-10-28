@@ -1,5 +1,6 @@
 #include "loader/ldr.h"
 #include "cpu/cpu.h"
+#include "cpu/dma.h"
 #include "cpu/twi.h"
 #include "peripheral/MT29F4G08.h"
 #include "utils/log.h"
@@ -101,6 +102,7 @@ static int RunEmulator(int argc, char* argv[]) {
     bool deterministic = false;
     std::optional<long long> rtcEpoch;
     unsigned twiSpeedup = TWI::kDefaultSpeedup;
+    unsigned mdmaSpeedup = DMA::kDefaultMdmaSpeedup;
     unsigned audioBufferMs = MiniaudioOutput::kDefaultBufferMs;
     bool help = false;
     bool options = true;
@@ -205,6 +207,15 @@ static int RunEmulator(int argc, char* argv[]) {
                 throw std::runtime_error(std::string("Invalid --twi-speedup (1..100000): ") + argv[i]);
             twiSpeedup = static_cast<unsigned>(factor);
         }
+        else if (options && arg == "--mdma-speedup") {
+            if (++i == argc) throw std::runtime_error("--mdma-speedup requires a factor");
+            size_t used = 0;
+            long long factor = -1;
+            try { factor = std::stoll(argv[i], &used); } catch (const std::exception&) {}
+            if (used == 0 || argv[i][used] != '\0' || factor < 1 || factor > 100000)
+                throw std::runtime_error(std::string("Invalid --mdma-speedup (1..100000): ") + argv[i]);
+            mdmaSpeedup = static_cast<unsigned>(factor);
+        }
         else if (options && arg == "--audio-buffer") {
             if (++i == argc) throw std::runtime_error("--audio-buffer requires milliseconds");
             size_t used = 0;
@@ -276,6 +287,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "  --no-loop-blocks      Keep a guest loop's registers in memory across it\n"
                      "                        (bcore loop blocks off; same results, slower)\n"
                      "  --twi-speedup N       Run the I2C bus N times faster than programmed\n"
+                     "                        (default 10; 1 is the hardware's rate)\n"
+                     "  --mdma-speedup N      Run memory DMA N times faster than the hardware\n"
                      "                        (default 10; 1 is the hardware's rate)\n"
                      "  --audio-buffer MS     Audio latency, from the emulator to the sound card's\n"
                      "                        output (default 26, 9..200; more: later sound,\n"
@@ -349,6 +362,7 @@ static int RunEmulator(int argc, char* argv[]) {
     // Create BlackFin CPU
     BlackFinCpu cpu(deterministic);
     cpu.SetTwiSpeedup(twiSpeedup);
+    cpu.SetMdmaSpeedup(mdmaSpeedup);
     // An LDR runs with the host looking at the PC after every block
     // (LdrExecutionThread).
     if (chainDry && noChain) throw std::runtime_error("--profile-chain-dry checks chaining: not with --no-chain");

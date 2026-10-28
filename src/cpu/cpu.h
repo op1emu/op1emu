@@ -173,6 +173,8 @@ public:
 #endif
     // See TWI::SetSpeedup.
     void SetTwiSpeedup(unsigned speedup);
+    // See DMA::SetMdmaSpeedup. Before the first Run().
+    void SetMdmaSpeedup(unsigned speedup);
 
     // True once the JIT could not translate or run a block. The CPU state is
     // then no longer advancing, so the host should stop instead of retrying.
