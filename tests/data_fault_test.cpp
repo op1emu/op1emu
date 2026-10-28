@@ -18,10 +18,10 @@ int main() {
     ram.BindFastMem(nullptr); mmu.BindFastMem(nullptr);
     emu.BindDevice(&ram); emu.BindDevice(&mmu);
     EmulatorMemory mem(emu);
-    CpuState cpu{};
-    Core core(&cpu, &mem);
+    bcore::CpuState cpu{};
+    bcore::Core core(&cpu, &mem);
     require(core.init(2), "init");
-    cec_init(); evt_init(); evt_write(EVT_BASE + 12, 0x300); cec_return_rti(&cpu);
+    bcore::cec_init(); bcore::evt_init(); bcore::evt_write(bcore::EVT_BASE + 12, 0x300); bcore::cec_return_rti(&cpu);
 
     emu.MemoryWrite16(0x100, 0x9000); // R0 = [P0++]
     emu.MemoryWrite16(0x102, 0x2000);

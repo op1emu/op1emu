@@ -656,7 +656,7 @@ struct Profiler::Impl : BcoreEventSink {
         return service->productiveTotal + service->latchedTotal + service->timerTicks +
                (cpu.EventsDelivered() - service->raisedTotal);
     }
-    static uint32_t Ipend() { return cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_IPEND); }
+    static uint32_t Ipend() { return bcore::cec_mmr_read(nullptr, bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_IPEND); }
 
     void CloseExit() {
         // The window from the end of the block to the start of the next:
@@ -712,16 +712,16 @@ struct Profiler::Impl : BcoreEventSink {
     // Hashed by group so a difference names its registers. Guest memory is
     // not covered: a difference there shows up in registers soon after.
     void WriteChecksum(uint32_t pc) {
-        const CpuState& state = cpu.State();
+        const bcore::CpuState& state = cpu.State();
         auto hash = [](const void* begin, const void* end) {
             uint64_t h = 0xcbf29ce484222325ull;
             for (auto* p = static_cast<const uint8_t*>(begin); p != end; ++p) h = (h ^ *p) * 0x100000001b3ull;
             return h;
         };
         const uint64_t head[3] = {runs, cpu.Time().Packets(), cpu.Time().Cycles()};
-        const uint32_t cec[4] = {pc, cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_IPEND),
-                                 cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_ILAT),
-                                 cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_IMASK)};
+        const uint32_t cec[4] = {pc, bcore::cec_mmr_read(nullptr, bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_IPEND),
+                                 bcore::cec_mmr_read(nullptr, bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_ILAT),
+                                 bcore::cec_mmr_read(nullptr, bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_IMASK)};
         const uint64_t groups[3] = {hash(state.dpregs, state.dpregs + 16),
                                     hash(state.ax, &state.rets),
                                     hash(&state.rets, &state.astat_reserved + 1)};
@@ -738,7 +738,7 @@ struct Profiler::Impl : BcoreEventSink {
     // did the same work print the same lines, whatever the host did between
     // blocks (a checksum run cannot chain blocks; this one can).
     void PrintDigest(const char* mark) {
-        const CpuState& state = cpu.State();
+        const bcore::CpuState& state = cpu.State();
         auto hash = [](const void* begin, size_t bytes, uint64_t h = 0xcbf29ce484222325ull) {
             const auto* p = static_cast<const uint8_t*>(begin);
             for (size_t i = 0; i + 8 <= bytes; i += 8) {
@@ -749,9 +749,9 @@ struct Profiler::Impl : BcoreEventSink {
             for (size_t i = bytes & ~size_t(7); i < bytes; ++i) h = (h ^ p[i]) * 0x100000001b3ull;
             return h;
         };
-        const uint32_t cec[3] = {cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_IPEND),
-                                 cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_ILAT),
-                                 cec_mmr_read(nullptr, CEC_MMR_BASE + 4 * CEC_IDX_IMASK)};
+        const uint32_t cec[3] = {bcore::cec_mmr_read(nullptr, bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_IPEND),
+                                 bcore::cec_mmr_read(nullptr, bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_ILAT),
+                                 bcore::cec_mmr_read(nullptr, bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_IMASK)};
         uint64_t memory = 0xcbf29ce484222325ull;
         cpu.GetEmulator().SettleWatched();
         for (Device* device : cpu.GetEmulator().Devices())

@@ -89,8 +89,8 @@ void EmulatorMemory::write32(uint32_t addr, uint32_t val) {
     Attend(hostWork);
 }
 
-static_assert(PAGE_BITS == Memory::kPageBits, "bcore's page table has op1emu's page size");
-static_assert(NUM_PAGE_TABLE_ENTRIES == Memory::kPageTableEntries, "one entry per guest page");
+static_assert(PAGE_BITS == bcore::Memory::kPageBits, "bcore's page table has op1emu's page size");
+static_assert(NUM_PAGE_TABLE_ENTRIES == bcore::Memory::kPageTableEntries, "one entry per guest page");
 
 uint8_t* const* EmulatorMemory::page_table() const {
 #ifdef ENABLE_PROFILING

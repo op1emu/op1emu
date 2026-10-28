@@ -20,7 +20,7 @@ struct Register {
     size_t offset;  // of a uint32_t in CpuState
 };
 
-#define REG(name, field) {name, offsetof(CpuState, field)}
+#define REG(name, field) {name, offsetof(bcore::CpuState, field)}
 const Register kRegisters[] = {
     REG("R0", dpregs[0]), REG("R1", dpregs[1]), REG("R2", dpregs[2]), REG("R3", dpregs[3]),
     REG("R4", dpregs[4]), REG("R5", dpregs[5]), REG("R6", dpregs[6]), REG("R7", dpregs[7]),
@@ -78,7 +78,7 @@ int RegisterIndex(const std::string& name) {
 
 const char* RegisterName(int index) { return kRegisters[index].name; }
 
-uint32_t RegisterValue(const CpuState& state, int index) {
+uint32_t RegisterValue(const bcore::CpuState& state, int index) {
     return *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(&state) + kRegisters[index].offset);
 }
 
@@ -100,7 +100,7 @@ MemoryRead ParseMemoryRead(const nlohmann::json& entry, const std::string& where
     return read;
 }
 
-void Read(const MemoryRead& read, const CpuState& state, Emulator& memory, uint32_t* out, bool* valid) {
+void Read(const MemoryRead& read, const bcore::CpuState& state, Emulator& memory, uint32_t* out, bool* valid) {
     const uint64_t base = read.baseRegister < 0 ? read.address
                                                 : uint64_t(RegisterValue(state, read.baseRegister)) + read.address;
     for (uint32_t i = 0; i < read.words; ++i) {
@@ -160,7 +160,7 @@ void Probes::Load(const nlohmann::json& probes) {
     records_.resize(total);
 }
 
-void Probes::Hit(uint32_t pc, const CpuState& state, Emulator& memory, uint64_t wallNs, uint64_t runs,
+void Probes::Hit(uint32_t pc, const bcore::CpuState& state, Emulator& memory, uint64_t wallNs, uint64_t runs,
                  uint64_t packets, uint64_t cycles) {
     for (uint32_t index = 0; index < specs_.size(); ++index) {
         Spec& spec = specs_[index];

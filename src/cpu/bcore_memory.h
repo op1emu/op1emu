@@ -9,7 +9,7 @@
 class Profiler;
 namespace profiling { struct MemoryCensus; }
 
-class EmulatorMemory : public Memory {
+class EmulatorMemory : public bcore::Memory {
 public:
     explicit EmulatorMemory(Emulator& emulator);
 

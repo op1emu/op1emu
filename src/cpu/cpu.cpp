@@ -50,12 +50,12 @@
 #include <algorithm>
 #include <stdexcept>
 
-// bcore CEC functions (extern "C" in bcore's src/cec.h)
-extern "C" void cec_raise(CpuState* cpu, uint32_t ivg);
-extern "C" void cec_check_pending(CpuState* cpu);
-
-// bcore EVT init (extern in bcore's src/evt.h)
+// bcore's CEC and EVT functions (bcore's src/cec.h, src/evt.h)
+namespace bcore {
+void cec_raise(CpuState* cpu, uint32_t ivg);
+void cec_check_pending(CpuState* cpu);
 void evt_init();
+}  // namespace bcore
 
 static constexpr int IVG_IVTMR = 6;
 
@@ -84,55 +84,55 @@ static constexpr int IRQ_GPTIMER_0 = 32;
 // Only one BlackFinCpu instance may exist per process.
 class BcoreCECDevice : public Device {
 public:
-    BcoreCECDevice(CpuState* cpu)
-        : Device("CEC", CEC_MMR_BASE, CEC_MMR_SIZE), cpu_(cpu) {}
+    BcoreCECDevice(bcore::CpuState* cpu)
+        : Device("CEC", bcore::CEC_MMR_BASE, bcore::CEC_MMR_SIZE), cpu_(cpu) {}
     void Read(u32 offset, void* buffer, u32 length) override {
-        u32 val = cec_mmr_read(cpu_, baseAddress + offset);
+        u32 val = bcore::cec_mmr_read(cpu_, baseAddress + offset);
         memcpy(buffer, &val, std::min(length, (u32)sizeof(val)));
     }
     void Write(u32 offset, const void* buffer, u32 length) override {
         u32 val = 0;
         memcpy(&val, buffer, std::min(length, (u32)sizeof(val)));
-        cec_mmr_write(cpu_, baseAddress + offset, val);
+        bcore::cec_mmr_write(cpu_, baseAddress + offset, val);
     }
     u32 Read32(u32 offset) override {
-        return cec_mmr_read(cpu_, baseAddress + offset);
+        return bcore::cec_mmr_read(cpu_, baseAddress + offset);
     }
     void Write32(u32 offset, u32 value) override {
-        cec_mmr_write(cpu_, baseAddress + offset, value);
+        bcore::cec_mmr_write(cpu_, baseAddress + offset, value);
     }
     // A read is a load from bcore's state. A write can change what is
     // pending (IMASK) and which high lines the host latches again (ILAT).
     bool HostWorkAfterAccess(u32 offset, bool write) const override { return write; }
 private:
-    CpuState* cpu_;
+    bcore::CpuState* cpu_;
 };
 
 // Thin EVT device shim for the same reason.
 class BcoreEVTDevice : public Device {
 public:
     BcoreEVTDevice()
-        : Device("EVT", EVT_BASE, EVT_SIZE) {}
+        : Device("EVT", bcore::EVT_BASE, bcore::EVT_SIZE) {}
     void Read(u32 offset, void* buffer, u32 length) override {
-        u32 val = evt_read(baseAddress + offset);
+        u32 val = bcore::evt_read(baseAddress + offset);
         memcpy(buffer, &val, std::min(length, (u32)sizeof(val)));
     }
     void Write(u32 offset, const void* buffer, u32 length) override {
         u32 val = 0;
         memcpy(&val, buffer, std::min(length, (u32)sizeof(val)));
-        evt_write(baseAddress + offset, val);
+        bcore::evt_write(baseAddress + offset, val);
     }
     u32 Read32(u32 offset) override {
-        return evt_read(baseAddress + offset);
+        return bcore::evt_read(baseAddress + offset);
     }
     void Write32(u32 offset, u32 value) override {
-        evt_write(baseAddress + offset, value);
+        bcore::evt_write(baseAddress + offset, value);
     }
 };
 
 BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
-    cpuState_ = std::make_unique<CpuState>();
-    memset(cpuState_.get(), 0, sizeof(CpuState));
+    cpuState_ = std::make_unique<bcore::CpuState>();
+    memset(cpuState_.get(), 0, sizeof(bcore::CpuState));
 
     auto irqHandler = [this](int q, int level) { this->ProcessInterrupt(q, level); };
     devices.emplace_back(std::make_shared<MemoryDevice>("L1 SRAM", 0xFFB00000, 0x1000));
@@ -321,7 +321,7 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     // A host request reaches the USB on the USB/IP thread; the CPU thread
     // services it after its next block.
     usb->SetHostRequestCallback([this] { StopChaining(); });
-    core_ = std::make_shared<Core>(cpuState_.get(), bcoreMemory_.get());
+    core_ = std::make_shared<bcore::Core>(cpuState_.get(), bcoreMemory_.get());
     // IR pipeline at O1, backend at CodeGenOpt::Default. Until bcore wired
     // optimize_module into compilation, the IR level only ever affected the
     // IR-dump output, so init(2) compiled with the backend alone. Measured on
@@ -342,8 +342,8 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     core_->set_copy_patch(true);
 
     // Initialize bcore CEC and EVT
-    cec_init();
-    evt_init();
+    bcore::cec_init();
+    bcore::evt_init();
 
     SetRegister(RegIndex::SP, 0x7000000); // Set stack pointer to top of SDRAM
     SetRegister(RegIndex::FP, 0x7000000); // Set frame pointer to top of SDRAM
@@ -400,7 +400,7 @@ void BlackFinCpu::RestoreContext() {
     // TODO
 }
 
-static void SetBfinCycles(CpuState& cpu_state, u64 cycles) {
+static void SetBfinCycles(bcore::CpuState& cpu_state, u64 cycles) {
     cpu_state.cycles[0] = (u32)(cycles & 0xffffffff);
     cpu_state.cycles[1] = (u32)(cycles >> 32);
     cpu_state.cycles[2] = cpu_state.cycles[1];
@@ -507,10 +507,10 @@ void BlackFinCpu::HostWork(bool would) {
 #ifdef ENABLE_PROFILING
     if (*cpuState_->cec_pending) ++hostWork_[kWorkCec];
 #endif
-    cec_check_pending(cpuState_.get());
+    bcore::cec_check_pending(cpuState_.get());
 
     // Get active IVG from CEC
-    int ivg = cec_current_ivg();
+    int ivg = bcore::cec_current_ivg();
 #ifdef ENABLE_PROFILING
     if (auto* stats = Service()) stats->current = stats->other;
 #endif
@@ -533,7 +533,7 @@ void BlackFinCpu::HostWork(bool would) {
 #ifdef ENABLE_PROFILING
     if (*cpuState_->cec_pending) ++hostWork_[kWorkCec];
 #endif
-    cec_check_pending(cpuState_.get());
+    bcore::cec_check_pending(cpuState_.get());
 }
 
 // Before a run: how many packets it may retire before the host has work
@@ -556,7 +556,7 @@ uint32_t BlackFinCpu::ChainBudget(uint32_t pc) {
     chainReason_ = kChainService;
 #endif
     // Constant while the run chains: an IVG change returns.
-    const int ivg = cec_current_ivg();
+    const int ivg = bcore::cec_current_ivg();
     if (HostHasWork(ivg)) return 0;
 #ifdef ENABLE_PROFILING
     chainReason_ = kChainDue;
@@ -698,7 +698,7 @@ uint64_t BlackFinCpu::DueCycles(int ivg) {
 // not time (a PLL relock, which no device here models) comes as late as
 // after a capped run.
 void BlackFinCpu::Wait() {
-    const int ivg = cec_current_ivg();
+    const int ivg = bcore::cec_current_ivg();
     if (HostHasWork(ivg) || *cpuState_->cec_pending || sic->Wakeup()) return;
     const uint64_t now = time_.Cycles();
     uint64_t due = std::min(DueCycles(ivg), now + kMaxChainPackets);
@@ -962,8 +962,8 @@ void BlackFinCpu::LatchLines() {
         StopChaining();
         return;
     }
-    const uint32_t ilat = cec_mmr_read(cpuState_.get(), CEC_MMR_BASE + 4 * CEC_IDX_ILAT);
-    const uint32_t ipend = cec_mmr_read(cpuState_.get(), CEC_MMR_BASE + 4 * CEC_IDX_IPEND);
+    const uint32_t ilat = bcore::cec_mmr_read(cpuState_.get(), bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_ILAT);
+    const uint32_t ipend = bcore::cec_mmr_read(cpuState_.get(), bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_IPEND);
     u16 latch = lines & ~(ilat | ipend);
     if (coreTimerExpired_) latch |= 1u << IVG_IVTMR;  // an edge: latched even while IVG6 runs
     if (!latch) return;
@@ -1120,19 +1120,19 @@ void BlackFinCpu::RaiseInterrupt(int ivg) {
     ++hostWork_[kWorkLatch];
     // Only a raise that sets a new ILAT bit is something the guest can see;
     // LatchLines() raises only those.
-    const uint32_t ilatAddr = CEC_MMR_BASE + 4 * CEC_IDX_ILAT;
-    const uint32_t before = cec_mmr_read(cpuState_.get(), ilatAddr);
+    const uint32_t ilatAddr = bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_ILAT;
+    const uint32_t before = bcore::cec_mmr_read(cpuState_.get(), ilatAddr);
     if (auto* stats = Service(); stats && ivg >= 0 && ivg < 16) {
         ++stats->raised[ivg];
         ++stats->raisedTotal;
     }
-    cec_raise(cpuState_.get(), ivg);
-    const uint32_t latched = cec_mmr_read(cpuState_.get(), ilatAddr) & ~before;
+    bcore::cec_raise(cpuState_.get(), ivg);
+    const uint32_t latched = bcore::cec_mmr_read(cpuState_.get(), ilatAddr) & ~before;
     if (auto* stats = Service()) stats->latchedTotal += __builtin_popcount(latched);
     for (int level = 0; level < 16; ++level)
         if (latched >> level & 1) ++irqLatched_[level];
 #else
-    cec_raise(cpuState_.get(), ivg);
+    bcore::cec_raise(cpuState_.get(), ivg);
 #endif
 }
 

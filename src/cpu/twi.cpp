@@ -152,7 +152,7 @@ void TWI::Settle() {
     if (settling_ || !MasterActive() || Now() < nextByteNs_) return;
     // ProcessMasterTransfer reads the registers through Read32.
     settling_ = true;
-    if (cec_current_ivg() != IVG_TWI) {
+    if (bcore::cec_current_ivg() != IVG_TWI) {
         ProcessMasterTransfer();
     } else {
         if (Blocked()) nextByteNs_ = UINT64_MAX;

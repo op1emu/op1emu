@@ -26,7 +26,7 @@ public:
     void Advance(uint64_t packets) { time_.Retire(packets); }
     using BlackFinCpu::ProcessEvents;
     CoreTimer& Timer() { return *coreTimer; }
-    CpuState& State() { return *cpuState_; }
+    bcore::CpuState& State() { return *cpuState_; }
 };
 
 int main() {
@@ -83,14 +83,14 @@ int main() {
         Require(ran == std::vector<std::string>{"key"}, "the event runs 4 ns after it was taken");
 
         // Each core timer expiry latches IVG6, also while TINT is still set.
-        const uint32_t ilatAddr = CEC_MMR_BASE + 4 * CEC_IDX_ILAT;
-        auto ilat = [&] { return cec_mmr_read(&cpu.State(), ilatAddr) & (1u << 6); };
+        const uint32_t ilatAddr = bcore::CEC_MMR_BASE + 4 * bcore::CEC_IDX_ILAT;
+        auto ilat = [&] { return bcore::cec_mmr_read(&cpu.State(), ilatAddr) & (1u << 6); };
         cpu.Timer().Write32(0x04, 10);
         cpu.Timer().Write32(0x00, 7);
         cpu.Advance(10);
         cpu.Timer().Advance(cpu.Time().Cycles());
         Require(ilat() && cpu.Timer().InterruptPending(), "the first expiry latches IVG6");
-        cec_mmr_write(&cpu.State(), ilatAddr, 1u << 6);  // the guest clears ILAT, not TINT
+        bcore::cec_mmr_write(&cpu.State(), ilatAddr, 1u << 6);  // the guest clears ILAT, not TINT
         cpu.Advance(10);
         cpu.Timer().Advance(cpu.Time().Cycles());
         Require(ilat(), "the next expiry latches IVG6 again");

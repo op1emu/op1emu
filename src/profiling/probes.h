@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-struct CpuState;
+namespace bcore { struct CpuState; }
 class Emulator;
 
 namespace profiling {
@@ -39,13 +39,13 @@ void WriteJsonString(FILE* file, const std::string& text);
 // Parses a register name (R0-R7, P0-P5, SP, FP, RETS, ...); -1 if unknown.
 int RegisterIndex(const std::string& name);
 const char* RegisterName(int index);
-uint32_t RegisterValue(const CpuState& state, int index);
+uint32_t RegisterValue(const bcore::CpuState& state, int index);
 
 MemoryRead ParseMemoryRead(const nlohmann::json& entry, const std::string& where);
 // Reads `read`'s words into `out`. A word is read only at a 4-byte aligned
 // address below the MMR space that one device maps (an unaligned word could
 // run past the device's buffer); any other is reported false in `valid`.
-void Read(const MemoryRead& read, const CpuState& state, Emulator& memory, uint32_t* out, bool* valid);
+void Read(const MemoryRead& read, const bcore::CpuState& state, Emulator& memory, uint32_t* out, bool* valid);
 
 class Probes {
 public:
@@ -58,7 +58,7 @@ public:
     bool Empty() const { return specs_.empty(); }
 
     // Called at every block entry while probes are enabled.
-    void OnBlock(uint32_t pc, const CpuState& state, Emulator& memory, uint64_t wallNs, uint64_t runs,
+    void OnBlock(uint32_t pc, const bcore::CpuState& state, Emulator& memory, uint64_t wallNs, uint64_t runs,
                  uint64_t packets, uint64_t cycles) {
         if (!chunks_.test((pc >> 5) % chunks_.size())) return;
         Hit(pc, state, memory, wallNs, runs, packets, cycles);
@@ -87,7 +87,7 @@ private:
         uint32_t valid = 0;  // bit per value
     };
 
-    void Hit(uint32_t pc, const CpuState& state, Emulator& memory, uint64_t wallNs, uint64_t runs,
+    void Hit(uint32_t pc, const bcore::CpuState& state, Emulator& memory, uint64_t wallNs, uint64_t runs,
              uint64_t packets, uint64_t cycles);
 
     std::vector<Spec> specs_;

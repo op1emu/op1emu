@@ -15,8 +15,10 @@
 #include <tuple>
 
 // Forward declarations for bcore types (headers included in cpu.cpp only)
+namespace bcore {
 struct CpuState;
 class Core;
+}  // namespace bcore
 class EmulatorMemory;
 
 enum RegIndex {
@@ -202,7 +204,7 @@ public:
     profiling::ServiceStats& EnableServiceStats();
     // Count guest memory accesses by device (census runs); owned like the service counts.
     profiling::MemoryCensus& EnableMemoryCensus();
-    const CpuState& State() const { return *cpuState_; }
+    const bcore::CpuState& State() const { return *cpuState_; }
 #endif
     // RTC calendar time at guest time zero.
     void SetRtcEpoch(std::chrono::system_clock::time_point epoch) { time_.SetEpoch(epoch); }
@@ -346,9 +348,9 @@ protected:
     uint64_t lastTimerCycles_ = 0;
     uint64_t lastTmrclkCycles_ = 0;
     Emulator emulator;
-    std::unique_ptr<CpuState> cpuState_;
+    std::unique_ptr<bcore::CpuState> cpuState_;
     std::unique_ptr<EmulatorMemory> bcoreMemory_;
-    std::shared_ptr<Core> core_;
+    std::shared_ptr<bcore::Core> core_;
     uint32_t pc;
     std::atomic<bool> failed_{false};
 };
