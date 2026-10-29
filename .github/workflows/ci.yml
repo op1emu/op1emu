@@ -158,7 +158,7 @@ jobs:
       # Node 24: bcore's build runs its checks with it (V8 13.3 shares a
       # table between the modules that import it). The page's packages from
       # web/package-lock.json.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
