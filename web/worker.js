@@ -13,9 +13,11 @@
 // pixels}, {type: "stats", guestS, frames, audio}, {type: "selftest",
 // result}, {type: "error", text}, {type: "stopped"}.
 
+import { BOOT_ROM_SIZE, parseBootRom, sha256 } from "./bootrom.js";
 import { opfsFs } from "./opfs-fs.js";
 
 const NAMES = { nand: "nand.bin", otp: "otp.bin" };
+const BOOT_ROM = "bootrom.bin";
 const SIZES = { nand: 553648128, otp: 8192 };  // MT29F4G08's pages and OOBs; the OTP's
 const SLICE_MS = 8;
 const FLUSH_MS = 2000;
@@ -90,7 +92,30 @@ async function exportFile(key) {
 async function deleteFiles() {
   if (handles) throw new Error("the emulator is running: reload the page first");
   const dir = await directory();
-  for (const name of Object.values(NAMES)) await dir.removeEntry(name).catch(() => {});
+  for (const name of [...Object.values(NAMES), BOOT_ROM]) await dir.removeEntry(name).catch(() => {});
+}
+
+// The boot ROM in OPFS as bootrom.bin (bootrom.js): fetched from the header
+// build names when there is none, or another, which the sha256 tells.
+async function ensureBootRom({ url, sha256: expected }) {
+  const dir = await directory();
+  try {
+    const kept = new Uint8Array(await (await (await dir.getFileHandle(BOOT_ROM)).getFile()).arrayBuffer());
+    if (kept.length === BOOT_ROM_SIZE && (await sha256(kept)) === expected) return;
+  } catch {}
+  status("Fetching the boot ROM");
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`the boot ROM, ${url}: ${response.status} ${response.statusText}`);
+  const rom = parseBootRom(await response.text());
+  if ((await sha256(rom)) !== expected) throw new Error(`the boot ROM at ${url} is not the one this build expects`);
+  const handle = await (await dir.getFileHandle(BOOT_ROM, { create: true })).createSyncAccessHandle();
+  try {
+    handle.truncate(0);
+    handle.write(rom, { at: 0 });
+    handle.flush();
+  } finally {
+    handle.close();
+  }
 }
 
 // The module from build's files at site: the .wasm.br, decompressed as it
@@ -166,10 +191,11 @@ async function instantiate(build, site) {
 }
 
 // CI's look at the site in a browser with no firmware
-// (tools/smoke-browser.mjs; the page's ?selftest): the module, as start()
-// gets it, running an LDR of one RTS (tests/ldr_smoke.py's) to its end in
-// memory.
+// (tools/smoke-browser.mjs; the page's ?selftest): the boot ROM fetched and
+// checked, and the module, as start() gets it, running an LDR of one RTS
+// (tests/ldr_smoke.py's) to its end in memory.
 async function selftest({ build, site }) {
+  await ensureBootRom(build.bootRom);
   const op1 = await instantiate(build, site);
   const ldr = new Uint8Array(18), view = new DataView(ldr.buffer);
   view.setUint32(0, 0x4000 | 0x8000, true);  // the first and final block
@@ -185,10 +211,11 @@ async function selftest({ build, site }) {
 }
 
 async function start({ build, site, snapshot, audioMs, audioPort: port }) {
+  await ensureBootRom(build.bootRom);
   const dir = await directory();
   handles = {};
   try {
-    for (const [key, name] of Object.entries(NAMES))
+    for (const [key, name] of Object.entries({ ...NAMES, bootRom: BOOT_ROM }))
       handles[key] = await (await dir.getFileHandle(name)).createSyncAccessHandle();
   } catch (e) {
     for (const handle of Object.values(handles)) handle.close();
@@ -199,7 +226,8 @@ async function start({ build, site, snapshot, audioMs, audioPort: port }) {
   const { FS } = op1;
   dataFs = opfsFs(FS);
   FS.mkdir("/data");
-  FS.mount(dataFs, { files: { [NAMES.nand]: handles.nand, [NAMES.otp]: handles.otp } }, "/data");
+  FS.mount(dataFs, { files: { [NAMES.nand]: handles.nand, [NAMES.otp]: handles.otp, [BOOT_ROM]: handles.bootRom } },
+           "/data");
   FS.chdir("/data");
   op1.onFrame = frame;
   if (port) {

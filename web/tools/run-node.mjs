@@ -24,6 +24,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseBootRom } from "../bootrom.js";
 
 const DETERMINISTIC = 1, NAND_SNAPSHOT = 2, NO_CHAIN = 4;
 
@@ -45,6 +46,10 @@ async function load(modulePath, options) {
   const op1 = await createOp1({ print: (s) => console.log(s), printErr: (s) => console.error(s) });
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "op1-web-"));
   if (options.otp) fs.copyFileSync(options.otp, path.join(work, "otp.bin"));
+  // The boot ROM the browser's build reads (src/cpu/bootrom.cpp), from the
+  // submodule's header, as the page fetches it.
+  const romHeader = new URL("../../ext/bfin_sim/bf526-0.2.h", import.meta.url);
+  fs.writeFileSync(path.join(work, "bootrom.bin"), parseBootRom(fs.readFileSync(romHeader, "utf8")));
   if (options.ldr) fs.copyFileSync(options.ldr, path.join(work, "prog.ldr"));
   const { FS } = op1;
   FS.mkdir("/host");

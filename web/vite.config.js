@@ -24,6 +24,7 @@ export default defineConfig({
   plugins: [
     emulatorAssets({
       build: path.resolve(root, process.env.OP1_WASM_BUILD ?? "../build-wasm"),
+      bootRomHeader: path.join(root, "../ext/bfin_sim/bf526-0.2.h"),
     }),
   ],
 });

@@ -6,17 +6,21 @@
 // in the site as they are, named by their content, and the .wasm also
 // brotli-compressed, which GitHub Pages does not do (it sends gzip): the
 // Worker decompresses it. `virtual:op1emu` is their names, for the page to
-// hand the Worker. `vite` serves the files from the build as they are, with
-// no .br.
+// hand the Worker, and the boot ROM the site does not carry:
+// ext/bfin_sim's header at the submodule's commit, on GitHub, with the
+// ROM's sha256 (bootrom.js). `vite` serves the files from the build as they
+// are, with no .br.
 
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import { parseBootRom, sha256 } from "../bootrom.js";
 
 const VIRTUAL = "virtual:op1emu";
 
-export function emulatorAssets({ build }) {
+export function emulatorAssets({ build, bootRomHeader }) {
   let serving = false;
   const files = () => {
     const js = fs.readFileSync(path.join(build, "web", "op1emu-web.mjs"));
@@ -28,10 +32,15 @@ export function emulatorAssets({ build }) {
 
   async function manifest() {
     const { names, wasm } = built ?? files();
+    const commit = execFileSync("git", ["-C", path.dirname(bootRomHeader), "rev-parse", "HEAD"], { encoding: "utf8" });
     return {
       js: names.js,
       wasm: { file: names.wasm, size: wasm.length },
       wasmBr: built ? { file: `${names.wasm}.br`, size: built.br.length } : null,
+      bootRom: {
+        url: `https://raw.githubusercontent.com/op1emu/bfin_sim/${commit.trim()}/${path.basename(bootRomHeader)}`,
+        sha256: await sha256(parseBootRom(fs.readFileSync(bootRomHeader, "utf8"))),
+      },
     };
   }
 

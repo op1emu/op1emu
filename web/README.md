@@ -12,7 +12,10 @@ long to wait (`PacedUntilNs`).
 `src/op1_web.cpp` sets the emulator up as `gui/main.cpp` does, less what needs
 threads (USB/IP, the promotion worker; there is no copy-and-patch tier either).
 Its files are whatever the host mounted: the NAND image at the path it gives
-`op1_start()`, `otp.bin` in the working directory.
+`op1_start()`, `otp.bin` and `bootrom.bin` in the working directory. The
+desktop build has the BF526's boot ROM compiled in (`ext/bfin_sim`'s
+`bf526-0.2.h`); this one does not carry it, and reads `bootrom.bin` instead
+(`src/cpu/bootrom.cpp`).
 
 ## The page
 
@@ -31,6 +34,10 @@ Its files are whatever the host mounted: the NAND image at the path it gives
 - `audio-worklet.js`: the SPORT's frames come straight from the Worker over a
   MessagePort, into a ring whose target level (`?audio=MS`, default 100 ms)
   the emulator's servo holds (`src/web_audio.h`, the desktop's `LevelServo`).
+- The boot ROM: on the first start the Worker fetches `bf526-0.2.h` from
+  GitHub (op1emu/bfin_sim, at the submodule's commit, which the build
+  names with the ROM's sha256), checks it, and keeps the ROM in OPFS as
+  `bootrom.bin` (`bootrom.js`).
 - No SharedArrayBuffer, so no COOP/COEP headers are needed: GitHub Pages
   serves it as it is.
 
@@ -84,7 +91,8 @@ node tools/input-browser.mjs dist node_modules/playwright-core /usr/bin/google-c
 ## Node
 
 `tools/run-node.mjs` runs the module under Node, deterministically, with the
-sensors of `tools/op1prof`'s default script:
+sensors of `tools/op1prof`'s default script and the boot ROM from the
+submodule's header:
 
 ```sh
 # The phase marks' guest state, as a native profiling build prints it

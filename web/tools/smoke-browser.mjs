@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // CI's look at the built site in Chrome (README.md), with no firmware: the
 // page starts and its Worker answers, and its self-test (?selftest: the
-// module, brotli-decompressed as the Worker gets it, running an LDR of one
-// RTS to its end) passes.
+// boot ROM fetched from GitHub and checked, and the module, brotli-
+// decompressed as the Worker gets it, running an LDR of one RTS to its end)
+// passes.
 //
 //   node web/tools/smoke-browser.mjs DIST_DIR PLAYWRIGHT_CORE_DIR [CHROME]
 
