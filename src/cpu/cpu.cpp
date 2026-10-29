@@ -416,6 +416,9 @@ HaltReason BlackFinCpu::Run() {
     // executed and the cycles IDLEs waited (see TimeSource).
     const uint64_t cyclesElapsed = time_.Cycles();
     SetBfinCycles(*cpuState_, cyclesElapsed);
+#ifdef __EMSCRIPTEN__
+    pacedUntilNs_ = 0;
+#endif
 
 #ifdef ENABLE_PROFILING
     const uint32_t blockPc = cpuState_->pc;
@@ -729,6 +732,14 @@ uint64_t BlackFinCpu::Pace(uint64_t targetNs) {
     pacer_.Sync(time_.Nanoseconds(), wall);
     uint64_t clockNs = pacer_.GuestNsAt(wall);
     if (targetNs <= clockNs + RealtimePacer::kAheadNs) return targetNs;
+#ifdef __EMSCRIPTEN__
+    // The browser's event loop is the only thread: instead of the sleep,
+    // guest time goes as far as the clock, and the caller comes back when
+    // the clock is at targetNs (PacedUntilNs), as after work another thread
+    // handed in. Keys arrive meanwhile.
+    pacedUntilNs_ = wall + (targetNs - clockNs);
+    return clockNs;
+#endif
     while (clockNs < targetNs) {
         if (OffThreadWork()) return clockNs;
         std::this_thread::sleep_for(std::chrono::nanoseconds(std::min(targetNs - clockNs, RealtimePacer::kSliceNs)));

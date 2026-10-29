@@ -190,6 +190,12 @@ public:
     void SetPotentiometerValue(u8 value);
 
     const TimeSource& Time() const { return time_; }
+#ifdef __EMSCRIPTEN__
+    // Real-time mode with no thread to sleep on (web/src/op1_web.cpp): the
+    // steady-clock time Pace() would have slept until, for the caller to
+    // wait for before the next Run(), or 0. Run() clears it.
+    uint64_t PacedUntilNs() const { return pacedUntilNs_; }
+#endif
 #ifdef ENABLE_PROFILING
     // Profiling hooks (see profiling/profiler.h). Not owned.
     void SetProfiler(Profiler* profiler);
@@ -206,8 +212,9 @@ public:
     profiling::ServiceStats& EnableServiceStats();
     // Count guest memory accesses by device (census runs); owned like the service counts.
     profiling::MemoryCensus& EnableMemoryCensus();
-    const bcore::CpuState& State() const { return *cpuState_; }
 #endif
+    // The guest's registers (the profiler's digests, web/src/gate.cpp's).
+    const bcore::CpuState& State() const { return *cpuState_; }
     // RTC calendar time at guest time zero.
     void SetRtcEpoch(std::chrono::system_clock::time_point epoch) { time_.SetEpoch(epoch); }
 
@@ -293,6 +300,9 @@ protected:
     // HostWork() paces the guest every kPaceCycles of guest time.
     static constexpr uint64_t kPaceCycles = TimeSource::kHz / 1000;
     uint64_t nextPaceCycles_ = 0;
+#ifdef __EMSCRIPTEN__
+    uint64_t pacedUntilNs_ = 0;  // PacedUntilNs()
+#endif
     uint8_t idleWake_ = 0;  // SIC::Wakeup(), for generated code (CpuState::idle_wake)
     bool chaining_ = false;
     // A block is running (Core::run): what a device access queues now was

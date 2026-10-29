@@ -4,6 +4,9 @@
 #include <cstring>
 #include <algorithm>
 
+// musl's <limits.h> (Emscripten's C library) defines PAGE_SIZE, the host's.
+#undef PAGE_SIZE
+
 // MT29F4G08 specifications
 static constexpr u32 PAGE_SIZE = 2048;
 static constexpr u32 OOB_SIZE = 64;
