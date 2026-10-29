@@ -311,7 +311,7 @@ struct MdmaRig {
     static constexpr u32 kL1 = 0xFF800000;
     TimeSource time{true};
     Emulator emulator;
-    MemoryDevice ram{"SDRAM", 0, 0x10000};
+    MemoryDevice ram{"SDRAM", 0, 0x40000};  // room for 65,536-element transfers
     MemoryDevice l1{"Data A", kL1, 0x4000};
     DMA dma{0xFFC00C00, emulator, &time};
     int level = 0, level1 = 0;
@@ -357,10 +357,11 @@ struct MdmaRig {
         const u32 d = 0x300 + t.stream * 0x80, s = d + 0x40;
         const u32 flow = t.autobuffer ? 0x1000 : 0;
         const u32 size = t.wsize << 2;
-        const u32 source = 0x01 | size | (t.y1 > 1 ? 0x10 : 0) | flow;
+        // 2D but for one row (a Y_COUNT of 0 is 65,536 of them).
+        const u32 source = 0x01 | size | (t.y1 != 1 ? 0x10 : 0) | flow;
         // The large descriptor model, four halfwords: the link and START_ADDR.
         const u32 destFlow = t.listed ? 0x7400 : flow;
-        const u32 dest = 0x03 | size | (t.y2 > 1 ? 0x10 : 0) | (t.interrupt ? 0x80 : 0) | (t.eachRow ? 0x40 : 0) | destFlow;
+        const u32 dest = 0x03 | size | (t.y2 != 1 ? 0x10 : 0) | (t.interrupt ? 0x80 : 0) | (t.eachRow ? 0x40 : 0) | destFlow;
         if (second) {
             dma.Write32(t.destFirst ? s + 0x08 : d + 0x08, t.destFirst ? source : dest);
             return;
@@ -741,6 +742,53 @@ static void MdmaArmedAgain() {
     }
 }
 
+// Counts of 0 are 65,536 (HRM 6-80): X_COUNT's elements, Y_COUNT's rows,
+// in 1D and 2D, and CURR_X_COUNT is X_COUNT between rows, 0 only once the
+// transfer ends. Each takes its HRM time, settled as serviced every cycle,
+// and memory DMA 1, armed beside it, goes on once it ends.
+static void MdmaZeroCounts() {
+    struct Case { u32 x, y; const char* what; };
+    const Case cases[] = {{0, 2, "X_COUNT 0, 2D"}, {1, 0, "Y_COUNT 0, 2D"}, {0, 1, "X_COUNT 0, 1D"}};
+    for (const Case& c : cases) {
+        const std::string what = std::string("memory DMA, ") + c.what + ": ";
+        const uint64_t elements = uint64_t(c.x ? c.x : 65536) * (c.y == 1 ? 1 : c.y ? c.y : 65536);
+        MdmaRig every(100), settled(100);
+        every.dma.SetSettling(false);
+        for (auto* rig : {&every, &settled}) {
+            // 8-bit, SDRAM to SDRAM: 10 ticks an element.
+            MdmaRig::Shape t{0, 0x20000, c.x, c.y, c.x, c.y, false, true, false, false, 1, 1, 0};
+            MdmaRig::Shape one{MdmaRig::kL1, 0x8000, 64, 1, 64, 1, false, true, false, false, 4, 4, 2};
+            one.stream = 1;
+            rig->Arm(one);
+            rig->Arm(one, true);
+            rig->Arm(t);
+            rig->Arm(t, true);
+        }
+        Require(settled.dma.Read32(0x330) == c.x && settled.dma.Read32(0x338) == c.y,
+                what + "CURR_X_COUNT and CURR_Y_COUNT read what was written");
+        const uint64_t done = (15 + elements * 10 + 99) / 100;
+        for (uint64_t cycle = 1; cycle <= done + 1000; ++cycle) {
+            every.time.Retire(1);
+            every.dma.ProcessWithInterrupt(-1);
+            settled.time.Retire(1);
+            if (settled.dma.NeedsService(settled.time.Nanoseconds())) settled.dma.ProcessWithInterrupt(-1);
+            for (u32 reg : {0x328u, 0x330u, 0x338u, 0x368u, 0x3A8u})
+                Require(every.dma.Read32(reg) == settled.dma.Read32(reg),
+                        what + "settled and every cycle differ at cycle " + std::to_string(cycle));
+            Require(every.level == settled.level && every.level1 == settled.level1, what + "levels differ");
+            if (cycle == done - 1) Require(!(settled.dma.Read32(0x328) & 1), what + "not done before its time");
+            if (cycle == done) Require(settled.dma.Read32(0x328) & 1, what + "done at its time");
+        }
+        Require(settled.dma.Read32(0x330) == 0 && (settled.dma.Read32(0x3A8) & 1),
+                what + "it ends, and memory DMA 1 after it");
+        for (u32 i = 0; i < elements; i += 4093)
+            Require(settled.emulator.MemoryRead8(0x20000 + i) == settled.emulator.MemoryRead8(i), what + "the copy");
+        Require(settled.emulator.MemoryRead8(0x20000 + u32(elements) - 1) ==
+                    settled.emulator.MemoryRead8(u32(elements) - 1),
+                what + "its last element");
+    }
+}
+
 // The synth's fill, as the firmware makes it: the source (2-word rows, the
 // same 8 bytes of L1 over and over) armed first, then the destination
 // (99-word rows of SDRAM, 40 of them, an interrupt at the end) 3 cycles
@@ -1071,6 +1119,33 @@ public:
     u32 CyclesPerElement() const override { return kSclkCyclesPerElement; }
 };
 
+// A peripheral's DMA with X_COUNT 0 moves 65,536 elements (HRM 6-80).
+static void DmaZeroCountIs65536() {
+    struct Bytes : DMABus {
+        uint64_t bytes = 0;
+        u32 DMARead(int, int, void*, u32) override { return 0; }
+        u32 DMAWrite(int, int, const void*, u32 length) override {
+            bytes += length;
+            return length;
+        }
+    };
+    TimeSource time(true);
+    Emulator emulator;
+    MemoryDevice ram{"SDRAM", 0, 0x40000};
+    emulator.BindDevice(&ram);
+    DMA dma(0xFFC00C00, emulator, &time);
+    auto sink = std::make_shared<Bytes>();
+    dma.AttachDMABus(DMAPeripheralPPI, sink);
+    dma.Write32(0x04, 0);     // START_ADDR
+    dma.Write32(0x10, 0);     // X_COUNT: 65,536
+    dma.Write32(0x14, 2);     // X_MODIFY
+    dma.Write32(0x08, 0x05);  // DMAEN, 16-bit, 1D
+    Require(dma.Read32(0x30) == 0, "CURR_X_COUNT reads X_COUNT's 0");
+    for (int step = 0; step < 100 && !(dma.Read32(0x28) & 1); ++step) dma.ProcessWithInterrupt(-1);
+    Require((dma.Read32(0x28) & 1) && sink->bytes == 65536 * 2,
+            "X_COUNT 0: 65,536 elements, not " + std::to_string(sink->bytes / 2));
+}
+
 static void DmaPacesUnpacedBuses() {
     TimeSource time(true);
     Emulator emulator;
@@ -1237,6 +1312,7 @@ int main() {
     for (uint32_t seed = 1; seed <= 10; ++seed) TwiIgnoresBlockBoundaries(seed);
     TwiPacesBytes();
     DmaPacesUnpacedBuses();
+    DmaZeroCountIs65536();
     CoreTimerCountsGuestCycles(true);
     CoreTimerCountsGuestCycles(false);
     SicLines();
@@ -1247,6 +1323,7 @@ int main() {
     for (uint32_t seed = 1; seed <= 10; ++seed) MdmaSettlesLikeEveryCycle(seed);
     MdmaHrmTiming();
     MdmaArmedAgain();
+    MdmaZeroCounts();
     MdmaSynthFill();
     for (uint32_t seed = 1; seed <= 10; ++seed) AudioMatchesPolling(seed);
     SportTransmitDeliversTheBuffer(2);

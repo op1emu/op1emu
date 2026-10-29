@@ -40,7 +40,13 @@ public:
     // the unit lies in).
     u32 UnitStart() const { return unitStart_; }
     u32 CurrAddr() const { return currAddr; }
-    u16 RowLeft() const { return currXCount; }
+    // Counts of 0 are 65,536 (HRM 6-80): the elements of a row and those
+    // left in the current one, the rows and those left (current included).
+    // CURR_X_COUNT is X_COUNT between rows, 0 only once a transfer ends.
+    u32 RowElements() const { return xCount ? xCount : 65536u; }
+    u32 RowLeft() const { return currXCount ? currXCount : 65536u; }
+    u32 Rows() const { return yCount ? yCount : 65536u; }
+    u32 RowsLeft() const { return currYCount ? currYCount : 65536u; }
     // Elements up to and including the next whose move the guest is told of:
     // its row's end where rows interrupt (or a 1D transfer's end), else the
     // transfer's end.
@@ -223,8 +229,8 @@ void DMAChannel::ProcessDescriptor()
     currDescPtr = largeList ? descriptorEnd : nextDescPtr;
     currAddr = startAddr;
     unitStart_ = startAddr;
-    currXCount = xCount ?: 0xFFFF;
-    currYCount = yCount ?: 0xFFFF;
+    currXCount = xCount;
+    currYCount = yCount;
 }
 
 u32 DMAChannel::CyclesPerElement(const DMABus& bus) const {
@@ -238,7 +244,7 @@ uint64_t DMAChannel::IdleUntil() const {
     if (!bus) return 0;
     // The length ProcessTransfer() offers the bus.
     const u32 elementBytes = 1u << wordSize;
-    const u32 length = std::min(u32(currXCount) * elementBytes, 4096u);
+    const u32 length = std::min(RowLeft() * elementBytes, 4096u);
     const uint64_t idle = bus->DMAIdleUntil(memoryWrite, length);
     const u32 pace = CyclesPerElement(*bus);
     if (!pace) return idle;
@@ -264,24 +270,23 @@ bool DMAChannel::QuietSource(u32 from, u32 to, u32 elementBytes) const {
 }
 
 void DMAChannel::Pages(std::vector<u32>& pages) const {
-    if (!currXCount) return;
     int64_t lo = currAddr, hi = currAddr;
     const auto row = [&](int64_t start, u32 elements) {
         const int64_t end = start + int64_t(elements - 1) * xModify;
         lo = std::min({lo, start, end});
         hi = std::max({hi, start, end});
     };
-    row(currAddr, currXCount);
-    // As ProcessTransfer() steps: a row's last element, then yModify.
-    const int64_t stride = int64_t(xCount - 1) * xModify + yModify;
-    if (mode2D && currYCount > 1 && xCount) {
-        const int64_t second = int64_t(currAddr) + int64_t(currXCount - 1) * xModify + yModify;
-        row(second, xCount);
-        row(second + int64_t(currYCount - 2) * stride, xCount);
+    row(currAddr, RowLeft());
+    // As Step() goes: a row's last element, then yModify.
+    const int64_t stride = int64_t(RowElements() - 1) * xModify + yModify;
+    if (mode2D && RowsLeft() > 1) {
+        const int64_t second = int64_t(currAddr) + int64_t(RowLeft() - 1) * xModify + yModify;
+        row(second, RowElements());
+        row(second + int64_t(RowsLeft() - 2) * stride, RowElements());
     }
-    if (next == DMANextOperation::Autobuffer && xCount) {
-        row(startAddr, xCount);
-        if (mode2D && yCount > 1) row(int64_t(startAddr) + int64_t(yCount - 1) * stride, xCount);
+    if (next == DMANextOperation::Autobuffer) {
+        row(startAddr, RowElements());
+        if (mode2D && Rows() > 1) row(int64_t(startAddr) + int64_t(Rows() - 1) * stride, RowElements());
     }
     hi += (1 << wordSize) - 1;
     lo = std::max<int64_t>(lo, 0);
@@ -302,7 +307,7 @@ u32 DMAChannel::ProcessTransfer(uint64_t now) {
     }
 
     int elementBytes = 1 << wordSize;
-    u32 totalBytes = currXCount * elementBytes;
+    u32 totalBytes = RowLeft() * elementBytes;
 
     u8 buffer[4096];
     totalBytes = std::min(totalBytes, (u32)sizeof(buffer));
@@ -310,7 +315,7 @@ u32 DMAChannel::ProcessTransfer(uint64_t now) {
     const u32 pace = CyclesPerElement(*bus);
     if (pace && now < pacedFrom_ + uint64_t(totalBytes / elementBytes) * pace) return 0;
     if (memoryWrite) {
-        totalBytes = bus->DMARead(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
+        totalBytes = bus->DMARead(RowElements() - RowLeft(), Rows() - RowsLeft(), buffer, totalBytes);
         totalBytes -= totalBytes % elementBytes; // only write whole elements
         if (xModify == elementBytes) {
             dma.GetEmulator().MemoryWrite(currAddr, buffer, totalBytes);
@@ -341,7 +346,7 @@ u32 DMAChannel::ProcessTransfer(uint64_t now) {
                 addr += xModify;
             }
         }
-        totalBytes = bus->DMAWrite(xCount - currXCount, yCount - currYCount, buffer, totalBytes);
+        totalBytes = bus->DMAWrite(RowElements() - RowLeft(), Rows() - RowsLeft(), buffer, totalBytes);
         assert(totalBytes <= take);
         totalBytes -= totalBytes % elementBytes; // only count whole elements accepted
     }
@@ -354,9 +359,10 @@ u32 DMAChannel::ProcessTransfer(uint64_t now) {
 
 void DMAChannel::Step(u32 count) {
     currAddr += count * xModify;
-    currXCount -= count;
+    const u32 left = RowLeft() - count;
+    currXCount = u16(left);  // 65,536 left is 0, as X_COUNT has it
 
-    if (currXCount == 0) {
+    if (left == 0) {
         bool transferComplete = true;
         if (mode2D) {
             currYCount--;
@@ -388,10 +394,8 @@ void DMAChannel::Step(u32 count) {
 }
 
 uint64_t DMAChannel::ElementsToEvent() const {
-    if (!mode2D || (dataInterruptEnabled && mode2DInterruptEachRow)) return currXCount;
-    // Step() counts a CURR_Y_COUNT of 0 down through 65535.
-    const uint64_t rows = currYCount ? currYCount : 65536;
-    return currXCount + (rows - 1) * xCount;
+    if (!mode2D || (dataInterruptEnabled && mode2DInterruptEachRow)) return RowLeft();
+    return RowLeft() + uint64_t(RowsLeft() - 1) * RowElements();
 }
 
 void DMAChannel::Span(uint64_t n, int64_t& lo, int64_t& hi) const {
@@ -406,16 +410,16 @@ void DMAChannel::Span(uint64_t n, int64_t& lo, int64_t& hi) const {
         lo = std::min({lo, start, end});
         hi = std::max({hi, start + elementBytes, end + elementBytes});
     };
-    const uint64_t first = std::min<uint64_t>(n, currXCount);
+    const uint64_t first = std::min<uint64_t>(n, RowLeft());
     row(currAddr, first);
-    if (n == first || !xCount) return;
+    if (n == first) return;
     // As Step() goes: a row's last element, then yModify.
-    const int64_t next = int64_t(currAddr) + int64_t(currXCount - 1) * xModify + yModify;
-    const int64_t stride = int64_t(xCount - 1) * xModify + yModify;
-    const uint64_t rest = n - first, full = rest / xCount, part = rest % xCount;
+    const int64_t next = int64_t(currAddr) + int64_t(RowLeft() - 1) * xModify + yModify;
+    const int64_t stride = int64_t(RowElements() - 1) * xModify + yModify;
+    const uint64_t rest = n - first, full = rest / RowElements(), part = rest % RowElements();
     if (full) {
-        row(next, xCount);
-        row(next + int64_t(full - 1) * stride, xCount);
+        row(next, RowElements());
+        row(next + int64_t(full - 1) * stride, RowElements());
     }
     row(next + int64_t(full) * stride, part);
 }
@@ -462,10 +466,10 @@ public:
         const DMAChannel &d = Dst(), &s = Src();
         return d.IsEnabled() && d.IsRunning() && s.IsEnabled() && s.IsRunning();
     }
-    // Busy, started, at rows with elements left, of one legal word size.
+    // Busy, started, of one legal word size.
     bool Runnable() {
         const DMAChannel &d = Dst(), &s = Src();
-        if (rearmed_ || !Busy() || !d.RowLeft() || !s.RowLeft()) return false;
+        if (rearmed_ || !Busy()) return false;
         if (d.WordSize() == s.WordSize() && d.WordSize() < 3) return true;
         if (!warned_)
             LogWarn("Memory DMA %zu: word sizes %u and %u (they must match, 3 is reserved); it does not run",
