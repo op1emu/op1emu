@@ -58,7 +58,7 @@ async function load(modulePath, options) {
 
 function start(op1, nandPath, ldrPath, flags) {
   const nand = op1.stringToNewUTF8(nandPath), ldr = op1.stringToNewUTF8(ldrPath);
-  const result = op1._op1_start(nand, ldr, flags, 0);
+  const result = op1._op1_start(nand, ldr, flags, 0, 0);
   op1._free(nand);
   op1._free(ldr);
   if (result !== 0) throw new Error("op1_start failed");

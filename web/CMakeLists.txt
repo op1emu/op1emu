@@ -4,7 +4,7 @@
 
 add_executable(op1emu-web src/op1_web.cpp src/gate.cpp ${CMAKE_SOURCE_DIR}/src/profiling/mark_set.cpp)
 set_target_properties(op1emu-web PROPERTIES SUFFIX ".mjs")
-target_include_directories(op1emu-web PRIVATE src ${CMAKE_SOURCE_DIR}/src/profiling)
+target_include_directories(op1emu-web PRIVATE src ${CMAKE_SOURCE_DIR}/gui ${CMAKE_SOURCE_DIR}/src/profiling)
 target_link_libraries(op1emu-web PRIVATE emulator bfin-core nlohmann_json::nlohmann_json)
 # bcore's (its CMakeLists.txt): -O1, as wasm-opt's higher levels cost a
 # minute a link and start slower in V8; memory and the function table grow,

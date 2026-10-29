@@ -1,0 +1,138 @@
+:root {
+  color-scheme: light dark;
+  --bg: #e9e8e4;
+  --fg: #1d1d1b;
+  --muted: #6b6a66;
+  --accent: #1f6feb;
+  --error: #c62828;
+  --panel: #f6f5f2;
+  --line: #cfcdc7;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #181817;
+    --fg: #ecebe7;
+    --muted: #a3a29d;
+    --accent: #58a6ff;
+    --error: #ff6b6b;
+    --panel: #232321;
+    --line: #3a3936;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+#device {
+  position: relative;
+  user-select: none;
+  touch-action: none;
+}
+#faceplate {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+#screen {
+  position: absolute;
+  image-rendering: pixelated;
+  background: #000;
+}
+.pressed {
+  position: absolute;
+  border-radius: 12%;
+  pointer-events: none;
+}
+.pressed.down {
+  background: rgb(255 255 255 / 0.28);
+  box-shadow: inset 0 0 0 2px rgb(0 0 0 / 0.25);
+}
+
+#status {
+  min-height: 1.4em;
+  margin: 12px 0;
+  color: var(--muted);
+}
+#status.error {
+  color: var(--error);
+}
+
+#panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 20px 16px;
+  line-height: 1.5;
+}
+#panel h1 {
+  font-size: 1.3em;
+}
+#panel.running .files,
+#panel.running .setup,
+#panel.running #start {
+  display: none;
+}
+table {
+  border-collapse: collapse;
+}
+th {
+  text-align: left;
+  padding-right: 16px;
+  font-weight: 600;
+}
+td {
+  padding: 4px 16px 4px 0;
+  color: var(--muted);
+}
+
+button,
+.button {
+  font: inherit;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  padding: 6px 24px;
+}
+button.quiet {
+  border: none;
+  background: none;
+  color: var(--muted);
+  text-decoration: underline;
+}
+.files {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+kbd {
+  font: 0.9em ui-monospace, monospace;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+a {
+  color: var(--accent);
+}

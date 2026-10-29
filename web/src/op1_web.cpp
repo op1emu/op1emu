@@ -10,6 +10,7 @@
 #include "peripheral/MT29F4G08.h"
 #include "peripheral/keyboard.h"
 #include "utils/log.h"
+#include "web_audio.h"
 #include "web_display.h"
 
 #include <emscripten.h>
@@ -54,6 +55,7 @@ struct Session {
     BlackFinCpu cpu;
     std::shared_ptr<WebDisplay> display = std::make_shared<WebDisplay>();
     std::shared_ptr<Keyboard> keyboard = std::make_shared<Keyboard>();
+    std::shared_ptr<WebAudioOutput> audio;  // none: the SPORT drains with no sink
     LDRParser ldr;
     size_t dxe = 0;          // the LDR's DXE running, while one is
     bool ldrMode = false;
@@ -119,8 +121,10 @@ extern "C" {
 
 // Starts the emulator on the NAND image at nandPath (and an LDR, unless
 // ldrPath is empty), with StartFlags; rtcEpoch in seconds, or 0 for the
-// clock's. Returns 0, or -1 with the reason logged.
-EMSCRIPTEN_KEEPALIVE int op1_start(const char* nandPath, const char* ldrPath, int flags, double rtcEpoch) {
+// clock's; audio to Module.onAudio with a ring of audioMs (web_audio.h), or
+// none for 0. Returns 0, or -1 with the reason logged.
+EMSCRIPTEN_KEEPALIVE int op1_start(const char* nandPath, const char* ldrPath, int flags, double rtcEpoch,
+                                   int audioMs) {
     try {
         auto s = std::make_unique<Session>(flags & kDeterministic);
         BlackFinCpu& cpu = s->cpu;
@@ -134,6 +138,10 @@ EMSCRIPTEN_KEEPALIVE int op1_start(const char* nandPath, const char* ldrPath, in
             cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(int64_t(rtcEpoch))));
         cpu.AttachDisplay(s->display);
         cpu.AttachKeyboard(s->keyboard);
+        if (audioMs > 0) {
+            s->audio = std::make_shared<WebAudioOutput>(unsigned(audioMs));
+            cpu.AttachAudioOutput(s->audio);
+        }
         cpu.SetBootMode(0x0D);  // boot from NAND flash with port H
         cpu.AttachNandFlash(std::make_shared<MT29F4G08>(cpu, nandPath, flags & kNandSnapshot));
         cpu.SetPotentiometerValue(0xFF - 128);
@@ -154,23 +162,35 @@ EMSCRIPTEN_KEEPALIVE double op1_step(double budgetMs) {
     if (!session) return -1;
     Session& s = *session;
     const uint64_t start = WallNs(), end = start + uint64_t(budgetMs * 1e6);
+    double wait = 0;
     try {
         for (uint64_t now = start; now < end; now = WallNs()) {
             if (now >= s.nextSensorNs) {
                 PushSensors(s);
                 s.nextSensorNs = now + kSensorNs;
             }
-            if (!RunOnce(s)) return -1;
+            if (!RunOnce(s)) {
+                wait = -1;
+                break;
+            }
             if (const uint64_t until = s.cpu.PacedUntilNs()) {
                 const uint64_t after = WallNs();
-                return until > after ? double(until - after) / 1e6 : 0.0;
+                wait = until > after ? double(until - after) / 1e6 : 0.0;
+                break;
             }
         }
     } catch (const std::exception& e) {
         LogError("Emulation stopped: %s", e.what());
-        return -1;
+        wait = -1;
     }
-    return 0;
+    if (s.audio) s.audio->Flush();
+    return wait;
+}
+
+// The AudioWorklet's report (WebAudioOutput::Report): frames it took in all,
+// and whether it plays.
+EMSCRIPTEN_KEEPALIVE void op1_audio_report(double consumed, int playing) {
+    if (session && session->audio) session->audio->Report(consumed, playing);
 }
 
 // Tiered compilation (BlackFinCpu::SetTiering, gui/main.cpp's

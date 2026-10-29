@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>op1emu</title>
+<meta name="description" content="The OP-1's own firmware, emulated in the browser, from your NAND image and otp.bin.">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./style.css">
+<script type="module" src="./main.js"></script>
+</head>
+<body>
+<main>
+  <div id="device">
+    <img id="faceplate" alt="OP-1" draggable="false">
+    <canvas id="screen" width="400" height="200"></canvas>
+  </div>
+
+  <p id="status" role="status"></p>
+
+  <section id="panel">
+    <h1>op1emu</h1>
+    <p>An emulator of the Teenage Engineering OP-1 that runs its own firmware, here in the browser.
+      It needs the firmware as your OP-1 has it: its <b>NAND image</b> (528 MiB) and its <b>otp.bin</b> (8 KiB).
+      They stay in this browser, in its private storage for this site, and are not uploaded anywhere.
+      The guest's writes go to the stored image, as to the device's flash.</p>
+
+    <div class="files">
+      <label class="button">Choose files…<input id="pick" type="file" multiple hidden></label>
+      <span>or drop them on the page</span>
+    </div>
+    <table>
+      <tr><th>NAND image</th><td id="nand-state">…</td><td><button id="export-nand" disabled>Export</button></td></tr>
+      <tr><th>otp.bin</th><td id="otp-state">…</td><td><button id="export-otp" disabled>Export</button></td></tr>
+    </table>
+    <p class="setup">
+      <label><input id="snapshot" type="checkbox"> Don't keep the guest's writes to the NAND</label>
+      <button id="delete" class="quiet">Delete the stored files</button>
+    </p>
+    <p><button id="start" class="primary" disabled>Start</button></p>
+
+    <details>
+      <summary>Controls</summary>
+      <p>Click the keys; hold one with the mouse or a finger. Click either half of an encoder or the volume knob,
+        or scroll over it, to turn it. On the computer's keyboard the musical keys are
+        <kbd>Q</kbd>…<kbd>[</kbd> and <kbd>Z</kbd> <kbd>X</kbd> <kbd>C</kbd> (white),
+        <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> <kbd>6</kbd> <kbd>7</kbd> <kbd>9</kbd> <kbd>0</kbd> <kbd>-</kbd>
+        <kbd>S</kbd> <kbd>D</kbd> (black), and <kbd>Shift</kbd> is shift.</p>
+      <p>It needs Chrome or Edge 133 or later (Firefox runs out of room for the compiled code).
+        A boot takes about a minute on a fast computer, every time:
+        the emulator compiles the firmware's code as it runs it. <code>?audio=MS</code> sets the audio buffer
+        (default 100 ms).</p>
+      <p><a href="https://github.com/op1emu/op1emu">Source</a> ·
+        <a href="THIRD_PARTY.md">Third-party notices</a> · <a href="licenses.md">npm packages' licenses</a></p>
+    </details>
+  </section>
+</main>
+</body>
+</html>
