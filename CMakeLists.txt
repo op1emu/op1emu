@@ -5,6 +5,14 @@ set(CMAKE_CXX_STANDARD 17)
 
 include(FetchContent)
 
+# The browser's build (web/README.md): the emulator and a module for a Web
+# Worker or Node in place of the native frontend, which needs a window, a
+# sound card, sockets and threads. C++ exceptions are WebAssembly's
+# everywhere, as in bcore.
+if(EMSCRIPTEN)
+    add_compile_options(-fwasm-exceptions)
+endif()
+
 # Fetch spdlog
 message(STATUS "Fetching spdlog...")
 FetchContent_Declare(
@@ -17,6 +25,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(spdlog)
 message(STATUS "spdlog fetched successfully")
 
+if(NOT EMSCRIPTEN)
 # Fetch GLFW
 message(STATUS "Fetching GLFW...")
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL " " FORCE)
@@ -33,6 +42,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(glfw)
 message(STATUS "GLFW fetched successfully")
 find_package(OpenGL REQUIRED)
+endif()  # NOT EMSCRIPTEN
 
 # Fetch nlohmann/json
 message(STATUS "Fetching nlohmann/json...")
@@ -70,6 +80,7 @@ message(STATUS "cqueue fetched successfully")
 add_library(cqueue INTERFACE)
 target_include_directories(cqueue INTERFACE ${cqueue_SOURCE_DIR})
 
+if(NOT EMSCRIPTEN)
 # Fetch uvw
 message(STATUS "Fetching uvw...")
 FetchContent_Declare(
@@ -128,6 +139,7 @@ if(OP1_MIMALLOC)
     FetchContent_MakeAvailable(mimalloc)
     message(STATUS "mimalloc fetched successfully")
 endif()
+endif()  # NOT EMSCRIPTEN: uvw, miniaudio, mimalloc
 
 find_package(Threads REQUIRED)
 
@@ -168,6 +180,11 @@ target_link_libraries(emulator PRIVATE bfin-core spdlog::spdlog)
 if(ENABLE_PROFILING)
     target_compile_definitions(emulator PUBLIC ENABLE_PROFILING)
     target_link_libraries(emulator PRIVATE nlohmann_json::nlohmann_json)
+endif()
+
+if(EMSCRIPTEN)
+    add_subdirectory(web)
+    return()
 endif()
 
 add_executable(ldrdump tools/ldrdump.cpp)
