@@ -175,10 +175,14 @@ jobs:
         if: steps.wasm-tools.outputs.cache-hit != 'true'
         run: ext/bcore/tools/wasm/setup.sh
 
+      # With ccache's objects go bcore's copy-and-patch stencils of the last
+      # build (ext/bcore/cmake/StencilCache.cmake), minutes to make here.
       - name: Restore ccache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ccache
+          path: |
+            ~/.cache/ccache
+            ~/.cache/bcore-stencils
           key: ccache-wasm-${{ github.sha }}
           restore-keys: ccache-wasm-
 
@@ -207,7 +211,7 @@ jobs:
           emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DLLVM_DIR=$HOME/.cache/bcore-wasm/llvm-23.1.2/lib/cmake/llvm \
-            -DCMAKE_CROSSCOMPILING_EMULATOR=$node "${deps[@]}"
+            -DCMAKE_CROSSCOMPILING_EMULATOR=$node -DBCORE_STENCIL_CACHE_DIR=$HOME/.cache/bcore-stencils "${deps[@]}"
 
       - name: Build
         env:

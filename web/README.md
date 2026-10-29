@@ -10,7 +10,12 @@ except for `BlackFinCpu::Pace()`, which instead of sleeping tells the host how
 long to wait (`PacedUntilNs`).
 
 `src/op1_web.cpp` sets the emulator up as `gui/main.cpp` does, less what needs
-threads (USB/IP, the promotion worker; there is no copy-and-patch tier either).
+threads (USB/IP, the promotion worker). Blocks are made of bcore's
+copy-and-patch stencils, WebAssembly's own (`ext/bcore/tools/wasm/README.md`):
+a boot to the main screen took 11 s in Node, against 44 to 49 s when LLVM
+compiled every block in the module, and 21 s in Chrome 133 against 67 s. The
+stencils are 43 MiB of data in memory (`-sINITIAL_MEMORY=128MB`), 0.9 MiB more
+of the brotli-compressed module.
 Its files are whatever the host mounted: the NAND image at the path it gives
 `op1_start()`, `otp.bin` and `bootrom.bin` in the working directory. The
 desktop build has the BF526's boot ROM compiled in (`ext/bfin_sim`'s

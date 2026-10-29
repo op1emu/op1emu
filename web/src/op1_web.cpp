@@ -35,11 +35,12 @@ uint64_t WallNs() {
 constexpr u32 kLdrReturn = 0x8000000;
 // How often the sensors are fed, as gui/main.cpp's host loop does.
 constexpr uint64_t kSensorNs = 16000000;
-// Blocks stay at tier 0. With no worker thread a promotion compiles on the
-// one thread, between two blocks: over a boot and the synth phase (Node,
-// web/README.md) the default threshold stopped the guest for up to 225 ms
-// at a time and took 57 s to 10 s of guest time, tier 0 alone at most 19 ms
-// and 48 s, and played the synth as fast within 30%.
+// Blocks stay at tier 0, made of bcore's stencils (copy-and-patch). With no
+// worker thread a promotion compiles on the one thread, between two blocks:
+// over a boot and the synth phase (Node, web/README.md) the default
+// threshold stopped the guest for up to 225 ms at a time and took 57 s to
+// 10 s of guest time, LLVM's tier 0 alone at most 19 ms and 48 s, and
+// played the synth as fast within 30%.
 constexpr uint32_t kTierThreshold = UINT32_MAX;
 
 // op1_start's flags.
@@ -130,8 +131,9 @@ EMSCRIPTEN_KEEPALIVE int op1_start(const char* nandPath, const char* ldrPath, in
         BlackFinCpu& cpu = s->cpu;
         s->ldrMode = ldrPath && *ldrPath;
         if (s->ldrMode && !s->ldr.loadFile(ldrPath)) throw std::runtime_error(std::string("cannot load ") + ldrPath);
-        // As gui/main.cpp, less what needs threads: no promotion worker,
-        // no copy-and-patch (bcore has neither here), no USB/IP.
+        // As gui/main.cpp, less what needs threads: no promotion worker
+        // (bcore has none here), no USB/IP. BlackFinCpu turns bcore's
+        // copy-and-patch tier 0 on.
         cpu.SetChaining(!(flags & kNoChain) && !s->ldrMode);
         cpu.SetTiering(kTierThreshold);
         if (rtcEpoch > 0)
