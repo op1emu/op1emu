@@ -19,7 +19,7 @@ jobs:
   python:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -31,7 +31,7 @@ jobs:
     # guest time converts to it (TimeSource::SystemNow, DueNs).
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y clang-15 libc++-15-dev libc++abi-15-dev
       - name: TimeSource test with libc++
         run: |
@@ -53,7 +53,7 @@ jobs:
           - {os: ubuntu-22.04, profiling: "ON"}
           - {os: macos-15, profiling: "OFF"}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -151,7 +151,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
