@@ -240,7 +240,7 @@ jobs:
 
       - name: Upload the site
         if: github.event_name == 'push'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: web/dist
 
