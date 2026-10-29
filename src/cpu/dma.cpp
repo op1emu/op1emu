@@ -200,7 +200,7 @@ void DMAChannel::ProcessDescriptor()
     const u32 descriptorEnd = nextDescPtr + 2u * descriptorSize;
     if (descriptorSize) {
         u32 offset = 0;
-        u16 flows[9];
+        u16 flows[9] = {};  // what unmapped memory reads as (a link the guest overwrote)
         if (next == DMANextOperation::DescriptorArray) {
             offset = 0x04;
             dma.GetEmulator().MemoryRead(currDescPtr, flows + offset, descriptorSize * sizeof(u16));

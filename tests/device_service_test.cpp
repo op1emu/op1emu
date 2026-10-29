@@ -592,7 +592,9 @@ static void MdmaSettlesLikeEveryCycle(uint32_t seed) {
                     "settling MDMA: S_IRQ_STATUS differs, " + where(step));
             if (rng() % 3 == 0) {
                 static constexpr u32 kCurrent[] = {0x24, 0x30, 0x38};
-                const u32 reg = (rng() % 2 ? d : s) + kCurrent[rng() % 3];
+                // In this order on every compiler (the operands of + are not).
+                const u32 channel = rng() % 2 ? d : s;
+                const u32 reg = channel + kCurrent[rng() % 3];
                 Require(every.dma.Read32(reg) == settled.dma.Read32(reg),
                         "settling MDMA: current registers differ, " + where(step));
                 ++reads;
