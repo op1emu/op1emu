@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="220" height="244" viewBox="0 0 220 244">
+  <g fill="#f1f1f4" font-family="Arial,DejaVu Sans,sans-serif" font-size="14">
+    <text x="14" y="24" font-size="13" font-weight="bold" fill="#b7bac4">Theme</text>
+    <text x="52" y="58">Slate</text>
+    <text x="52" y="92">Silver</text>
+    <text x="52" y="126">Yellow</text>
+    <text x="52" y="160">Green</text>
+    <text x="52" y="194">Purple</text>
+    <text x="52" y="228">Orange</text>
+  </g>
+</svg>

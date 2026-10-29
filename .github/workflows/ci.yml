@@ -49,9 +49,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-22.04, profiling: "OFF"}
-          - {os: ubuntu-22.04, profiling: "ON"}
-          - {os: macos-15, profiling: "OFF"}
+          - {os: ubuntu-22.04, profiling: "OFF", svg: "ON"}
+          - {os: ubuntu-22.04, profiling: "ON", svg: "OFF"}
+          - {os: macos-15, profiling: "OFF", svg: "ON"}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,7 +63,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm-15 llvm-15-dev cmake ninja-build \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
-            libgl1-mesa-dev ccache
+            libgl1-mesa-dev ccache xvfb
           echo "LLVM_DIR=/usr/lib/llvm-15/lib/cmake/llvm" >> "$GITHUB_ENV"
 
       - name: Install dependencies (macOS)
@@ -71,6 +71,22 @@ jobs:
         run: |
           brew install llvm@15 ninja ccache
           echo "LLVM_DIR=$(brew --prefix llvm@15)/lib/cmake/llvm" >> "$GITHUB_ENV"
+
+      - name: Install pinned Rust (SVG builds only)
+        if: matrix.svg == 'ON'
+        run: |
+          rustup toolchain install 1.91.1 --profile minimal
+          rustup default 1.91.1
+
+      - name: Restore Cargo cache
+        if: matrix.svg == 'ON'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            build/resvg-target
+          key: cargo-resvg-0.49.0-rust-1.91.1-${{ matrix.os }}-${{ hashFiles('cmake/Resvg.cmake') }}
 
       # With ccache's objects go the stencils of the last bcore-stencilgen
       # (ext/bcore/cmake/StencilCache.cmake): the same generator relinked
@@ -92,7 +108,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/op1-deps
-          key: deps-${{ hashFiles('CMakeLists.txt') }}
+          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/Resvg.cmake') }}
 
       - name: Configure
         env:
@@ -112,6 +128,7 @@ jobs:
             -DLLVM_DIR="$LLVM_DIR" \
             -DOP1_BUILD_HEADLESS_TESTS=ON \
             -DOP1_BUILD_DMA_TESTS=ON \
+            -DOP1_BUILD_UI_TESTS=ON -DOP1_ENABLE_SVG=${{ matrix.svg }} \
             -DBCORE_STENCIL_CACHE_DIR=$HOME/.cache/bcore-stencils \
             -DENABLE_PROFILING=${{ matrix.profiling }} \
             "${deps[@]}"
@@ -143,3 +160,28 @@ jobs:
 
       - name: CLI sanity
         run: ./build/op1emu --help
+
+      - name: OpenGL shell regression (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a -s "-screen 0 2560x1600x24" ./build/op1-ui-preview --test
+          # Without a desktop compositor this verifies the explicit framed fallback.
+          xvfb-run -a -s "-screen 0 2560x1600x24" ./build/op1-ui-preview --test-floating
+
+      - name: OpenGL shell regression (macOS, when context available)
+        if: runner.os == 'macOS'
+        run: |
+          set +e
+          ./build/op1-ui-preview --probe-context
+          context_status=$?
+          set -e
+          if [ "$context_status" -eq 77 ]; then
+            echo "::notice::Hosted macOS runner cannot create an OpenGL context. GL assertions run on Linux CI and were verified on local macOS."
+            echo "### macOS GL runtime: unavailable" >> "$GITHUB_STEP_SUMMARY"
+            echo "Context probe returned 77; pixel tests skipped. SVG raster/input CTests and all existing tests remain mandatory. Local macOS GL verification is documented in the PR." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$context_status" -ne 0 ]; then
+            exit "$context_status"
+          else
+            ./build/op1-ui-preview --test
+            ./build/op1-ui-preview --test-floating
+          fi

@@ -1,0 +1,6 @@
+{
+  "background": "paint.svg",
+  "scale": 8,
+  "display": {"quad": [[30,0],[40,0],[40,10],[30,10]]},
+  "buttons": {}
+}

@@ -1,0 +1,10 @@
+{
+    "version": 1,
+    "name": "Purple",
+    "colors": {
+        "body": "#6F3B99",
+        "panel": "#6F3B99",
+        "keycap": "#6F3B99",
+        "encoder-ring": "#6F3B99"
+    }
+}

@@ -1,0 +1,10 @@
+{
+    "version": 1,
+    "name": "Slate",
+    "colors": {
+        "body": "#747B7B",
+        "panel": "#747B7B",
+        "keycap": "#747B7B",
+        "encoder-ring": "#747B7B"
+    }
+}

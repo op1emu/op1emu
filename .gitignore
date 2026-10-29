@@ -43,3 +43,7 @@
 # op1prof results and Python caches
 op1prof-*/
 __pycache__/
+
+# Local CMake builds and visual captures
+build/
+build-*/

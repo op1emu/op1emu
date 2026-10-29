@@ -1,0 +1,10 @@
+{
+    "version": 1,
+    "name": "Orange",
+    "colors": {
+        "body": "#9A6429",
+        "panel": "#9A6429",
+        "keycap": "#9A6429",
+        "encoder-ring": "#9A6429"
+    }
+}

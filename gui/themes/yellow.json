@@ -1,0 +1,10 @@
+{
+    "version": 1,
+    "name": "Yellow",
+    "colors": {
+        "body": "#ADB575",
+        "panel": "#ADB575",
+        "keycap": "#ADB575",
+        "encoder-ring": "#ADB575"
+    }
+}

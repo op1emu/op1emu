@@ -1,0 +1,10 @@
+{
+    "version": 1,
+    "name": "Green",
+    "colors": {
+        "body": "#699757",
+        "panel": "#699757",
+        "keycap": "#699757",
+        "encoder-ring": "#699757"
+    }
+}

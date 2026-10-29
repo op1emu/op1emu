@@ -1,0 +1,10 @@
+{
+    "version": 1,
+    "name": "Silver",
+    "colors": {
+        "body": "#A7A7A7",
+        "panel": "#A7A7A7",
+        "keycap": "#A7A7A7",
+        "encoder-ring": "#A7A7A7"
+    }
+}

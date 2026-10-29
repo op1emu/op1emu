@@ -197,3 +197,123 @@ attach is refused as busy until it detaches, and a list does not disturb it.
 ## Acknowledgements
 - [bfin_sim](https://github.com/op1emu/bfin_sim) - Blackfin simulator used for CPU emulation, from gdb/sim.
 - [op1kenobi](https://github.com/alexmandelshtam/op1kenobi) - OP-1 screenshot assets used for the GUI background.
+
+## SVG front panel (optional)
+
+The default remains `gui/ui.png` / `gui/ui.json`. Enable the vector renderer with
+Rust 1.91.1 (CI's pinned version; upstream requires at least 1.85) and Cargo:
+
+```bash
+rustup toolchain install 1.91.1 --profile minimal
+rustup default 1.91.1
+cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release \
+  -DOP1_ENABLE_SVG=ON -DOP1_BUILD_UI_TESTS=ON \
+  -DOP1_BUILD_HEADLESS_TESTS=ON -DOP1_BUILD_DMA_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+./build/op1emu nand.bin --ui=svg
+```
+
+`--ui=png` selects the original panel. `--ui-config PATH` loads another layout;
+background paths are relative to that JSON file. Missing/malformed SVGs,
+invalid layouts, and SVG-disabled builds report the problem and use the PNG
+panel with its own matching control map. Run from the repository root so the
+bundled fallback can be found. `--headless` ignores the graphical selection.
+`-DOP1_ENABLE_SVG=OFF` (default) requires no Rust or resvg download.
+
+CMake fetches the exact resvg 0.49.0 commit and builds **resvg-capi** statically
+with `cargo build --release --locked`; artifacts stay under `build/resvg-target`.
+Native Linux x86_64 and macOS arm64 builds are supported; universal/cross builds
+are rejected explicitly. System fonts are loaded for custom SVG text. The
+bundled artwork has outlined labels and no external image dependencies.
+
+The supplied `op-skew.svg` is stored byte for byte as `gui/op1.svg`
+(redistribution authorized by its provider). It supersedes the earlier SVG
+exports, corrects the speech-bubble and metronome symbols, and aligns the volume
+panel. Its screen is
+already blank. The live display still comes
+from the firmware's portrait RGB565 PPI/DMA framebuffer, rotated clockwise and
+mapped onto the configured screen quad. Without a frame, the screen is black.
+No firmware, NAND or OTP data is included.
+
+The SVG layout uses bilinear smoothing for the low-resolution firmware screen,
+reducing hard pixel steps when enlarged on Retina displays. Set `display.filter`
+to `"nearest"` in the UI JSON for sharp source pixels, or `"linear"` for smoothing.
+Omitting it preserves nearest-neighbor scaling, including the original PNG layout.
+Smoothing interpolates existing pixels; it does not add detail to firmware graphics.
+
+Artwork is rasterized into premultiplied RGBA at physical framebuffer resolution,
+with a 120 ms quiet period after size changes. Window and mouse coordinates
+remain logical pixels, with aspect-preserving letterboxing. Raster dimensions
+are capped at 8192 per axis / 16 megapixels; very large windows use the cached
+texture at that bounded resolution. Control regions can be `[x,y,width,height]`
+rectangles or ordered convex point polygons. `display.quad` is TL, TR, BR, BL;
+coordinates refer to the SVG's intrinsic pixel viewport **after** viewBox mapping.
+GPIO entries retain the original panel wiring. Mouse hit testing uses GLFW cursor
+events, including native window-sharing input whose global cursor query may lag.
+
+Firmware-free visual tools, built by `OP1_BUILD_UI_TESTS`:
+
+```bash
+./build/op1-svg-render gui/op1.svg 1204 434 panel-1x.png
+./build/op1-svg-render gui/op1.svg 2408 868 panel-2x.png
+./build/op1-ui-preview --test
+./build/op1-ui-preview gui/ui-svg.json shell.png
+./build/op1-ui-preview gui/ui.json
+```
+
+The shell preview uses a four-color **test framebuffer**, opens no firmware or
+audio, and can also run interactively. The OpenGL test needs a desktop session
+(or `xvfb-run -a` on Linux); rasterizer/input CTests need no window.
+Hosted macOS CI probes context availability and explicitly reports a skipped GL
+runtime check when its VM cannot provide one; Linux CI runs the GL assertions
+under Xvfb. The macOS GL runtime was also verified on the local arm64 desktop.
+See the [visual comparison and verification record](docs/visual-comparisons/resvg-frontend/README.md).
+
+The palette experiment adds six optional SVG themes: `slate`, `silver`, `yellow`,
+`green`, `purple` and `orange`. Select one at launch, including in floating mode:
+
+```bash
+./build/op1emu nand.bin --ui=svg --floating-ui --theme=purple
+```
+
+`--theme PATH.json` loads custom colors. See [theme files and comparison generation](gui/themes/README.md).
+**Click the dropdown beside the SVG body's upper-right corner to switch themes.**
+The menu opens beneath the button, marks the current preset and shows color
+swatches. Click a theme, or use the arrow keys and Enter. Tab focuses the button;
+Enter or Space opens it. Escape, clicking outside, clicking the button again, or
+switching apps dismisses the menu. The live display and audio continue while it is open;
+theme rendering runs in the background. The selection lasts for this session.
+
+Try the optional body-only SVG window:
+
+```bash
+./build/op1emu path/to/nand.bin --ui=svg --floating-ui
+```
+
+The SVG's transparent corners show the desktop, with no title bar. Drag an
+unused part of the casing to move it; buttons, encoders and volume keep their
+normal controls. **Escape closes an open theme menu, otherwise it restores the title bar.** Cmd/Ctrl with `+` or `-`
+resizes, with `M` minimizes and with `W` closes. The window preserves the panel's
+aspect ratio and is not made always-on-top. PNG fallback or unavailable desktop
+transparency restores a normal window. This experiment has been verified locally
+on macOS; compositor and window-positioning support varies on Linux/Wayland.
+macOS may still display its own screen-sharing indicator during window sharing.
+The SVG window includes a small transparent margin for the dropdown button;
+the instrument body and button scale together, with the screen and controls
+using the same artwork coordinates. The original PNG panel has no added margin.
+
+Firmware-free checks and transparent capture:
+
+```bash
+./build/op1-ui-preview --test-floating
+./build/op1-ui-preview --floating gui/ui-svg.json floating-panel.png
+```
+
+Omitting `--floating-ui` runs the normal window. The pre-floating version is
+commit `e215f1f`; the tested prototype is retained on `experiment/floating-svg-ui`.
+Local macOS validation passed all 22 CTests, the normal OpenGL harness, and
+the floating harness's transparency, all-button, encoder, volume, native-drag,
+resize, close and title-bar recovery checks. The PNG-only build also passed
+its normal rendering and floating-request fallback checks. A local firmware-246
+session booted to the live Tape screen in the borderless window.

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32">
+<defs>
+<filter id="blur" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="2"/></filter>
+<filter id="noise"><feTurbulence type="fractalNoise" baseFrequency=".15" numOctaves="2" seed="5" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="8" xChannelSelector="R" yChannelSelector="G"/></filter>
+</defs>
+<rect x="12" y="10" width="8" height="12" fill="#ff8000" filter="url(#blur)"/>
+<circle cx="48" cy="16" r="9" fill="blue" filter="url(#noise)"/>
+</svg>
