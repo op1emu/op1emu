@@ -77,6 +77,8 @@ npm ci
 npm run dev        # http://localhost:5173/, the module from build-wasm as it is
 npm run build      # dist/, as GitHub Pages serves it (the brotli takes a minute)
 npm run preview    # dist/ at http://localhost:4173/
+node tools/smoke-browser.mjs dist node_modules/playwright-core /usr/bin/google-chrome
+node tools/input-browser.mjs dist node_modules/playwright-core /usr/bin/google-chrome
 ```
 
 ## Node

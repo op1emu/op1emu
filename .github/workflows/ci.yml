@@ -143,3 +143,119 @@ jobs:
 
       - name: CLI sanity
         run: ./build/op1emu --help
+
+  # The browser's build (web/README.md), with bcore's WebAssembly tools
+  # (ext/bcore/tools/wasm): the module, an LDR to its end under Node and in
+  # Chrome, and the site, which a push to main publishes (pages).
+  wasm:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Node 24: bcore's build runs its checks with it (V8 13.3 shares a
+      # table between the modules that import it). The page's packages from
+      # web/package-lock.json.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Restore the WebAssembly tools
+        id: wasm-tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bcore-wasm
+          key: wasm-tools-${{ hashFiles('ext/bcore/tools/wasm/setup.sh') }}
+
+      - name: Fetch the WebAssembly tools
+        if: steps.wasm-tools.outputs.cache-hit != 'true'
+        run: ext/bcore/tools/wasm/setup.sh
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-wasm-${{ github.sha }}
+          restore-keys: ccache-wasm-
+
+      # build-test's: only restored here, as this build fetches fewer of
+      # them and must not save a partial set under its key.
+      - name: Restore dependency sources
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/op1-deps
+          key: deps-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        env:
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_MAXSIZE: 400M
+        run: |
+          sudo apt-get install -y ccache
+          node=$(command -v node)  # setup-node's, before emsdk's goes on PATH
+          deps=()
+          for d in ~/.cache/op1-deps/*/; do
+            [ -d "$d" ] || continue
+            name=$(basename "$d")
+            deps+=("-DFETCHCONTENT_SOURCE_DIR_${name^^}=${d%/}")
+          done
+          source ~/.cache/bcore-wasm/emsdk-4.0.9/emsdk_env.sh
+          emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DLLVM_DIR=$HOME/.cache/bcore-wasm/llvm-23.1.2/lib/cmake/llvm \
+            -DCMAKE_CROSSCOMPILING_EMULATOR=$node "${deps[@]}"
+
+      - name: Build
+        env:
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_MAXSIZE: 400M
+        run: |
+          source ~/.cache/bcore-wasm/emsdk-4.0.9/emsdk_env.sh
+          cmake --build build-wasm --target op1emu-web -j$(getconf _NPROCESSORS_ONLN)
+          ccache --show-stats
+
+      - name: An LDR under Node
+        run: |
+          python3 -c "import struct, sys; sys.stdout.buffer.write(struct.pack('<IIII', 0xC000, 0xFFA00000, 2, 0) + b'\x10\x00')" > tiny.ldr
+          node web/tools/run-node.mjs ldr build-wasm/web/op1emu-web.mjs --ldr tiny.ldr
+
+      - name: Build the site
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      # The runner's Chrome, driven by Playwright (a devDependency).
+      - name: The site in Chrome
+        working-directory: web
+        run: node tools/smoke-browser.mjs dist node_modules/playwright-core
+
+      - name: The page's input in Chrome
+        working-directory: web
+        run: node tools/input-browser.mjs dist node_modules/playwright-core
+
+      - name: Upload the site
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  # The site at https://op1emu.github.io/op1emu/ (Settings, Pages: the source
+  # is GitHub Actions).
+  pages:
+    if: github.event_name == 'push'
+    needs: wasm
+    runs-on: ubuntu-22.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

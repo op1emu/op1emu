@@ -282,7 +282,12 @@ worker.onmessage = ({ data }) => {
       setTimeout(() => URL.revokeObjectURL(link.href), 60000);
       break;
     }
+    case "selftest":
+      globalThis.op1Selftest = data.result;
+      setStatus(`Self-test: ${JSON.stringify(data.result)}`);
+      break;
     case "error":
+      if (params.has("selftest")) globalThis.op1Selftest = { error: data.text };
       setStatus(data.text, true);
       break;
     case "stopped":
@@ -303,4 +308,6 @@ worker.onmessage = ({ data }) => {
   bindInput();
   bindFiles();
   worker.postMessage({ type: "files" });
+  // The module and the boot ROM with no firmware (tools/smoke-browser.mjs).
+  if (params.has("selftest")) worker.postMessage({ type: "selftest", build, site: SITE });
 })();

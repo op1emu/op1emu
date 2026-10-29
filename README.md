@@ -20,6 +20,13 @@ cmake --build build
 ./build/op1emu path/to/nandflash.img path/to/te-boot.ldr
 ```
 
+## In the browser
+
+https://op1emu.github.io/op1emu/ runs the same emulator in Chrome or Edge
+(133 or later), compiled to WebAssembly, on your OP-1's NAND image and
+`otp.bin`, which stay in the browser. A boot takes about a minute. See
+[web/README.md](web/README.md) for how it works and how to build it.
+
 ## Headless operation
 
 Run from the repository root with the matching `otp.bin`:
