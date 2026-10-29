@@ -76,7 +76,7 @@ jobs:
       # (ext/bcore/cmake/StencilCache.cmake): the same generator relinked
       # from them copies its stencils instead of building them for minutes.
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/ccache
@@ -89,7 +89,7 @@ jobs:
       # minute of cloning, and needs no network.
       - name: Restore dependency sources
         id: deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/op1-deps
           key: deps-${{ hashFiles('CMakeLists.txt') }}
@@ -166,7 +166,7 @@ jobs:
 
       - name: Restore the WebAssembly tools
         id: wasm-tools
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/bcore-wasm
           key: wasm-tools-${{ hashFiles('ext/bcore/tools/wasm/setup.sh') }}
@@ -176,7 +176,7 @@ jobs:
         run: ext/bcore/tools/wasm/setup.sh
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-wasm-${{ github.sha }}
@@ -185,7 +185,7 @@ jobs:
       # build-test's: only restored here, as this build fetches fewer of
       # them and must not save a partial set under its key.
       - name: Restore dependency sources
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/op1-deps
           key: deps-${{ hashFiles('CMakeLists.txt') }}
