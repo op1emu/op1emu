@@ -42,6 +42,14 @@ constexpr uint64_t kSensorNs = 16000000;
 // 10 s of guest time, LLVM's tier 0 alone at most 19 ms and 48 s, and
 // played the synth as fast within 30%.
 constexpr uint32_t kTierThreshold = UINT32_MAX;
+// A block's first starts make it no module of its own (bcore's cold tier,
+// BlackFinCpu::SetColdTier); those that start more often are compiled 32
+// to a module, or fewer after 64 Ki packets. Over a boot to the main
+// screen in Node: 21,400 modules to 5,900, 1.2 GB of memory to 0.7, 9.0 s
+// to 7.9; 2 to 10 starts did as well, 30 and 100 less so (most blocks that
+// start often do so at once, and a cold start is slower).
+constexpr uint32_t kColdThreshold = 10, kColdBatch = 32;
+constexpr uint64_t kColdAge = uint64_t(1) << 16;
 
 // op1_start's flags.
 enum StartFlags : int {
@@ -136,6 +144,7 @@ EMSCRIPTEN_KEEPALIVE int op1_start(const char* nandPath, const char* ldrPath, in
         // copy-and-patch tier 0 on.
         cpu.SetChaining(!(flags & kNoChain) && !s->ldrMode);
         cpu.SetTiering(kTierThreshold);
+        cpu.SetColdTier(kColdThreshold, kColdBatch, kColdAge);
         if (rtcEpoch > 0)
             cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(int64_t(rtcEpoch))));
         cpu.AttachDisplay(s->display);
@@ -199,6 +208,11 @@ EMSCRIPTEN_KEEPALIVE void op1_audio_report(double consumed, int playing) {
 // --tier-threshold and --tier-size-ref), for blocks compiled from now on.
 EMSCRIPTEN_KEEPALIVE void op1_tiering(double threshold, double sizeRef) {
     if (session) session->cpu.SetTiering(uint32_t(threshold), uint32_t(sizeRef));
+}
+
+// The cold tier (BlackFinCpu::SetColdTier), for blocks compiled from now on.
+EMSCRIPTEN_KEEPALIVE int op1_cold(double threshold, double batch, double age) {
+    return session && session->cpu.SetColdTier(uint32_t(threshold), uint32_t(batch), uint64_t(age)) ? 0 : -1;
 }
 
 // Whether the LDR ran to its end (op1_step returned -1 for that).
