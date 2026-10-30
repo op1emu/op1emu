@@ -191,6 +191,9 @@ async function instantiate(build, site, compiled) {
   return createOp1({
     print: (s) => console.log(s),
     printErr: (s) => console.warn(s),
+    // The .wasm by the name the site gives it, for the glue to find the
+    // deferred module (LLVM's) beside it: op1emu-web.<hash>.deferred.wasm.
+    locateFile: (file) => new URL(file === "op1emu-web.wasm" ? build.wasm.file : file, site).href,
     instantiateWasm(imports, done) {
       WebAssembly.instantiate(module, imports).then((instance) => done(instance, module));
       return {};
