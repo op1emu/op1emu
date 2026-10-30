@@ -1,8 +1,8 @@
 # op1emu in the browser
 
 `op1emu-web` is the emulator built for WebAssembly: one module that a Web
-Worker or Node imports. bcore compiles the guest's blocks with LLVM inside it,
-to WebAssembly modules that it loads as it goes (`ext/bcore/tools/wasm/README.md`).
+Worker or Node imports. bcore compiles the guest's blocks to WebAssembly
+modules that it loads as it goes (`ext/bcore/tools/wasm/README.md`).
 bcore's WebAssembly build has no threads, so neither has this one: the host
 calls `op1_step()` a slice at a time, and between the slices it takes keys,
 draws frames and plays audio. Native code is the same as the desktop build's
@@ -14,8 +14,15 @@ threads (USB/IP, the promotion worker). Blocks are made of bcore's
 copy-and-patch stencils, WebAssembly's own (`ext/bcore/tools/wasm/README.md`):
 a boot to the main screen took 11 s in Node, against 44 to 49 s when LLVM
 compiled every block in the module, and 21 s in Chrome 133 against 67 s. The
-stencils are 43 MiB of data in memory (`-sINITIAL_MEMORY=128MB`), 0.9 MiB more
-of the brotli-compressed module.
+stencils are 43 MiB of data in memory (`-sINITIAL_MEMORY=128MB`). A block's
+first 10 starts make it no module of its own (bcore's cold tier), and those
+that start more often are compiled 32 to a module (`kColdThreshold`,
+`kColdBatch`): 21,400 modules of a boot to 5,900, 1.2 GB of memory to 0.7, the
+boot in Node 9.9 s to 8.1. LLVM compiles a block only where copy-and-patch
+takes none, which no block of a boot is: its code is in a module of its own,
+`op1emu-web.deferred.wasm`, which the glue loads the first time it is called
+(Emscripten's `SPLIT_MODULE`; `tools/split-module.mjs` moves every function
+of LLVM's but those an LDR of one RTS runs to start, after the link).
 Its files are whatever the host mounted: the NAND image at the path it gives
 `op1_start()`, `otp.bin` and `bootrom.bin` in the working directory. The
 desktop build has the BF526's boot ROM compiled in (`ext/bfin_sim`'s
@@ -44,7 +51,13 @@ desktop build has the BF526's boot ROM compiled in (`ext/bfin_sim`'s
 - The boot ROM: on the first start the Worker fetches `bf526-0.2.h` from
   GitHub (op1emu/bfin_sim, at the submodule's commit, which the build
   names with the ROM's sha256), checks it, and keeps the ROM in OPFS as
-  `bootrom.bin` (`bootrom.js`).
+  `bootrom.bin` (`bootrom.js`), while the emulator downloads.
+- `public/sw.js`: a Service Worker that serves the `.wasm` from Cache
+  Storage once it has it, so that Chrome keeps the code it compiled of the
+  module (V8's code cache keeps nothing of a module compiled from a stream
+  the page made, as the decompressed `.wasm.br` is). The first start
+  downloads the `.wasm.br`, and once the emulator runs the page has the
+  Service Worker fetch the `.wasm`; later starts compile that.
 - No SharedArrayBuffer, so no COOP/COEP headers are needed: GitHub Pages
   serves it as it is.
 
@@ -53,20 +66,21 @@ The site is built with Vite (`vite.config.js`), with npm packages from
 large Emscripten module have it (ffmpeg.wasm, Pyodide, Ruffle). Vite bundles
 the page, the Worker and the worklet, with hashed names, and lists the npm
 packages' licenses in `licenses.md`. The emulator's module stays out of the
-bundle (`tools/emulator-assets.js`): its glue and `.wasm` are copied as they
-are, named by their content, and the Worker imports the glue by URL. GitHub
-Pages compresses with gzip only (the 35 MiB `.wasm` goes as about 11 MiB), so
-the `.wasm` is also brotli-compressed, 7.2 MiB, which the Worker decompresses as
-it streams in: with `DecompressionStream("brotli")` where the browser has it
-(not Chrome yet), else with brotli-dec-wasm, and with the `.wasm` only if that
-fails. `public/THIRD_PARTY.md` has what Vite does not list.
+bundle (`tools/emulator-assets.js`): its glue, `.wasm` and `.deferred.wasm`
+are copied as they are, named by their content, and the Worker imports the
+glue by URL. GitHub Pages compresses with gzip only, so the `.wasm` (43 MiB,
+39 of them the stencils) is also brotli-compressed, 2.0 MiB, which the Worker
+decompresses as it streams in: with `DecompressionStream("brotli")` where the
+browser has it (not Chrome yet), else with brotli-dec-wasm, and with the
+`.wasm` only if that fails. LLVM's `.deferred.wasm` (28 MiB, 6.0 compressed)
+goes as gzip, if ever. `public/THIRD_PARTY.md` has what Vite does not list.
 
 Browsers: Chrome or Edge 133 or later. The table must be shared between the
 modules that import it (V8 13.3); before that, memory grows as the square of
 the blocks. Firefox is not supported yet. SpiderMonkey gives each
 WebAssembly module's code at least 128 KiB of a 2 GiB executable pool, about
-16,000 modules a process (measured, whatever the module's size), and a boot
-makes about 20,000 of them, one per block. Safari is untried.
+16,000 modules a process (measured, whatever the module's size); a boot now
+makes about 6,000, but it is untried. Safari is untried.
 
 ## SVG panel and themes
 
@@ -123,7 +137,9 @@ emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release \
 cmake --build build-wasm --target op1emu-web
 ```
 
-This makes `build-wasm/web/op1emu-web.mjs` and `op1emu-web.wasm`. Then the site,
+This makes `build-wasm/web/op1emu-web.mjs`, `op1emu-web.wasm` and
+`op1emu-web.deferred.wasm` (and `op1emu-web.wasm.orig`, the link's, with
+names). Then the site,
 from `web/` (`OP1_WASM_BUILD` names another build directory):
 
 ```sh
@@ -152,6 +168,7 @@ node web/tools/run-node.mjs gate build-wasm/web/op1emu-web.mjs \
 node web/tools/run-node.mjs boot build-wasm/web/op1emu-web.mjs \
   --nand nand.bin --otp otp.bin --cycles 4000000000 --slice 5 \
   --script tools/op1prof/scripts/synth-keys.txt
+# --cold THRESHOLD,BATCH,AGE: another cold tier (0,1,0 for none).
 # An LDR to its end, with no NAND or OTP (as tests/ldr_smoke.py).
 node web/tools/run-node.mjs ldr build-wasm/web/op1emu-web.mjs --ldr tiny.ldr
 ```

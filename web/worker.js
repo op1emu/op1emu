@@ -5,13 +5,15 @@
 //
 // From the page: {type: "files"}, {type: "import", name, file},
 // {type: "export", name}, {type: "delete"}, {type: "start", build, site,
-// snapshot, audioMs, audioPort}, {type: "selftest", build, site}, {type:
-// "key", bank, pin, pressed}, {type: "volume", value}, {type: "frame-done"}.
+// snapshot, audioMs, audioPort, cached}, {type: "selftest", build, site, cached}, {type:
+// "key", bank, pin, pressed}, {type: "volume", value}, {type: "frame-done"}
+// (cached: the page's Service Worker serves the .wasm from its cache).
 // build is virtual:op1emu (tools/emulator-assets.js), whose files are at the
 // URL site. To it: {type: "files", files, syncAccess}, {type: "progress",
 // text}, {type: "exported", name, blob}, {type: "frame", width, height,
-// pixels}, {type: "stats", guestS, frames, audio}, {type: "selftest",
-// result}, {type: "error", text}, {type: "stopped"}.
+// pixels}, {type: "stats", guestS, frames, audio}, {type: "running"} (the
+// module is the page's to cache), {type: "selftest", result}, {type:
+// "error", text}, {type: "stopped"}.
 
 import { BOOT_ROM_SIZE, parseBootRom, sha256 } from "./bootrom.js";
 import { opfsFs } from "./opfs-fs.js";
@@ -120,9 +122,13 @@ async function ensureBootRom({ url, sha256: expected }) {
 
 // The module from build's files at site: the .wasm.br, decompressed as it
 // streams in, by DecompressionStream where it has brotli (not Chrome yet),
-// else by brotli-dec-wasm; the .wasm (which GitHub Pages sends gzipped, 11
-// MiB, not 7.2) if that fails, or with `vite`, which serves no .br.
-async function compileModule(build, site) {
+// else by brotli-dec-wasm; the .wasm (which GitHub Pages sends gzipped) if
+// that fails, or with `vite`, which serves no .br. Where the page's Service
+// Worker has the .wasm (cached), the .wasm, from it as it came: Chrome then
+// keeps the code it compiled for the next time, and this time takes what it
+// kept of the last (a module made of a stream of our own it keeps nothing of).
+let moduleSource = null;  // where compileModule took it from: "cache", "br" or "wasm"
+async function compileModule(build, site, cached) {
   const counted = (response, total) => {
     let loaded = 0;
     return response.body.pipeThrough(new TransformStream({
@@ -140,15 +146,29 @@ async function compileModule(build, site) {
   };
   const compile = (stream) =>
     WebAssembly.compileStreaming(new Response(stream, { headers: { "content-type": "application/wasm" } }));
+  if (cached) {
+    try {
+      status("Loading the emulator");
+      const module = await WebAssembly.compileStreaming(fetched(build.wasm.file));
+      moduleSource = "cache";
+      return module;
+    } catch (e) {
+      console.warn("the cached module failed, downloading it:", e);
+    }
+  }
   if (build.wasmBr) {
     try {
       const stream = counted(await fetched(build.wasmBr.file), build.wasmBr.size);
-      return await compile(stream.pipeThrough(await brotliStream()));
+      const module = await compile(stream.pipeThrough(await brotliStream()));
+      moduleSource = "br";
+      return module;
     } catch (e) {
       console.warn("the brotli module failed, fetching the .wasm:", e);
     }
   }
-  return compile(counted(await fetched(build.wasm.file), build.wasm.size));
+  const module = await compile(counted(await fetched(build.wasm.file), build.wasm.size));
+  moduleSource = "wasm";
+  return module;
 }
 
 // A brotli decompressing TransformStream: the browser's, or brotli-dec-wasm's
@@ -176,8 +196,8 @@ async function brotliStream() {
 
 // compileModule begun, while the boot ROM is fetched (ensureBootRom): its
 // failure is instantiate's to report.
-function compileAhead(build, site) {
-  const compiled = compileModule(build, site);
+function compileAhead(build, site, cached = false) {
+  const compiled = compileModule(build, site, cached);
   compiled.catch(() => {});
   return compiled;
 }
@@ -204,9 +224,9 @@ async function instantiate(build, site, compiled) {
 // CI's look at the site in a browser with no firmware
 // (tools/smoke-browser.mjs; the page's ?selftest): the boot ROM fetched and
 // checked, and the module, as start() gets it, running an LDR of one RTS
-// (tests/ldr_smoke.py's) to its end in memory.
-async function selftest({ build, site }) {
-  const compiled = compileAhead(build, site);
+// (tests/ldr_smoke.py's) to its end in memory; where it took the module from.
+async function selftest({ build, site, cached }) {
+  const compiled = compileAhead(build, site, cached);
   await ensureBootRom(build.bootRom);
   const op1 = await instantiate(build, site, compiled);
   const ldr = new Uint8Array(18), view = new DataView(ldr.buffer);
@@ -219,11 +239,11 @@ async function selftest({ build, site }) {
   const started = op1._op1_start(op1.stringToNewUTF8("/missing.nand"), op1.stringToNewUTF8("/prog.ldr"),
                                  DETERMINISTIC | NAND_SNAPSHOT, 0, 0);
   while (started === 0 && op1._op1_step(100) >= 0) {}
-  return { started, finished: Boolean(op1._op1_finished()), packets: op1._op1_packets() };
+  return { started, finished: Boolean(op1._op1_finished()), packets: op1._op1_packets(), module: moduleSource };
 }
 
-async function start({ build, site, snapshot, audioMs, audioPort: port }) {
-  const compiled = compileAhead(build, site);
+async function start({ build, site, snapshot, audioMs, audioPort: port, cached }) {
+  const compiled = compileAhead(build, site, cached);
   await ensureBootRom(build.bootRom);
   const dir = await directory();
   handles = {};
@@ -259,6 +279,7 @@ async function start({ build, site, snapshot, audioMs, audioPort: port }) {
   if (op1._op1_start(path, none, snapshot ? NAND_SNAPSHOT : 0, 0, port ? audioMs : 0) !== 0)
     throw new Error("the emulator did not start (see the console)");
   status("Booting");
+  post({ type: "running" });
   setInterval(() => dataFs.flush(), FLUSH_MS);
   setInterval(() => post({ type: "stats", guestS: op1._op1_guest_ns() / 1e9, frames: op1._op1_frames(), audio }), 500);
   run();
