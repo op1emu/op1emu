@@ -1,11 +1,11 @@
 // The emulator's module in the site (README.md). Vite leaves it out of the
 // bundle, as projects with a large Emscripten module do (ffmpeg.wasm,
 // Pyodide): bundled, its glue's new URL("op1emu-web.wasm") would copy the
-// 35 MiB .wasm the Worker never fetches, and its Node code would be
-// resolved. This plugin puts op1emu-web.mjs and .wasm from the CMake build
-// in the site as they are, named by their content, and the .wasm also
-// brotli-compressed, which GitHub Pages does not do (it sends gzip): the
-// Worker decompresses it. `virtual:op1emu` is their names, for the page to
+// .wasm the Worker never fetches, and its Node code would be resolved.
+// This plugin puts op1emu-web.mjs, .wasm and .deferred.wasm (LLVM's,
+// tools/split-module.mjs) from the CMake build in the site as they are,
+// named by their content, and the .wasm also brotli-compressed, which
+// GitHub Pages does not do (it sends gzip): the Worker decompresses it. `virtual:op1emu` is their names, for the page to
 // hand the Worker, and the boot ROM the site does not carry:
 // ext/bfin_sim's header at the submodule's commit, on GitHub, with the
 // ROM's sha256 (bootrom.js). `vite` serves the files from the build as they
@@ -25,8 +25,12 @@ export function emulatorAssets({ build, bootRomHeader }) {
   const files = () => {
     const js = fs.readFileSync(path.join(build, "web", "op1emu-web.mjs"));
     const wasm = fs.readFileSync(path.join(build, "web", "op1emu-web.wasm"));
-    const hash = crypto.createHash("sha256").update(wasm).update(js).digest("hex").slice(0, 12);
-    return { js, wasm, names: { js: `op1emu-web.${hash}.mjs`, wasm: `op1emu-web.${hash}.wasm` } };
+    const deferred = fs.readFileSync(path.join(build, "web", "op1emu-web.deferred.wasm"));
+    const hash = crypto.createHash("sha256").update(wasm).update(deferred).update(js).digest("hex").slice(0, 12);
+    // The glue finds the deferred module beside the .wasm (its name, less
+    // .wasm, then .deferred.wasm).
+    return { js, wasm, deferred, names: { js: `op1emu-web.${hash}.mjs`, wasm: `op1emu-web.${hash}.wasm`,
+                                          deferred: `op1emu-web.${hash}.deferred.wasm` } };
   };
   let built = null;  // the build's: the files, and the .wasm compressed
 
@@ -67,15 +71,16 @@ export function emulatorAssets({ build, bootRomHeader }) {
       this.emitFile({ type: "asset", fileName: names.js, source: js });
       this.emitFile({ type: "asset", fileName: names.wasm, source: wasm });
       this.emitFile({ type: "asset", fileName: `${names.wasm}.br`, source: br });
+      this.emitFile({ type: "asset", fileName: names.deferred, source: built.deferred });
     },
     configureServer(server) {
       server.middlewares.use((request, response, next) => {
         const name = path.basename(new URL(request.url, "http://host").pathname);
-        const match = /^op1emu-web\.[0-9a-f]{12}\.(mjs|wasm)$/.exec(name);
+        const match = /^op1emu-web\.[0-9a-f]{12}\.(mjs|wasm|deferred\.wasm)$/.exec(name);
         if (!match) return next();
         const read = files();
         response.setHeader("content-type", match[1] === "mjs" ? "text/javascript" : "application/wasm");
-        response.end(match[1] === "mjs" ? read.js : read.wasm);
+        response.end(match[1] === "mjs" ? read.js : match[1] === "wasm" ? read.wasm : read.deferred);
       });
     },
   };

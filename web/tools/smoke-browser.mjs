@@ -3,7 +3,7 @@
 // page starts and its Worker answers, and its self-test (?selftest: the
 // boot ROM fetched from GitHub and checked, and the module, brotli-
 // decompressed as the Worker gets it, running an LDR of one RTS to its end)
-// passes.
+// passes, with no load of LLVM's module (op1emu-web.<hash>.deferred.wasm).
 //
 //   node web/tools/smoke-browser.mjs DIST_DIR PLAYWRIGHT_CORE_DIR [CHROME]
 
@@ -35,6 +35,8 @@ try {
   const result = await page.evaluate(() => globalThis.op1Selftest);
   console.log(`selftest: ${JSON.stringify(result)}`);
   if (result.error || result.started !== 0 || !result.finished) failures.push(`selftest: ${JSON.stringify(result)}`);
+  const deferred = server.requests.filter((p) => p.endsWith(".deferred.wasm"));
+  if (deferred.length) failures.push(`LLVM's module was loaded: ${deferred.join(", ")}`);
 } finally {
   await browser.close();
   server.close();
