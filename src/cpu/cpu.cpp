@@ -320,6 +320,11 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     // a boot to the main display with the backend at CodeGenOpt::Less (this
     // exact pairing with Default was not timed): O1 -6% execution for +43%
     // compile; O2 no faster than O1 and +69% compile.
+#if defined(__EMSCRIPTEN__)
+    // The browser's build loads LLVM's code when a block first needs it
+    // (web/README.md): bcore makes LLVM only then.
+    core_->set_llvm_on_demand(true);
+#endif
     core_->init(/*opt_level=*/1, /*codegen_level=*/2);
     // bcore's tests and ISA suite verify every module the lifter makes; here
     // the verifier would be about 1% of the JIT's time.
@@ -772,6 +777,12 @@ void BlackFinCpu::SetLightTier1(bool light) { core_->set_light_tier1(light); }
 
 void BlackFinCpu::SetCopyPatch(bool enable) { core_->set_copy_patch(enable); }
 void BlackFinCpu::SetCopyPatchHints(bool enable) { core_->set_copy_patch_hints(enable); }
+
+bool BlackFinCpu::SetColdTier(uint32_t threshold, uint32_t batch, uint64_t age) {
+    if (!core_->set_cold_threshold(threshold)) return false;
+    core_->set_cold_batch(batch, age);
+    return true;
+}
 
 void BlackFinCpu::SetTierBackground(bool background, uint64_t publishAfter, int jitCpu) {
     if (!publishAfter) publishAfter = kTierPublishAfter;

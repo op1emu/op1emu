@@ -2,15 +2,18 @@
 // op1emu-web.mjs under Node (web/README.md), for the tests and measurements:
 //
 //   run-node.mjs gate MODULE --nand NAND --otp OTP --marks MARKS [--until MARK]
+//                [--cold THRESHOLD,BATCH,AGE]
 //       Boots with chaining off and prints [mark]/[digest] lines at each
 //       phase mark, as a native profiling build's --profile-mark-digest run
 //       does (tools/op1prof gate) with the same NAND, OTP and sensors.
 //   run-node.mjs boot MODULE --nand NAND --otp OTP [--cycles N] [--frames N]
 //                [--script FILE] [--slice MS] [--tier THRESHOLD,SIZE_REF]
+//                [--cold THRESHOLD,BATCH,AGE]
 //       Boots as the browser does (chained), up to N guest cycles or until N
 //       frames, and prints the time it took and the memory it used, each
 //       guest second's wall time and the longest op1_step (a block's
 //       compilation cannot be cut short), steps of --slice ms (default 100).
+//       --cold: the cold tier's threshold, batch and age (op1_cold).
 //       --script: a headless input script whose keys are all guest-timed
 //       (`at`), such as tools/op1prof/scripts/synth-keys.txt.
 //   run-node.mjs ldr MODULE --ldr LDR
@@ -90,6 +93,12 @@ function queueScript(op1, file) {
   }
 }
 
+// --cold THRESHOLD,BATCH,AGE (op1_cold), if given.
+function cold(op1, options) {
+  if (options.cold && op1._op1_cold(...options.cold.split(",").map(Number)) !== 0)
+    throw new Error("--cold: this build has no cold tier");
+}
+
 function memory(op1) {
   return `rss_mb=${(process.memoryUsage().rss / 2 ** 20).toFixed(0)} heap_mb=${(op1.HEAPU8.length / 2 ** 20).toFixed(0)}`;
 }
@@ -101,6 +110,7 @@ async function main() {
   try {
     if (command === "gate") {
       start(op1, nandPath, "", DETERMINISTIC | NAND_SNAPSHOT | NO_CHAIN);
+      cold(op1, options);
       const marks = op1.stringToNewUTF8(host(options.marks));
       const until = op1.stringToNewUTF8(options.until ?? "main-display");
       status = op1._op1_gate(marks, until) === 0 ? 0 : 1;
@@ -109,6 +119,7 @@ async function main() {
       start(op1, nandPath, "", DETERMINISTIC | NAND_SNAPSHOT);
       if (options.script) queueScript(op1, options.script);
       if (options.tier) op1._op1_tiering(...options.tier.split(",").map(Number));
+      cold(op1, options);
       const cycles = Number(options.cycles ?? Infinity), frames = Number(options.frames ?? Infinity);
       const slice = Number(options.slice ?? 100);
       const begin = performance.now();

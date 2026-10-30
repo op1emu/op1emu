@@ -132,6 +132,12 @@ public:
     // check at their start (Core::set_copy_patch_hints, on by default).
     // Before the first Run().
     void SetCopyPatchHints(bool enable);
+    // WebAssembly: a block's first `threshold` starts run its stencils one
+    // at a time, with no module of its own; then it is compiled with others
+    // that left that tier, `batch` to a module, after at most `age` packets
+    // (Core::set_cold_threshold, set_cold_batch). 0 for none; false where
+    // there is no such tier (natively). For blocks compiled from now on.
+    bool SetColdTier(uint32_t threshold, uint32_t batch = 1, uint64_t age = 0);
     // The JIT worker's CPU time so far (the profiler's per-mark count), or -1
     // where there is none or the platform cannot tell.
     int64_t JitWorkerCpuNs() const;
