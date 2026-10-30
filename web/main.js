@@ -254,8 +254,33 @@ async function start() {
     console.warn("no audio:", e);
   }
   worker.postMessage({ type: "start", build, site: SITE, snapshot: $("snapshot").checked, audioMs: AUDIO_MS,
-                       audioPort }, audioPort ? [audioPort] : []);
+                       audioPort, cached: await moduleCached() }, audioPort ? [audioPort] : []);
 }
+
+// ---- the module's cache (public/sw.js) ----
+
+const MODULE_URL = new URL(build.wasm.file, SITE).href;
+const serviceWorker = navigator.serviceWorker?.register(new URL("sw.js", SITE), { scope: SITE })
+  .then(() => navigator.serviceWorker.ready)
+  .catch((e) => console.warn("no Service Worker:", e));
+
+// Whether the Service Worker serves the module from its cache, and this
+// page goes through it (not on the first load, before it took the page).
+async function moduleCached() {
+  const registration = await serviceWorker;
+  if (!registration?.active || !navigator.serviceWorker.controller) return false;
+  const channel = new MessageChannel();
+  const answer = new Promise((resolve) => (channel.port1.onmessage = ({ data }) => resolve(data)));
+  registration.active.postMessage({ type: "cached", url: MODULE_URL }, [channel.port2]);
+  return Promise.race([answer, new Promise((resolve) => setTimeout(() => resolve(false), 1000))]);
+}
+
+// The module kept for the next visit, once the emulator runs (the Worker's
+// "running"): the Service Worker downloads it at its own URL.
+async function cacheModule() {
+  (await serviceWorker)?.active?.postMessage({ type: "cache", url: MODULE_URL });
+}
+globalThis.op1ModuleCached = moduleCached;  // for tools/smoke-browser.mjs
 
 // ---- from the worker ----
 
@@ -273,6 +298,9 @@ worker.onmessage = ({ data }) => {
       break;
     case "progress":
       setStatus(data.text);
+      break;
+    case "running":
+      cacheModule();
       break;
     case "stats":
       globalThis.op1Stats = data;  // for a look from the console
@@ -296,6 +324,7 @@ worker.onmessage = ({ data }) => {
     }
     case "selftest":
       globalThis.op1Selftest = data.result;
+      cacheModule();
       setStatus(`Self-test: ${JSON.stringify(data.result)}`);
       break;
     case "error":
@@ -321,5 +350,5 @@ worker.onmessage = ({ data }) => {
   bindFiles();
   worker.postMessage({ type: "files" });
   // The module and the boot ROM with no firmware (tools/smoke-browser.mjs).
-  if (params.has("selftest")) worker.postMessage({ type: "selftest", build, site: SITE });
+  if (params.has("selftest")) worker.postMessage({ type: "selftest", build, site: SITE, cached: await moduleCached() });
 })();
