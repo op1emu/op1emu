@@ -771,6 +771,7 @@ void BlackFinCpu::SetTiering(uint32_t threshold, uint32_t sizeRef) { core_->set_
 void BlackFinCpu::SetLightTier1(bool light) { core_->set_light_tier1(light); }
 
 void BlackFinCpu::SetCopyPatch(bool enable) { core_->set_copy_patch(enable); }
+void BlackFinCpu::SetCopyPatchHints(bool enable) { core_->set_copy_patch_hints(enable); }
 
 void BlackFinCpu::SetTierBackground(bool background, uint64_t publishAfter, int jitCpu) {
     if (!publishAfter) publishAfter = kTierPublishAfter;

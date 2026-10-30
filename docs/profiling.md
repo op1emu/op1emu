@@ -184,7 +184,11 @@ microseconds, the clock `perf record -k mono` uses.
   variant is 1. The stencils are split as LLVM's blocks are: a block is
   their hot parts one after the other, ending in a chain exit of its own
   that runs the block again without the chain table when it goes on to
-  itself, and their cold parts lie apart. With `--perf-jitdump` bcore
+  itself, and their cold parts lie apart. A block relies on the loop
+  registers it was copied with (`--no-cp-hints` for none): a parallel
+  packet steps a hardware loop inline, behind a guard at the block's
+  start; a block whose guard fails is copied again with no such
+  reliance. With `--perf-jitdump` bcore
   writes these blocks (named `bb_0x<pc>` as LLVM's tier-0 blocks are, and
   `bb_0x<pc>.cold`) to a jitdump of its own beside
   LLVM's, in `.debug/jit/bcore-cp-*`, with the code each arena shares:

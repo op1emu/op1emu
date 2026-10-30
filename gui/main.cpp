@@ -123,6 +123,7 @@ static int RunEmulator(int argc, char* argv[]) {
     bool lightTier1 = true;
     bool tierBackground = true;
     bool copyPatch = true;
+    bool copyPatchHints = true;
     long long tierPublishAfter = 0;
     long long jitCpu = -1;
     bool chainDry = false;
@@ -184,6 +185,7 @@ static int RunEmulator(int argc, char* argv[]) {
         }
         else if (options && arg == "--no-tier-background") tierBackground = false;
         else if (options && arg == "--no-copy-patch") copyPatch = false;
+        else if (options && arg == "--no-cp-hints") copyPatchHints = false;
         else if (options && arg == "--profile-chain-dry") chainDry = anyProfiling = true;
         else if (options && arg == "--profile-mark-digest") markDigest = anyProfiling = true;
         else if (options && arg == "--rtc-epoch") {
@@ -280,6 +282,8 @@ static int RunEmulator(int argc, char* argv[]) {
                      "                        a thread of their own\n"
                      "  --no-copy-patch       Make the cheap compilations with LLVM, not from\n"
                      "                        stencils where the instructions allow\n"
+                     "  --no-cp-hints         Make those from stencils that rely on nothing the\n"
+                     "                        loop registers held when they were made\n"
                      "  --tier-publish-after N  With --deterministic, use such a block's second\n"
                      "                        compilation N packets after it was asked for\n"
                      "                        (default 8388608; the CPU thread waits for it)\n"
@@ -374,6 +378,7 @@ static int RunEmulator(int argc, char* argv[]) {
     cpu.SetLightTier1(lightTier1);
     cpu.SetTierBackground(tierBackground, static_cast<uint64_t>(tierPublishAfter), static_cast<int>(jitCpu));
     cpu.SetCopyPatch(copyPatch);
+    cpu.SetCopyPatchHints(copyPatchHints);
     if (noDmaSettle) cpu.SetDmaSettling(false);
     if (rtcEpoch) cpu.SetRtcEpoch(std::chrono::system_clock::time_point(std::chrono::seconds(*rtcEpoch)));
 #ifdef ENABLE_PROFILING

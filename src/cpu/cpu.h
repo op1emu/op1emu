@@ -128,6 +128,10 @@ public:
     // (Core::set_copy_patch, on by default), the rest it compiles with LLVM.
     // Before the first Run().
     void SetCopyPatch(bool enable);
+    // Those blocks rely on the loop registers they were made with, behind a
+    // check at their start (Core::set_copy_patch_hints, on by default).
+    // Before the first Run().
+    void SetCopyPatchHints(bool enable);
     // The JIT worker's CPU time so far (the profiler's per-mark count), or -1
     // where there is none or the platform cannot tell.
     int64_t JitWorkerCpuNs() const;
