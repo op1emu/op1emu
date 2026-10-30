@@ -174,10 +174,18 @@ async function brotliStream() {
   });
 }
 
-// The module instantiated: compiled from build's files at site, with the
-// glue (op1emu-web.mjs), which Vite leaves alone.
-async function instantiate(build, site) {
-  const module = await compileModule(build, site);
+// compileModule begun, while the boot ROM is fetched (ensureBootRom): its
+// failure is instantiate's to report.
+function compileAhead(build, site) {
+  const compiled = compileModule(build, site);
+  compiled.catch(() => {});
+  return compiled;
+}
+
+// The module instantiated: compiled (compileAhead's) from build's files at
+// site, with the glue (op1emu-web.mjs), which Vite leaves alone.
+async function instantiate(build, site, compiled) {
+  const module = await compiled;
   status("Starting");
   const { default: createOp1 } = await import(/* @vite-ignore */ new URL(build.js, site).href);
   return createOp1({
@@ -195,8 +203,9 @@ async function instantiate(build, site) {
 // checked, and the module, as start() gets it, running an LDR of one RTS
 // (tests/ldr_smoke.py's) to its end in memory.
 async function selftest({ build, site }) {
+  const compiled = compileAhead(build, site);
   await ensureBootRom(build.bootRom);
-  const op1 = await instantiate(build, site);
+  const op1 = await instantiate(build, site, compiled);
   const ldr = new Uint8Array(18), view = new DataView(ldr.buffer);
   view.setUint32(0, 0x4000 | 0x8000, true);  // the first and final block
   view.setUint32(4, 0xffa00000, true);       // at L1 instruction memory
@@ -211,6 +220,7 @@ async function selftest({ build, site }) {
 }
 
 async function start({ build, site, snapshot, audioMs, audioPort: port }) {
+  const compiled = compileAhead(build, site);
   await ensureBootRom(build.bootRom);
   const dir = await directory();
   handles = {};
@@ -222,7 +232,7 @@ async function start({ build, site, snapshot, audioMs, audioPort: port }) {
     handles = null;
     throw new Error(`the images are not stored, or another tab has them open (${e.message})`);
   }
-  op1 = await instantiate(build, site);
+  op1 = await instantiate(build, site, compiled);
   const { FS } = op1;
   dataFs = opfsFs(FS);
   FS.mkdir("/data");
