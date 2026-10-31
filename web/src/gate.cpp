@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <typeinfo>
 #include <vector>
@@ -70,42 +71,71 @@ void Fire(BlackFinCpu& cpu, const char* mark, double startMs) {
     std::fflush(stdout);
 }
 
+// The gate under way (op1_gate_open): its marks, the last, and when it began.
+struct Gate {
+    profiling::MarkSet marks;
+    std::string until;
+    double start = 0;
+};
+std::unique_ptr<Gate> gate;
+
 }  // namespace
 
 extern "C" {
 
-// Runs the started emulator (op1_start, with chaining off) until the mark
-// `until` of the marks file at marksPath fires. Returns 0, or -1 if the run
-// ended first or the file is bad.
-EMSCRIPTEN_KEEPALIVE int op1_gate(const char* marksPath, const char* until) {
-    BlackFinCpu* cpu = WebCpu();
-    if (!cpu) return -1;
-    profiling::MarkSet marks;
+// Starts a gate on the started emulator (op1_start, with chaining off): it
+// runs (op1_gate_step) until the mark `until` of the marks file at
+// marksPath fires. Returns 0, or -1 if the file is bad.
+EMSCRIPTEN_KEEPALIVE int op1_gate_open(const char* marksPath, const char* until) {
+    if (!WebCpu()) return -1;
+    auto opened = std::make_unique<Gate>();
     try {
         std::ifstream file(marksPath);
         const auto json = nlohmann::json::parse(file);
         for (const auto& entry : json.at("marks")) {
             const auto name = entry.at("name").get<std::string>();
-            const int after = entry.contains("after") ? marks.Find(entry.at("after").get<std::string>()) : -1;
-            marks.Add(name, std::stoul(entry.at("lo").get<std::string>(), nullptr, 16),
-                      std::stoul(entry.at("hi").get<std::string>(), nullptr, 16), after);
+            const int after = entry.contains("after") ? opened->marks.Find(entry.at("after").get<std::string>()) : -1;
+            opened->marks.Add(name, std::stoul(entry.at("lo").get<std::string>(), nullptr, 16),
+                              std::stoul(entry.at("hi").get<std::string>(), nullptr, 16), after);
         }
-        if (marks.Find(until) < 0) throw std::runtime_error(std::string("no mark ") + until);
+        if (opened->marks.Find(until) < 0) throw std::runtime_error(std::string("no mark ") + until);
     } catch (const std::exception& e) {
         LogError("%s: %s", marksPath, e.what());
         return -1;
     }
-    const double start = emscripten_get_now();
-    Fire(*cpu, "start", start);
-    for (;;) {
-        const int fired = marks.OnBlock(cpu->PC());
+    opened->until = until;
+    opened->start = emscripten_get_now();
+    gate = std::move(opened);
+    Fire(*WebCpu(), "start", gate->start);
+    return 0;
+}
+
+// Up to runs runs of the gate: 1 once its last mark fired, 0 if it goes on,
+// -1 if the run ended first. Between steps the host may hand the emulator
+// what its Workers made (run-node.mjs gate --compile).
+EMSCRIPTEN_KEEPALIVE int op1_gate_step(double runs) {
+    BlackFinCpu* cpu = WebCpu();
+    if (!cpu || !gate) return -1;
+    for (double run = 0; run < runs; ++run) {
+        const int fired = gate->marks.OnBlock(cpu->PC());
         if (fired >= 0) {
-            const std::string& name = marks.Marks()[fired].name;
-            Fire(*cpu, name.c_str(), start);
-            if (name == until) return 0;
+            const std::string& name = gate->marks.Marks()[fired].name;
+            Fire(*cpu, name.c_str(), gate->start);
+            if (name == gate->until) {
+                gate.reset();
+                return 1;
+            }
         }
         if (!WebRunOnce()) return -1;
     }
+    return 0;
+}
+
+// op1_gate_open and op1_gate_step to the end. Returns 0, or -1 if the run
+// ended first or the file is bad.
+EMSCRIPTEN_KEEPALIVE int op1_gate(const char* marksPath, const char* until) {
+    if (op1_gate_open(marksPath, until) != 0) return -1;
+    return op1_gate_step(1.0 / 0.0) == 1 ? 0 : -1;
 }
 
 }  // extern "C"

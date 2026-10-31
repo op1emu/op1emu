@@ -22,6 +22,19 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+// A promotion's job to the host's tier Worker (op1_remote_tier): whether
+// Module.bcoreSubmit took it.
+EM_JS(int, SubmitJob, (uint32_t ticket, const uint8_t* bytes, uint32_t size), {
+    try {
+        const submit = Module["bcoreSubmit"];
+        return submit && submit(ticket >>> 0, HEAPU8.slice(bytes >>> 0, (bytes >>> 0) + (size >>> 0))) ? 1 : 0;
+    } catch (error) {
+        err("op1: a tier-1 job: " + error);
+        return 0;
+    }
+});
 
 namespace {
 
@@ -49,12 +62,14 @@ constexpr uint64_t kSensorNs = 16000000;
 // A browser's clock moves by 100 us at least (5 us cross-origin isolated).
 constexpr unsigned kClockRuns = 32;
 constexpr uint64_t kClockCycles = 100000;
-// Blocks stay at tier 0, made of bcore's stencils (copy-and-patch). With no
-// worker thread a promotion compiles on the one thread, between two blocks:
-// over a boot and the synth phase (Node, web/README.md) the default
-// threshold stopped the guest for up to 225 ms at a time and took 57 s to
-// 10 s of guest time, LLVM's tier 0 alone at most 19 ms and 48 s, and
-// played the synth as fast within 30%.
+// Blocks stay at tier 0, made of bcore's stencils (copy-and-patch), unless
+// the host sets a threshold (op1_tiering) for the tier Worker
+// (op1_remote_tier) to compile them again: with no worker thread a
+// promotion compiles on the one thread, between two blocks. Over a boot and
+// the synth phase (Node, web/README.md) the default threshold stopped the
+// guest for up to 225 ms at a time and took 57 s to 10 s of guest time,
+// LLVM's tier 0 alone at most 19 ms and 48 s, and played the synth as fast
+// within 30%.
 constexpr uint32_t kTierThreshold = UINT32_MAX;
 // A block's first starts make it no module of its own (bcore's cold tier,
 // BlackFinCpu::SetColdTier); those that start more often are compiled 32
@@ -232,9 +247,46 @@ EMSCRIPTEN_KEEPALIVE void op1_tiering(double threshold, double sizeRef) {
     if (session) session->cpu.SetTiering(uint32_t(threshold), uint32_t(sizeRef));
 }
 
+// Promotions other than loop blocks with bcore's light pipeline
+// (BlackFinCpu::SetLightTier1), from now on.
+EMSCRIPTEN_KEEPALIVE void op1_light_tier1(int light) {
+    if (session) session->cpu.SetLightTier1(light != 0);
+}
+
 // The cold tier (BlackFinCpu::SetColdTier), for blocks compiled from now on.
 EMSCRIPTEN_KEEPALIVE int op1_cold(double threshold, double batch, double age) {
     return session && session->cpu.SetColdTier(uint32_t(threshold), uint32_t(batch), uint64_t(age)) ? 0 : -1;
+}
+
+// Promotions to tier 1 compiled by the host's tier Worker
+// (web/compile-worker.js, BlackFinCpu::SetRemoteTier): each job goes to
+// Module.bcoreSubmit(ticket, bytes), which says whether it took it, and its
+// code comes back by op1_tier_delivered, the module made of it in
+// Module.bcoreModules under the ticket. on 0: compiled here again.
+EMSCRIPTEN_KEEPALIVE void op1_remote_tier(int on) {
+    if (!session) return;
+    if (!on) {
+        session->cpu.SetRemoteTier(nullptr);
+        return;
+    }
+    session->cpu.SetRemoteTier([](uint32_t ticket, std::vector<uint8_t> job) {
+        return SubmitJob(ticket, job.data(), uint32_t(job.size())) != 0;
+    });
+}
+
+// The tier Worker's answer for ticket (ok 0: the job failed); whether the
+// code runs now (bcore's Core::deliver).
+EMSCRIPTEN_KEEPALIVE int op1_tier_delivered(double ticket, int ok, const char* name, double fallthroughPc) {
+    return session && session->cpu.DeliverTier(uint32_t(ticket), ok != 0, {}, ok ? name : "", uint32_t(fallthroughPc));
+}
+
+// The tier Worker's work so far: 0 submitted, 1 refused, 2 installed, 3
+// stale, 4 failed.
+EMSCRIPTEN_KEEPALIVE double op1_remote_stat(int which) {
+    if (!session) return 0;
+    const BlackFinCpu::RemoteTierStats s = session->cpu.RemoteTierCounts();
+    const uint64_t all[] = {s.submitted, s.refused, s.installed, s.stale, s.failed};
+    return which >= 0 && which < 5 ? double(all[which]) : 0;
 }
 
 // Whether the LDR ran to its end (op1_step returned -1 for that).
