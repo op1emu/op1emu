@@ -9,6 +9,7 @@
 #include <vector>
 #include <chrono>
 #include <functional>
+#include <string>
 #include <mutex>
 #include <thread>
 #include <time.h>
@@ -138,6 +139,17 @@ public:
     // (Core::set_cold_threshold, set_cold_batch). 0 for none; false where
     // there is no such tier (natively). For blocks compiled from now on.
     bool SetColdTier(uint32_t threshold, uint32_t batch = 1, uint64_t age = 0);
+    // Promotions compiled by another instance of the emulator (a Web
+    // Worker's: bcore's Core::set_remote_tier): submit takes each one's
+    // ticket and job, and its code comes back by DeliverTier, between runs.
+    // Null to compile them here again.
+    void SetRemoteTier(std::function<bool(uint32_t ticket, std::vector<uint8_t> job)> submit);
+    bool DeliverTier(uint32_t ticket, bool ok, const std::vector<uint8_t>& object, const std::string& name,
+                     uint32_t fallthroughPc);
+    struct RemoteTierStats {
+        uint64_t submitted = 0, refused = 0, installed = 0, stale = 0, failed = 0;
+    };
+    RemoteTierStats RemoteTierCounts() const;
     // The JIT worker's CPU time so far (the profiler's per-mark count), or -1
     // where there is none or the platform cannot tell.
     int64_t JitWorkerCpuNs() const;

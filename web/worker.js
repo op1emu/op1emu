@@ -17,6 +17,7 @@
 // "error", text}, {type: "stopped"}.
 
 import { BOOT_ROM_SIZE, parseBootRom, sha256 } from "./bootrom.js";
+import { attachTierWorker } from "./compile-helpers.js";
 import { opfsFs } from "./opfs-fs.js";
 
 const NAMES = { nand: "nand.bin", otp: "otp.bin" };
@@ -24,6 +25,9 @@ const BOOT_ROM = "bootrom.bin";
 const SIZES = { nand: 553648128, otp: 8192 };  // MT29F4G08's pages and OOBs; the OTP's
 const SLICE_MS = 8;
 const FLUSH_MS = 2000;
+// Promotions to tier 1 (op1_tiering), compiled by the tier Worker
+// (compile-worker.js): a block that starts this often, scaled by its size.
+const TIER_THRESHOLD = 100000, TIER_SIZE_REF = 16;
 
 let op1 = null;          // the module, once started
 let handles = null;      // open sync access handles, while it runs
@@ -205,13 +209,19 @@ function compileAhead(build, site, cached = false) {
 
 // The module instantiated: compiled (compileAhead's) from build's files at
 // site, with the glue (op1emu-web.mjs), which Vite leaves alone.
+// llvmLoaded: whether this instance has loaded LLVM's deferred module (the
+// glue says so as it does).
+let llvmLoaded = false;
 async function instantiate(build, site, compiled) {
   const module = await compiled;
   status("Starting");
   const { default: createOp1 } = await import(/* @vite-ignore */ new URL(build.js, site).href);
   return createOp1({
     print: (s) => console.log(s),
-    printErr: (s) => console.warn(s),
+    printErr: (s) => {
+      if (s.startsWith("placeholder function called")) llvmLoaded = true;
+      console.warn(s);
+    },
     // The .wasm by the name the site gives it, for the glue to find the
     // deferred module (LLVM's) beside it: op1emu-web.<hash>.deferred.wasm.
     locateFile: (file) => new URL(file === "op1emu-web.wasm" ? build.wasm.file : file, site).href,
@@ -222,15 +232,43 @@ async function instantiate(build, site, compiled) {
   });
 }
 
+// The tier Worker (compile-worker.js), nested in this one: promotions to
+// tier 1 compiled there (compile-helpers.js), from now on.
+function tierWorker(op1, build, site, module) {
+  const spawn = () => {
+    const worker = new Worker(new URL("./compile-worker.js", import.meta.url), { type: "module" });
+    return {
+      post: (message, transfer) => worker.postMessage(message, transfer),
+      onMessage: (handler) => worker.addEventListener("message", (event) => handler(event.data)),
+      onError: (handler) => worker.addEventListener("error", (event) => handler(event.message)),
+      terminate: () => worker.terminate(),
+    };
+  };
+  const helped = attachTierWorker(op1, {
+    spawn,
+    module,
+    js: new URL(build.js, site).href,
+    deferred: new URL(build.wasm.file.replace(/\.wasm$/, ".deferred.wasm"), site).href,
+  });
+  op1._op1_tiering(TIER_THRESHOLD, TIER_SIZE_REF);
+  return helped;
+}
+
 // CI's look at the site in a browser with no firmware
 // (tools/smoke-browser.mjs; the page's ?selftest): the boot ROM fetched and
 // checked, and the module, as start() gets it, running an LDR of one RTS
 // (tests/ldr_smoke.py's) to its end in memory; where it took the module from.
 // ?selftest=llvm runs a packet copy-and-patch has no stencils for first, so
-// that LLVM compiles it, from the deferred module.
+// that LLVM compiles it, from the deferred module. ?selftest=tier1 runs a
+// loop of 268 million turns, a slice at a time with the tier Worker, until the
+// tier Worker's promotion of it runs (or a minute has passed): LLVM in that
+// Worker only. (A loop without end left it: an interrupt took the core to
+// memory of NOPs, a block never run twice.)
 const SELFTEST_PROGRAMS = {
   rts: [0x0010],                                   // RTS
   llvm: [0xcc0d, 0x4210, 0x0000, 0x0000, 0x0010],  // (R0, R1) = SEARCH R2 (GE) || NOP || NOP; RTS
+  // R1 = 0x10000000; R0 = 0; L: R0 += 1; CC = R0 < R1; IF CC JUMP L (BP); RTS
+  tier1: [0xe101, 0x0000, 0xe141, 0x1000, 0x6000, 0x6408, 0x0888, 0x1ffe, 0x0010],
 };
 async function selftest({ build, site, cached, program = "rts" }) {
   const code = SELFTEST_PROGRAMS[program];
@@ -247,9 +285,20 @@ async function selftest({ build, site, cached, program = "rts" }) {
   const DETERMINISTIC = 1, NAND_SNAPSHOT = 2;
   const started = op1._op1_start(op1.stringToNewUTF8("/missing.nand"), op1.stringToNewUTF8("/prog.ldr"),
                                  DETERMINISTIC | NAND_SNAPSHOT, 0, 0);
-  while (started === 0 && op1._op1_step(100) >= 0) {}
+  let tier1 = null;
+  if (program === "tier1" && started === 0) {
+    const helped = tierWorker(op1, build, site, await compiled);
+    op1._op1_tiering(1000, 0);
+    const end = performance.now() + 60000;
+    while (op1._op1_remote_stat(2) < 1 && !helped.counts.dead && performance.now() < end && op1._op1_step(SLICE_MS) >= 0)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    tier1 = { installed: op1._op1_remote_stat(2), dead: helped.counts.dead };
+    helped.stop();
+  } else {
+    while (started === 0 && op1._op1_step(100) >= 0) {}
+  }
   return { program, started, finished: Boolean(op1._op1_finished()), packets: op1._op1_packets(),
-           module: moduleSource };
+           module: moduleSource, llvmLoaded, tier1 };
 }
 
 async function start({ build, site, snapshot, audioMs, audioPort: port, cached }) {
@@ -288,6 +337,7 @@ async function start({ build, site, snapshot, audioMs, audioPort: port, cached }
   const NAND_SNAPSHOT = 2;
   if (op1._op1_start(path, none, snapshot ? NAND_SNAPSHOT : 0, 0, port ? audioMs : 0) !== 0)
     throw new Error("the emulator did not start (see the console)");
+  tierWorker(op1, build, site, await compiled);
   status("Booting");
   post({ type: "running" });
   setInterval(() => dataFs.flush(), FLUSH_MS);

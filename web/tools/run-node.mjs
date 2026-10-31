@@ -2,18 +2,23 @@
 // op1emu-web.mjs under Node (web/README.md), for the tests and measurements:
 //
 //   run-node.mjs gate MODULE --nand NAND --otp OTP --marks MARKS [--until MARK]
-//                [--cold THRESHOLD,BATCH,AGE]
+//                [--cold THRESHOLD,BATCH,AGE] [--tier THRESHOLD,SIZE_REF]
+//                [--compile worker]
 //       Boots with chaining off and prints [mark]/[digest] lines at each
 //       phase mark, as a native profiling build's --profile-mark-digest run
 //       does (tools/op1prof gate) with the same NAND, OTP and sensors.
 //   run-node.mjs boot MODULE --nand NAND --otp OTP [--cycles N] [--frames N]
 //                [--script FILE] [--slice MS] [--tier THRESHOLD,SIZE_REF]
-//                [--cold THRESHOLD,BATCH,AGE]
+//                [--cold THRESHOLD,BATCH,AGE] [--compile worker] [--light 0|1]
 //       Boots as the browser does (chained), up to N guest cycles or until N
 //       frames, and prints the time it took and the memory it used, each
 //       guest second's wall time and the longest op1_step (a block's
 //       compilation cannot be cut short), steps of --slice ms (default 100).
 //       --cold: the cold tier's threshold, batch and age (op1_cold).
+//       --compile worker: promotions (with --tier) compiled by the tier
+//       Worker in a worker thread, as the browser has it
+//       (compile-helpers.js), the loop yielding between steps.
+//       --light: promotions with bcore's light pipeline (op1_light_tier1).
 //       --script: a headless input script whose keys are all guest-timed
 //       (`at`), such as tools/op1prof/scripts/synth-keys.txt.
 //   run-node.mjs ldr MODULE --ldr LDR
@@ -28,6 +33,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseBootRom } from "../bootrom.js";
+import { attachTierWorker } from "../compile-helpers.js";
 
 const DETERMINISTIC = 1, NAND_SNAPSHOT = 2, NO_CHAIN = 4;
 
@@ -46,7 +52,18 @@ function parse(argv) {
 // directory with the OTP (and the LDR) at /data, the working directory.
 async function load(modulePath, options) {
   const { default: createOp1 } = await import(pathToFileURL(path.resolve(modulePath)).href);
-  const op1 = await createOp1({ print: (s) => console.log(s), printErr: (s) => console.error(s) });
+  // --compile: the module compiled here, for the tier-1 Worker to have too.
+  const compiled = options.compile
+    ? await WebAssembly.compile(fs.readFileSync(path.resolve(modulePath).replace(/\.mjs$/, ".wasm")))
+    : null;
+  const instantiate = compiled && {
+    instantiateWasm: (imports, done) => {
+      WebAssembly.instantiate(compiled, imports).then((instance) => done(instance, compiled));
+      return {};
+    },
+  };
+  const op1 = await createOp1({ print: (s) => console.log(s), printErr: (s) => console.error(s), ...instantiate });
+  op1.compiledModule = compiled;
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "op1-web-"));
   if (options.otp) fs.copyFileSync(options.otp, path.join(work, "otp.bin"));
   // The boot ROM the browser's build reads (src/cpu/bootrom.cpp), from the
@@ -99,6 +116,28 @@ function cold(op1, options) {
     throw new Error("--cold: this build has no cold tier");
 }
 
+// The tier Worker in a worker thread (--compile worker).
+async function tierWorker(op1, modulePath, mode) {
+  if (mode !== "worker") throw new Error(`--compile ${mode}: only worker`);
+  const { Worker } = await import("node:worker_threads");
+  const spawn = () => {
+    const worker = new Worker(new URL("../compile-worker.js", import.meta.url));
+    return {
+      post: (message, transfer) => worker.postMessage(message, transfer),
+      onMessage: (handler) => worker.on("message", handler),
+      onError: (handler) => worker.on("error", handler),
+      terminate: () => worker.terminate(),
+    };
+  };
+  const file = path.resolve(modulePath);
+  return attachTierWorker(op1, {
+    spawn,
+    module: op1.compiledModule,
+    js: pathToFileURL(file).href,
+    deferred: pathToFileURL(file.replace(/\.mjs$/, ".deferred.wasm")).href,
+  });
+}
+
 function memory(op1) {
   return `rss_mb=${(process.memoryUsage().rss / 2 ** 20).toFixed(0)} heap_mb=${(op1.HEAPU8.length / 2 ** 20).toFixed(0)}`;
 }
@@ -110,16 +149,33 @@ async function main() {
   try {
     if (command === "gate") {
       start(op1, nandPath, "", DETERMINISTIC | NAND_SNAPSHOT | NO_CHAIN);
+      if (options.tier) op1._op1_tiering(...options.tier.split(",").map(Number));
       cold(op1, options);
       const marks = op1.stringToNewUTF8(host(options.marks));
       const until = op1.stringToNewUTF8(options.until ?? "main-display");
-      status = op1._op1_gate(marks, until) === 0 ? 0 : 1;
+      if (options.compile) {
+        // In steps, the tier Worker's answers taken between them: whenever they
+        // come, the guest must do the same (the digests say).
+        const helped = await tierWorker(op1, module, options.compile);
+        let step = op1._op1_gate_open(marks, until) === 0 ? 0 : -1;
+        while (step === 0) {
+          step = op1._op1_gate_step(20000);
+          await new Promise(setImmediate);
+        }
+        status = step === 1 ? 0 : 1;
+        console.log(`[node] tier1 installed=${op1._op1_remote_stat(2)}`);
+        helped.stop();
+      } else {
+        status = op1._op1_gate(marks, until) === 0 ? 0 : 1;
+      }
       console.log(`[node] ${memory(op1)}`);
     } else if (command === "boot") {
       start(op1, nandPath, "", DETERMINISTIC | NAND_SNAPSHOT);
       if (options.script) queueScript(op1, options.script);
       if (options.tier) op1._op1_tiering(...options.tier.split(",").map(Number));
+      if (options.light) op1._op1_light_tier1(Number(options.light));
       cold(op1, options);
+      const helped = options.compile ? await tierWorker(op1, module, options.compile) : null;
       const cycles = Number(options.cycles ?? Infinity), frames = Number(options.frames ?? Infinity);
       const slice = Number(options.slice ?? 100);
       const begin = performance.now();
@@ -128,6 +184,8 @@ async function main() {
         const before = performance.now();
         if (op1._op1_step(slice) < 0) throw new Error("the emulation stopped");
         const now = performance.now();
+        // The tier Worker's answers, between steps, as the browser's Worker takes them.
+        if (helped) await new Promise(setImmediate);
         if (now - before > longest) [longest, longestAt] = [now - before, op1._op1_guest_ns() / 1e9];
         if (op1._op1_guest_ns() >= nextNs) {
           console.log(`[node] guest_s=${nextNs / 1e9} wall_s=${((now - second) / 1e3).toFixed(2)} ` +
@@ -137,6 +195,12 @@ async function main() {
       }
       console.log(`[node] boot cycles=${op1._op1_cycles()} packets=${op1._op1_packets()} frames=${op1._op1_frames()} ` +
                   `wall_s=${((performance.now() - begin) / 1e3).toFixed(2)} ${memory(op1)}`);
+      if (helped) {
+        const stat = (i) => op1._op1_remote_stat(i);
+        console.log(`[node] tier1 submitted=${stat(0)} refused=${stat(1)} ` +
+                    `installed=${stat(2)} stale=${stat(3)} failed=${stat(4)}${helped.counts.dead ? " dead" : ""}`);
+        helped.stop();
+      }
     } else {
       start(op1, nandPath, "/data/prog.ldr", DETERMINISTIC | NAND_SNAPSHOT);
       while (op1._op1_step(100) >= 0) {}

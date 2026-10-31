@@ -784,6 +784,20 @@ bool BlackFinCpu::SetColdTier(uint32_t threshold, uint32_t batch, uint64_t age) 
     return true;
 }
 
+void BlackFinCpu::SetRemoteTier(std::function<bool(uint32_t ticket, std::vector<uint8_t> job)> submit) {
+    core_->set_remote_tier(std::move(submit));
+}
+
+bool BlackFinCpu::DeliverTier(uint32_t ticket, bool ok, const std::vector<uint8_t>& object, const std::string& name,
+                              uint32_t fallthroughPc) {
+    return core_->deliver(ticket, ok, object, name, fallthroughPc);
+}
+
+BlackFinCpu::RemoteTierStats BlackFinCpu::RemoteTierCounts() const {
+    const bcore::Core::RemoteStats s = core_->remote_stats();
+    return {s.submitted, s.refused, s.installed, s.stale, s.failed};
+}
+
 void BlackFinCpu::SetTierBackground(bool background, uint64_t publishAfter, int jitCpu) {
     if (!publishAfter) publishAfter = kTierPublishAfter;
     workerClockSet_.store(false, std::memory_order_release);  // the worker it names stops here
