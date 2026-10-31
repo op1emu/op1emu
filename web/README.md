@@ -26,6 +26,18 @@ of LLVM's but those an LDR of one RTS runs to start, after the link;
 `src/split-module-pre.js` has the glue find it where the Worker instantiates
 the module itself). The smoke test's `?selftest=llvm` runs a packet that only
 LLVM compiles, which loads it.
+Blocks that start 100,000 times or more (more for larger ones) are compiled
+again with LLVM (tier 1), but not by the emulator's Worker, which would
+stop for each, up to 764 ms: another instance of the module does it, in the
+tier Worker (`compile-worker.js`, nested in `worker.js`, with
+`compile-helpers.js`), and the emulator's Worker instantiates each block's
+code between two slices (bcore's `Core::set_remote_tier`;
+`src/tier_worker.cpp`), the block running at tier 0 meanwhile. That
+instance takes some 200 MiB more memory, and LLVM's module is loaded there
+only. A boot to the main screen in Node: 7.7 s to 6.5; Chrome 133, a
+visit after the first: 9.3 s to 7.3 to 7.9. The smoke test's
+`?selftest=tier1` runs a loop until the tier Worker's code for it runs, the
+emulator's Worker loading no LLVM.
 Its files are whatever the host mounted: the NAND image at the path it gives
 `op1_start()`, `otp.bin` and `bootrom.bin` in the working directory. The
 desktop build has the BF526's boot ROM compiled in (`ext/bfin_sim`'s
@@ -60,7 +72,8 @@ desktop build has the BF526's boot ROM compiled in (`ext/bfin_sim`'s
   module (V8's code cache keeps nothing of a module compiled from a stream
   the page made, as the decompressed `.wasm.br` is). The first start
   downloads the `.wasm.br`, and once the emulator runs the page has the
-  Service Worker fetch the `.wasm`; later starts compile that.
+  Service Worker fetch the `.wasm`; later starts compile that. It keeps
+  LLVM's `.deferred.wasm` too, the first time the tier Worker fetches it.
 - No SharedArrayBuffer, so no COOP/COEP headers are needed: GitHub Pages
   serves it as it is.
 
@@ -172,6 +185,8 @@ node web/tools/run-node.mjs boot build-wasm/web/op1emu-web.mjs \
   --nand nand.bin --otp otp.bin --cycles 4000000000 --slice 5 \
   --script tools/op1prof/scripts/synth-keys.txt
 # --cold THRESHOLD,BATCH,AGE: another cold tier (0,1,0 for none).
+# --compile worker --tier 100000,16: tier 1 as the browser has it, in a
+# worker thread (gate too, in steps: the digests must not change).
 # An LDR to its end, with no NAND or OTP (as tests/ldr_smoke.py).
 node web/tools/run-node.mjs ldr build-wasm/web/op1emu-web.mjs --ldr tiny.ldr
 ```
