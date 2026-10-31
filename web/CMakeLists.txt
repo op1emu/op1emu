@@ -18,8 +18,11 @@ target_link_options(op1emu-web PRIVATE
     -sEXPORTED_FUNCTIONS=_malloc,_free
     # LLVM in a module of its own, loaded only if a block needs it
     # (tools/split-module.mjs, run after the link): the link keeps the names
-    # it goes by in op1emu-web.wasm.orig.
-    -sSPLIT_MODULE --profiling-funcs -Wno-experimental)
+    # it goes by in op1emu-web.wasm.orig. src/split-module-pre.js: the glue
+    # finds the deferred module where the Worker instantiates the module too.
+    -sSPLIT_MODULE --profiling-funcs -Wno-experimental
+    "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/src/split-module-pre.js")
+set_property(TARGET op1emu-web APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/split-module-pre.js")
 find_program(OP1_WASM_SPLIT wasm-split HINTS "${EMSCRIPTEN_ROOT_PATH}/../bin" REQUIRED)
 add_custom_command(TARGET op1emu-web POST_BUILD
     COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} "${CMAKE_CURRENT_SOURCE_DIR}/tools/split-module.mjs" "$<TARGET_FILE_DIR:op1emu-web>"

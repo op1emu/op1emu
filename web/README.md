@@ -22,7 +22,10 @@ boot in Node 9.9 s to 8.1. LLVM compiles a block only where copy-and-patch
 takes none, which no block of a boot is: its code is in a module of its own,
 `op1emu-web.deferred.wasm`, which the glue loads the first time it is called
 (Emscripten's `SPLIT_MODULE`; `tools/split-module.mjs` moves every function
-of LLVM's but those an LDR of one RTS runs to start, after the link).
+of LLVM's but those an LDR of one RTS runs to start, after the link;
+`src/split-module-pre.js` has the glue find it where the Worker instantiates
+the module itself). The smoke test's `?selftest=llvm` runs a packet that only
+LLVM compiles, which loads it.
 Its files are whatever the host mounted: the NAND image at the path it gives
 `op1_start()`, `otp.bin` and `bootrom.bin` in the working directory. The
 desktop build has the BF526's boot ROM compiled in (`ext/bfin_sim`'s
