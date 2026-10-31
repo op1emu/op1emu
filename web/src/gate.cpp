@@ -126,7 +126,10 @@ EMSCRIPTEN_KEEPALIVE int op1_gate_step(double runs) {
                 return 1;
             }
         }
-        if (!WebRunOnce()) return -1;
+        if (!WebRunOnce()) {
+            gate.reset();
+            return -1;
+        }
     }
     return 0;
 }

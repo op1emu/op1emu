@@ -125,7 +125,10 @@ async function tierWorker(op1, modulePath, mode) {
     return {
       post: (message, transfer) => worker.postMessage(message, transfer),
       onMessage: (handler) => worker.on("message", handler),
-      onError: (handler) => worker.on("error", handler),
+      onError: (handler) => {
+        worker.on("error", handler);
+        worker.on("exit", (code) => handler(`the worker thread exited (${code})`));
+      },
       terminate: () => worker.terminate(),
     };
   };
@@ -146,6 +149,7 @@ async function main() {
   const { command, module, options } = parse(process.argv.slice(2));
   const { op1, work, host, nandPath } = await load(module, options);
   let status = 0;
+  let helped = null;  // the tier Worker (--compile), stopped however the run ends
   try {
     if (command === "gate") {
       start(op1, nandPath, "", DETERMINISTIC | NAND_SNAPSHOT | NO_CHAIN);
@@ -156,7 +160,7 @@ async function main() {
       if (options.compile) {
         // In steps, the tier Worker's answers taken between them: whenever they
         // come, the guest must do the same (the digests say).
-        const helped = await tierWorker(op1, module, options.compile);
+        helped = await tierWorker(op1, module, options.compile);
         let step = op1._op1_gate_open(marks, until) === 0 ? 0 : -1;
         while (step === 0) {
           step = op1._op1_gate_step(20000);
@@ -164,7 +168,6 @@ async function main() {
         }
         status = step === 1 ? 0 : 1;
         console.log(`[node] tier1 installed=${op1._op1_remote_stat(2)}`);
-        helped.stop();
       } else {
         status = op1._op1_gate(marks, until) === 0 ? 0 : 1;
       }
@@ -175,7 +178,7 @@ async function main() {
       if (options.tier) op1._op1_tiering(...options.tier.split(",").map(Number));
       if (options.light) op1._op1_light_tier1(Number(options.light));
       cold(op1, options);
-      const helped = options.compile ? await tierWorker(op1, module, options.compile) : null;
+      if (options.compile) helped = await tierWorker(op1, module, options.compile);
       const cycles = Number(options.cycles ?? Infinity), frames = Number(options.frames ?? Infinity);
       const slice = Number(options.slice ?? 100);
       const begin = performance.now();
@@ -199,7 +202,6 @@ async function main() {
         const stat = (i) => op1._op1_remote_stat(i);
         console.log(`[node] tier1 submitted=${stat(0)} refused=${stat(1)} ` +
                     `installed=${stat(2)} stale=${stat(3)} failed=${stat(4)}${helped.counts.dead ? " dead" : ""}`);
-        helped.stop();
       }
     } else {
       start(op1, nandPath, "/data/prog.ldr", DETERMINISTIC | NAND_SNAPSHOT);
@@ -208,6 +210,7 @@ async function main() {
       console.log(status ? "[node] ldr: did not finish" : "[node] ldr: ok");
     }
   } finally {
+    helped?.stop();
     fs.rmSync(work, { recursive: true, force: true });
   }
   process.exitCode = status;

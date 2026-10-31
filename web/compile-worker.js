@@ -61,7 +61,10 @@ async function init({ module, js, deferred }) {
         if (!s.startsWith("placeholder function called") && !s.startsWith("instantiated deferred module")) console.error(s);
       },
       instantiateWasm: (imports, done) => {
-        WebAssembly.instantiate(module, imports).then((instance) => done(instance, module));
+        // A failure here would leave createOp1 unsettled: no instance (too
+        // little memory, say), no jobs.
+        WebAssembly.instantiate(module, imports).then((instance) => done(instance, module),
+                                                      (error) => die(String(error)));
         return {};
       },
       locateFile: (name) => name,
@@ -75,24 +78,32 @@ async function init({ module, js, deferred }) {
 }
 
 function die(why) {
+  if (dead) return;
   dead = true;
   op1 = null;
   jobs.length = 0;
   post({ type: "dead", why });
 }
 
+// The job compiled, its code posted; or "fail" for it. What LLVM throws
+// (an abort) leaves the instance unusable: that goes to the caller.
 function compile({ ticket, job }) {
   const bytes = op1._malloc(job.length);
   op1.HEAPU8.set(job, bytes);
+  let answer;
   try {
-    const answer = op1._op1_tier_compile(bytes, job.length) >>> 2;
-    const word = (i) => op1.HEAPU32[answer + i] >>> 0;
-    if (!word(0)) return post({ type: "fail", ticket, why: op1.UTF8ToString(word(5)) });
+    answer = op1._op1_tier_compile(bytes, job.length) >>> 2;
+  } finally {
+    op1._free(bytes);
+  }
+  const word = (i) => op1.HEAPU32[answer + i] >>> 0;
+  if (!word(0)) return post({ type: "fail", ticket, why: op1.UTF8ToString(word(5)) });
+  try {
     const module = new WebAssembly.Module(op1.HEAPU8.slice(word(1), word(1) + word(2)));
     warm(module);
     post({ type: "code", ticket, module, name: op1.UTF8ToString(word(3)), fallthrough: word(4) });
-  } finally {
-    op1._free(bytes);
+  } catch (error) {
+    post({ type: "fail", ticket, why: String(error) });
   }
 }
 
@@ -105,7 +116,6 @@ function next() {
     try {
       compile(job);
     } catch (error) {
-      // An abort in LLVM leaves the instance unusable.
       die(String(error));
     }
     busy = false;
