@@ -25,16 +25,30 @@
 
 namespace {
 
+// The host's clock, as BlackFinCpu::Pace() reads it (PacedUntilNs).
 uint64_t WallNs() {
     return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now().time_since_epoch())
                         .count());
 }
 
+// op1_step()'s own clock: performance.now(), as steady_clock's is under
+// WASI's clock_time_get, without the BigInt it is stored through there
+// (0.1 to 0.3 us a read in a browser's Worker; op1_step() read the clock
+// after every run, 0.33 s of a boot to the main screen in Chrome 133). Not
+// steady_clock's: in a browser the two count from different origins.
+uint64_t StepNs() { return uint64_t(emscripten_get_now() * 1e6); }
+
 // Where an LDR's DXE returns to (LdrExecutionThread in gui/main.cpp).
 constexpr u32 kLdrReturn = 0x8000000;
 // How often the sensors are fed, as gui/main.cpp's host loop does.
 constexpr uint64_t kSensorNs = 16000000;
+// op1_step() reads the clock after this many runs, or once the guest has
+// gone this many cycles on (0.25 ms of guest time, under 1 ms of the
+// host's), whichever comes first: a run took 4.6 us on average over a boot.
+// A browser's clock moves by 100 us at least (5 us cross-origin isolated).
+constexpr unsigned kClockRuns = 32;
+constexpr uint64_t kClockCycles = 100000;
 // Blocks stay at tier 0, made of bcore's stencils (copy-and-patch). With no
 // worker thread a promotion compiles on the one thread, between two blocks:
 // over a boot and the synth phase (Node, web/README.md) the default
@@ -172,23 +186,31 @@ EMSCRIPTEN_KEEPALIVE int op1_start(const char* nandPath, const char* ldrPath, in
 EMSCRIPTEN_KEEPALIVE double op1_step(double budgetMs) {
     if (!session) return -1;
     Session& s = *session;
-    const uint64_t start = WallNs(), end = start + uint64_t(budgetMs * 1e6);
+    uint64_t now = StepNs();
+    const uint64_t end = now + uint64_t(budgetMs * 1e6);
     double wait = 0;
     try {
-        for (uint64_t now = start; now < end; now = WallNs()) {
+        for (;;) {
             if (now >= s.nextSensorNs) {
                 PushSensors(s);
                 s.nextSensorNs = now + kSensorNs;
             }
-            if (!RunOnce(s)) {
-                wait = -1;
-                break;
+            const uint64_t from = s.cpu.Time().Cycles();
+            for (unsigned runs = 0; runs < kClockRuns && s.cpu.Time().Cycles() - from < kClockCycles; ++runs) {
+                if (!RunOnce(s)) {
+                    wait = -1;
+                    break;
+                }
+                if (s.cpu.PacedUntilNs()) break;
             }
+            if (wait < 0) break;
             if (const uint64_t until = s.cpu.PacedUntilNs()) {
                 const uint64_t after = WallNs();
                 wait = until > after ? double(until - after) / 1e6 : 0.0;
                 break;
             }
+            now = StepNs();
+            if (now >= end) break;
         }
     } catch (const std::exception& e) {
         LogError("Emulation stopped: %s", e.what());
