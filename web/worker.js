@@ -5,9 +5,10 @@
 //
 // From the page: {type: "files"}, {type: "import", name, file},
 // {type: "export", name}, {type: "delete"}, {type: "start", build, site,
-// snapshot, audioMs, audioPort, cached}, {type: "selftest", build, site, cached}, {type:
-// "key", bank, pin, pressed}, {type: "volume", value}, {type: "frame-done"}
-// (cached: the page's Service Worker serves the .wasm from its cache).
+// snapshot, audioMs, audioPort, cached}, {type: "selftest", build, site, cached,
+// program}, {type: "key", bank, pin, pressed}, {type: "volume", value},
+// {type: "frame-done"} (cached: the page's Service Worker serves the .wasm
+// from its cache).
 // build is virtual:op1emu (tools/emulator-assets.js), whose files are at the
 // URL site. To it: {type: "files", files, syncAccess}, {type: "progress",
 // text}, {type: "exported", name, blob}, {type: "frame", width, height,
@@ -225,21 +226,30 @@ async function instantiate(build, site, compiled) {
 // (tools/smoke-browser.mjs; the page's ?selftest): the boot ROM fetched and
 // checked, and the module, as start() gets it, running an LDR of one RTS
 // (tests/ldr_smoke.py's) to its end in memory; where it took the module from.
-async function selftest({ build, site, cached }) {
+// ?selftest=llvm runs a packet copy-and-patch has no stencils for first, so
+// that LLVM compiles it, from the deferred module.
+const SELFTEST_PROGRAMS = {
+  rts: [0x0010],                                   // RTS
+  llvm: [0xcc0d, 0x4210, 0x0000, 0x0000, 0x0010],  // (R0, R1) = SEARCH R2 (GE) || NOP || NOP; RTS
+};
+async function selftest({ build, site, cached, program = "rts" }) {
+  const code = SELFTEST_PROGRAMS[program];
+  if (!code) throw new Error(`no self-test program ${program}`);
   const compiled = compileAhead(build, site, cached);
   await ensureBootRom(build.bootRom);
   const op1 = await instantiate(build, site, compiled);
-  const ldr = new Uint8Array(18), view = new DataView(ldr.buffer);
+  const ldr = new Uint8Array(16 + 2 * code.length), view = new DataView(ldr.buffer);
   view.setUint32(0, 0x4000 | 0x8000, true);  // the first and final block
   view.setUint32(4, 0xffa00000, true);       // at L1 instruction memory
-  view.setUint32(8, 2, true);
-  ldr.set([0x10, 0x00], 16);                 // RTS
+  view.setUint32(8, 2 * code.length, true);
+  code.forEach((halfword, i) => view.setUint16(16 + 2 * i, halfword, true));
   op1.FS.writeFile("/prog.ldr", ldr);
   const DETERMINISTIC = 1, NAND_SNAPSHOT = 2;
   const started = op1._op1_start(op1.stringToNewUTF8("/missing.nand"), op1.stringToNewUTF8("/prog.ldr"),
                                  DETERMINISTIC | NAND_SNAPSHOT, 0, 0);
   while (started === 0 && op1._op1_step(100) >= 0) {}
-  return { started, finished: Boolean(op1._op1_finished()), packets: op1._op1_packets(), module: moduleSource };
+  return { program, started, finished: Boolean(op1._op1_finished()), packets: op1._op1_packets(),
+           module: moduleSource };
 }
 
 async function start({ build, site, snapshot, audioMs, audioPort: port, cached }) {

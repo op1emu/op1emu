@@ -350,5 +350,7 @@ worker.onmessage = ({ data }) => {
   bindFiles();
   worker.postMessage({ type: "files" });
   // The module and the boot ROM with no firmware (tools/smoke-browser.mjs).
-  if (params.has("selftest")) worker.postMessage({ type: "selftest", build, site: SITE, cached: await moduleCached() });
+  if (params.has("selftest"))
+    worker.postMessage({ type: "selftest", build, site: SITE, cached: await moduleCached(),
+                         program: params.get("selftest") || "rts" });
 })();
