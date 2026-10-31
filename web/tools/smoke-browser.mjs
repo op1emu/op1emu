@@ -6,7 +6,9 @@
 // passes; then, the module cached by the Service Worker (public/sw.js), a
 // second visit's self-test takes it from there. Neither loads LLVM's module
 // (op1emu-web.<hash>.deferred.wasm); a third visit's (?selftest=llvm) runs a
-// packet only LLVM compiles, which loads it.
+// packet only LLVM compiles, which loads it. A fourth (?selftest=tier1) runs
+// a loop until the tier Worker's promotion of it runs, LLVM in that Worker
+// (compile-worker.js) and not in the emulator's.
 //
 //   node web/tools/smoke-browser.mjs DIST_DIR PLAYWRIGHT_CORE_DIR [CHROME]
 
@@ -40,8 +42,9 @@ async function visit(name, source, program = "rts") {
   await page.waitForFunction(() => globalThis.op1Selftest, null, { timeout: 300000 });
   const result = await page.evaluate(() => globalThis.op1Selftest);
   console.log(`${name} selftest: ${JSON.stringify(result)}`);
-  if (result.error || result.program !== program || result.started !== 0 || !result.finished ||
-      result.module !== source)
+  const ran = program === "tier1" ? result.tier1?.installed >= 1 && !result.llvmLoaded : result.finished;
+  if (result.error || result.program !== program || result.started !== 0 || !ran || result.module !== source ||
+      (program === "rts" && result.llvmLoaded))
     failures.push(`${name} selftest (the module from ${source}): ${JSON.stringify(result)}`);
   return page;
 }
@@ -57,6 +60,10 @@ try {
   if (!failures.length) {
     await visit("LLVM's visit", "cache", "llvm");
     if (deferred().length !== 1) failures.push(`LLVM's module loaded ${deferred().length} times, not once`);
+  }
+  if (!failures.length) {
+    await visit("tier 1's visit", "cache", "tier1");
+    console.log(`LLVM's module fetched from the server ${deferred().length} times in all`);
   }
 } finally {
   await browser.close();
