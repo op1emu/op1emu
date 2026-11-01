@@ -19,6 +19,13 @@
 import { BOOT_ROM_SIZE, parseBootRom, sha256 } from "./bootrom.js";
 import { attachTierWorker } from "./compile-helpers.js";
 import { opfsFs } from "./opfs-fs.js";
+import {extractFirmware246,decryptLoader,validateFirmware246,sha256 as firmwareHash,ENCRYPTED_246_SHA256} from './firmware-package.js';
+import {decompressLzma} from './firmware-lzma.js';
+import {provisionNand} from './firmware-nand.js';
+import {findProfile,stageProfile,PROFILES} from './firmware-storage.js';
+import {getOtpReference,OTP_CACHE} from './firmware-otp.js';
+let preparing=null;
+const cancelledPreparations=new Set();
 
 const NAMES = { nand: "nand.bin", otp: "otp.bin" };
 const BOOT_ROM = "bootrom.bin";
@@ -50,7 +57,7 @@ async function files() {
   const out = {};
   for (const [key, name] of Object.entries(NAMES)) {
     try {
-      const file = handles ? null : await (await dir.getFileHandle(name)).getFile();
+      const file = handles?.[key] ? null : await (await dir.getFileHandle(name)).getFile();
       // One of another size is the rest of an import that did not finish.
       if (file && file.size !== SIZES[key]) throw new Error("incomplete");
       out[key] = file ? { size: file.size, modified: file.lastModified } : { size: SIZES[key], open: true };
@@ -58,6 +65,8 @@ async function files() {
       out[key] = null;
     }
   }
+  const profile=handles?null:await findProfile(dir);
+  out.firmware=profile?{size:2171624,modified:profile.info.created,pages:profile.info.pages}:null;
   return out;
 }
 
@@ -85,7 +94,7 @@ async function importFile(key, file) {
 
 // An image out of OPFS: while the emulator runs, read through its handle.
 async function exportFile(key) {
-  if (!handles) return (await (await directory()).getFileHandle(NAMES[key])).getFile();
+  if (!handles?.[key]) return (await (await directory()).getFileHandle(NAMES[key])).getFile();
   dataFs.flush();
   const handle = handles[key], parts = [], chunk = 16 << 20;
   for (let at = 0, size = handle.getSize(); at < size; at += chunk) {
@@ -96,10 +105,44 @@ async function exportFile(key) {
   return new Blob(parts);
 }
 
+async function prepareFirmware({file,otpFile,allowFetch,requestId}) {
+  const controller=new AbortController();preparing=controller;
+  post({type:'preparing',value:true});
+  try {
+    if(handles||op1)throw new Error('Reload the page before preparing firmware');
+    if(cancelledPreparations.has(requestId))controller.abort();
+    controller.signal.throwIfAborted();
+    if(file.size>64*1024*1024)throw new Error('Firmware file exceeds 64 MiB limit');
+    const root=await directory();status('Validating firmware 246 package');
+    const parsed=await extractFirmware246(new Uint8Array(await file.arrayBuffer()),{
+      decompressLzma:(bytes,limits)=>decompressLzma(bytes,{...limits,signal:controller.signal}),
+    });
+    if(!parsed.entries.some(e=>e.name.startsWith('content/')))throw new Error('Choose a complete .op1 package, not a standalone loader');
+    let keyText=null;
+    if(await firmwareHash(parsed.loader)===ENCRYPTED_246_SHA256){
+      status('Preparing decryption key locally');
+      if(otpFile){if(otpFile.size>65536)throw new Error('OTP text file exceeds 64 KiB limit');keyText=await otpFile.text();}
+      else keyText=await getOtpReference(root,{allowFetch,signal:controller.signal});
+    }
+    const {bytes:loader}=decryptLoader(parsed.loader,keyText);keyText=null;
+    await validateFirmware246(loader);controller.signal.throwIfAborted();
+    const space=await navigator.storage.estimate();
+    if(space.quota&&space.quota-(space.usage??0)<554*1024*1024)throw new Error('Not enough browser storage for a new firmware profile; free space first');
+    await stageProfile(root,loader,parsed.entries.filter(e=>e.name==='content'||e.name.startsWith('content/')),provisionNand,{
+      signal:controller.signal,onProgress:p=>status(`Preparing NAND (${p.phase}): ${Math.floor(100*p.completed/p.total)}%`),
+    });
+    post({type:'prepared'});status('Firmware 246 prepared. Press Start to run the new profile.');
+  }finally{preparing=null;cancelledPreparations.delete(requestId);post({type:'preparing',value:false});post({type:'files',files:await files(),syncAccess});}
+}
 async function deleteFiles() {
   if (handles) throw new Error("the emulator is running: reload the page first");
   const dir = await directory();
-  for (const name of [...Object.values(NAMES), BOOT_ROM]) await dir.removeEntry(name).catch(() => {});
+  const failed=[];
+  for(const name of [...Object.values(NAMES),BOOT_ROM,OTP_CACHE,PROFILES]){
+    try{await dir.removeEntry(name,{recursive:name===PROFILES});}
+    catch(e){if(e.name!=='NotFoundError')failed.push(name);}
+  }
+  if(failed.length)throw new Error('Some stored files could not be deleted. Close other tabs and try again.');
 }
 
 // The boot ROM in OPFS as bootrom.bin (bootrom.js): fetched from the header
@@ -301,14 +344,19 @@ async function selftest({ build, site, cached, program = "rts" }) {
            module: moduleSource, llvmLoaded, tier1 };
 }
 
-async function start({ build, site, snapshot, audioMs, audioPort: port, cached }) {
+async function start({ build, site, snapshot, audioMs, audioPort: port, cached, firmware=false }) {
+  if(op1||handles)throw new Error('A native session already exists');
   const compiled = compileAhead(build, site, cached);
   await ensureBootRom(build.bootRom);
   const dir = await directory();
-  handles = {};
-  try {
-    for (const [key, name] of Object.entries({ ...NAMES, bootRom: BOOT_ROM }))
-      handles[key] = await (await dir.getFileHandle(name)).createSyncAccessHandle();
+  const profile=firmware?await findProfile(dir):null;
+  if(firmware&&!profile)throw new Error('No complete validated firmware profile is stored');
+  handles={};
+  try{
+    const source=profile?profile.dir:dir;
+    handles.nand=await(await source.getFileHandle(NAMES.nand)).createSyncAccessHandle();
+    handles.bootRom=await(await dir.getFileHandle(BOOT_ROM)).createSyncAccessHandle();
+    if(!profile)handles.otp=await(await dir.getFileHandle(NAMES.otp)).createSyncAccessHandle();
   } catch (e) {
     for (const handle of Object.values(handles)) handle.close();
     handles = null;
@@ -318,9 +366,16 @@ async function start({ build, site, snapshot, audioMs, audioPort: port, cached }
   const { FS } = op1;
   dataFs = opfsFs(FS);
   FS.mkdir("/data");
-  FS.mount(dataFs, { files: { [NAMES.nand]: handles.nand, [NAMES.otp]: handles.otp, [BOOT_ROM]: handles.bootRom } },
-           "/data");
-  FS.chdir("/data");
+  FS.mount(dataFs,{files:{[NAMES.nand]:handles.nand,[BOOT_ROM]:handles.bootRom,...(handles.otp?{[NAMES.otp]:handles.otp}:{})}},'/data');
+  if(profile){
+    // Match a fresh desktop direct-LDR working directory. Native OTP creates
+    // its own default identity; downloaded key text is never treated as otp.bin.
+    FS.chdir('/');
+    const rom=new Uint8Array(handles.bootRom.getSize());handles.bootRom.read(rom,{at:0});
+    FS.writeFile('/bootrom.bin',rom);
+    const loader=new Uint8Array(await(await(await profile.dir.getFileHandle('plaintext.ldr')).getFile()).arrayBuffer());
+    await validateFirmware246(loader);FS.writeFile('/firmware.ldr',loader);
+  }else FS.chdir('/data');
   op1.onFrame = frame;
   if (port) {
     audioPort = port;
@@ -333,7 +388,7 @@ async function start({ build, site, snapshot, audioMs, audioPort: port, cached }
       audioPort.postMessage(frames, [frames.buffer]);
     };
   }
-  const path = op1.stringToNewUTF8(`/data/${NAMES.nand}`), none = op1.stringToNewUTF8("");
+  const path = op1.stringToNewUTF8(`/data/${NAMES.nand}`), none = op1.stringToNewUTF8(profile?"/firmware.ldr":"");
   const NAND_SNAPSHOT = 2;
   if (op1._op1_start(path, none, snapshot ? NAND_SNAPSHOT : 0, 0, port ? audioMs : 0) !== 0)
     throw new Error("the emulator did not start (see the console)");
@@ -395,6 +450,7 @@ function run() {
 let queue = Promise.resolve();
 self.onmessage = ({ data }) => {
   switch (data.type) {
+    case 'cancel-firmware':cancelledPreparations.add(data.requestId);preparing?.abort();return;
     case "key":
       op1?._op1_key(data.bank, data.pin, data.pressed ? 1 : 0, 0);
       return;
@@ -416,6 +472,11 @@ self.onmessage = ({ data }) => {
 
 async function handle(data) {
   switch (data.type) {
+    case 'prepare-firmware':await prepareFirmware(data);break;
+    case 'clear-otp-cache':
+      try{await(await directory()).removeEntry(OTP_CACHE);}
+      catch(e){if(e.name!=='NotFoundError')throw new Error('Could not clear the reference cache. Close other tabs and try again.');}
+      status('Cached decryption reference cleared');break;
     case "files":
       post({ type: "files", files: await files(), syncAccess });
       break;
@@ -431,11 +492,10 @@ async function handle(data) {
       post({ type: "exported", name: NAMES[data.name], blob: await exportFile(data.name) });
       break;
     case "delete":
-      await deleteFiles();
-      post({ type: "files", files: await files(), syncAccess });
+      try{await deleteFiles();}finally{post({type:'files',files:await files(),syncAccess});}
       break;
     case "start":
-      await start(data);
+      try{await start(data);}catch(e){post({type:'start-failed',text:e.message??String(e)});}
       break;
     case "selftest":
       post({ type: "selftest", result: await selftest(data) });

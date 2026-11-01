@@ -37,6 +37,26 @@
       The BF526's boot ROM is fetched once from <a href="https://github.com/op1emu/bfin_sim">op1emu/bfin_sim</a>.
       The guest's writes go to the stored image, as to the device's flash.</p>
 
+    <fieldset id="firmware-setup">
+      <legend>Prepare from firmware (experimental, original OP-1 version 246)</legend>
+      <p>Choose your original .op1 update instead of preparing a NAND image manually.
+        Decryption and factory-content provisioning happen locally. This creates a separate
+        528 MiB NAND profile and starts the plaintext loader, like the desktop direct-LDR workflow.
+        Existing imported NAND and OTP files are preserved.</p>
+      <label>Firmware <input id="firmware-file" type="file" accept=".op1"></label>
+      <label>Local OTP text (optional) <input id="firmware-otp" type="file" accept=".txt"></label>
+      <label><input id="fetch-otp" type="checkbox"> If needed, download the public decryption reference from
+        <a href="https://github.com/Tolsi/op1dumps">Tolsi/op1dumps</a> and cache it on this device</label>
+      <p>The reference contains only selected OTP pages, not a complete otp.bin. This mode uses
+        the emulator's generated default chip identity, as a fresh desktop direct-LDR session does.
+        The reference is revalidated before reuse. Public availability does not establish redistribution rights.</p>
+      <button id="prepare-firmware">Prepare firmware</button>
+      <button id="cancel-firmware" disabled>Cancel</button>
+      <button id="clear-otp-cache">Forget downloaded reference</button>
+      <p id="firmware-state">No firmware profile prepared</p>
+    </fieldset>
+    <label>Start from <select id="boot-source"><option value="legacy">Imported NAND + OTP</option>
+      <option value="firmware">Prepared firmware profile</option></select></label>
     <div class="files">
       <label class="button">Choose files…<input id="pick" type="file" multiple hidden></label>
       <span>or drop them on the page</span>

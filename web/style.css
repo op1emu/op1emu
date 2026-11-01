@@ -150,3 +150,9 @@ a {
 #panel-status { color: var(--muted); font-size: 0.9em; }
 select:disabled { opacity: 0.5; }
 select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+#firmware-setup { margin: 1rem 0; padding: 1rem; border: 1px solid #777; border-radius: .4rem; }
+#firmware-setup label { display: block; margin: .6rem 0; }
+#firmware-setup input[type=file] { max-width: 100%; }
+#firmware-setup button { margin: .25rem .25rem .25rem 0; }
+#boot-source { margin: .5rem; }

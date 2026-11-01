@@ -198,23 +198,38 @@ function bindInput() {
 // ---- the images ----
 
 let files = {};
+let preparing=false, preparationId=0;
 function showFiles(next) {
   files = next;
   const describe = (file) =>
     file ? (file.open ? "in use" : `stored ${new Date(file.modified).toLocaleString()}`) : "not stored";
   $("nand-state").textContent = describe(files.nand);
   $("otp-state").textContent = describe(files.otp);
-  $("start").disabled = running || !files.nand || !files.otp;
+  $('firmware-state').textContent=files.firmware?`Firmware 246 prepared (${files.firmware.pages} NAND pages)`:'No firmware profile prepared';
+  $('start').disabled=running||preparing||($('boot-source').value==='firmware'?!files.firmware:!files.nand||!files.otp);
   for (const id of ["export-nand", "export-otp"]) $(id).disabled = !files[id.slice(7)];
 }
 
 function importFile(file) {
   // By size: the NAND image is 528 MiB, the OTP 8 KiB.
-  const name = file.size > 1 << 20 ? "nand" : "otp";
+  if(/\.op1$/i.test(file.name)){setStatus('Use Prepare firmware below for .op1 files.');return;}
+  const name=file.size===553648128?'nand':file.size===8192?'otp':null;
+  if(!name){setStatus('Choose a 528 MiB NAND image or 8 KiB otp.bin; use Prepare firmware for .op1 files.',true);return;}
   worker.postMessage({ type: "import", name, file });
 }
 
 function bindFiles() {
+  $('boot-source').addEventListener('change',()=>showFiles(files));
+  $('prepare-firmware').addEventListener('click',()=>{
+    if(preparing||running)return;
+    const file=$('firmware-file').files[0];
+    if(!file){setStatus('Choose an original OP-1 firmware 246 .op1 file first.',true);return;}
+    preparing=true;preparationId++;
+    $('prepare-firmware').disabled=true;$('cancel-firmware').disabled=false;showFiles(files);
+    worker.postMessage({type:'prepare-firmware',requestId:preparationId,file,otpFile:$('firmware-otp').files[0],allowFetch:$('fetch-otp').checked});
+  });
+  $('cancel-firmware').addEventListener('click',()=>worker.postMessage({type:'cancel-firmware',requestId:preparationId}));
+  $('clear-otp-cache').addEventListener('click',()=>worker.postMessage({type:'clear-otp-cache'}));
   $("pick").addEventListener("change", (event) => {
     for (const file of event.target.files) importFile(file);
     event.target.value = "";
@@ -222,12 +237,12 @@ function bindFiles() {
   addEventListener("dragover", (event) => event.preventDefault());
   addEventListener("drop", (event) => {
     event.preventDefault();
-    if (!running) for (const file of event.dataTransfer.files) importFile(file);
+    if (!running && !preparing) for (const file of event.dataTransfer.files) importFile(file);
   });
   $("export-nand").addEventListener("click", () => worker.postMessage({ type: "export", name: "nand" }));
   $("export-otp").addEventListener("click", () => worker.postMessage({ type: "export", name: "otp" }));
   $("delete").addEventListener("click", () => {
-    if (confirm("Delete the NAND image and otp.bin stored in this browser?")) worker.postMessage({ type: "delete" });
+    if (confirm("Delete all stored NAND images, firmware profiles, OTP and downloaded references in this browser?")) worker.postMessage({ type: "delete" });
   });
   $("start").addEventListener("click", start);
 }
@@ -254,7 +269,7 @@ async function start() {
     console.warn("no audio:", e);
   }
   worker.postMessage({ type: "start", build, site: SITE, snapshot: $("snapshot").checked, audioMs: AUDIO_MS,
-                       audioPort, cached: await moduleCached() }, audioPort ? [audioPort] : []);
+                       audioPort, firmware:$("boot-source").value === "firmware", cached: await moduleCached() }, audioPort ? [audioPort] : []);
 }
 
 // ---- the module's cache (public/sw.js) ----
@@ -286,7 +301,13 @@ globalThis.op1ModuleCached = moduleCached;  // for tools/smoke-browser.mjs
 
 const screen = $("screen").getContext("2d");
 worker.onmessage = ({ data }) => {
-  switch (data.type) {
+  switch(data.type){
+    case 'prepared':$('boot-source').value='firmware';showFiles(files);break;
+    case 'preparing':
+      preparing=data.value;
+      $('prepare-firmware').disabled=preparing||running;
+      for(const id of ['firmware-file','firmware-otp','fetch-otp','clear-otp-cache','pick','delete','boot-source'])$(id).disabled=preparing||running;
+      $('cancel-firmware').disabled=!preparing;showFiles(files);break;
     case "files":
       // Worker-only, so the worker says.
       if (!data.syncAccess) {
@@ -327,13 +348,17 @@ worker.onmessage = ({ data }) => {
       cacheModule();
       setStatus(`Self-test: ${JSON.stringify(data.result)}`);
       break;
+    case 'start-failed':
+      running=true;$('start').disabled=true;
+      setStatus(`${data.text}. Reload this page before trying again.`,true);break;
     case "error":
       if (params.has("selftest")) globalThis.op1Selftest = { error: data.text };
       setStatus(data.text, true);
       break;
     case "stopped":
-      running = false;
-      setStatus("The emulator stopped (see the browser's console).", true);
+      running=true; // Native session resources are terminal until reload.
+      $('start').disabled=true;
+      setStatus("The emulator stopped. Reload the page to start another session.", true);
       break;
   }
 };
