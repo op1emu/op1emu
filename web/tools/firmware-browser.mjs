@@ -20,11 +20,12 @@ try {
 browser=await chromium.launch({headless:true,...(process.env.CHROME?{executablePath:process.env.CHROME}:{channel:'chrome'})});
 const context=await browser.newContext();page=await context.newPage();
 const errors=[];page.on('pageerror',e=>errors.push(e.message));
-let otpRequests=0;
-await context.route('https://raw.githubusercontent.com/Tolsi/op1dumps/**',async route=>{
-  otpRequests++;
-  if(process.env.OP1_OTP_TEXT)await route.fulfill({body:fs.readFileSync(process.env.OP1_OTP_TEXT),contentType:'text/plain'});
-  else await route.abort();
+let externalRequests=0;
+await context.route('**/*',async route=>{
+  const url=new URL(route.request().url());
+  if(/^https?:$/.test(url.protocol)&&url.origin!==new URL(server.url).origin){
+    externalRequests++;await route.abort();
+  }else await route.continue();
 });
 const status=()=>page.locator('#status').textContent();
   await page.goto(server.url);
@@ -33,18 +34,19 @@ const status=()=>page.locator('#status').textContent();
   await page.locator('#firmware-file').setInputFiles({name:'bad.op1',mimeType:'application/octet-stream',buffer:Buffer.from([1,2,3])});
   await page.locator('#prepare-firmware').click();
   await page.waitForFunction(()=>document.getElementById('status').textContent.includes('Unsupported firmware'));
-  if(otpRequests)throw Error('Invalid input triggered OTP network request');
+  if(externalRequests)throw Error('Invalid input triggered an external network request');
   if(process.env.OP1_FIRMWARE&&process.env.OP1_OTP_TEXT){
     await page.locator('#firmware-file').setInputFiles(process.env.OP1_FIRMWARE);
     await page.locator('#firmware-otp').setInputFiles(process.env.OP1_OTP_TEXT);
     await page.locator('#prepare-firmware').click();
     await page.waitForFunction(()=>document.getElementById('firmware-state').textContent.includes('11810'),null,{timeout:180000});
-    if(otpRequests)throw Error('Local OTP unexpectedly fetched');
+    if(externalRequests)throw Error('Preparation unexpectedly made an external request');
     if(await page.locator('#start').isDisabled())throw Error('Prepared profile not startable');
+    if(await page.locator('#export-nand').isDisabled())throw Error('Prepared NAND not exportable before startup');
     await page.reload();
     await page.waitForFunction(()=>document.getElementById('firmware-state').textContent.includes('11810'));
-    await page.locator('#boot-source').selectOption('firmware');
     if(await page.locator('#start').isDisabled())throw Error('Profile not reusable after reload');
+    if(await page.locator('#export-nand').isDisabled())throw Error('Prepared NAND not exportable after reload');
     // Wrong local key must not destroy the previously committed profile.
     await page.locator('#firmware-file').setInputFiles(process.env.OP1_FIRMWARE);
     await page.locator('#firmware-otp').setInputFiles({name:'wrong.txt',mimeType:'text/plain',buffer:Buffer.from('!0xd0 0000000000000000 0000000000000000')});

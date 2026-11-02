@@ -2,9 +2,10 @@
 import {sha256, PLAINTEXT_246_SHA256} from './firmware-package.js';
 export const PROFILES = 'firmware-profiles';
 export const NAND_BYTES = 553648128;
-export async function writeBytes(dir, name, bytes) {
+export async function writeBytes(dir, name, bytes, {signal} = {}) {
   const handle = await (await dir.getFileHandle(name, {create:true})).createSyncAccessHandle();
   try {
+    signal?.throwIfAborted();
     handle.truncate(0);
     for (let at=0; at<bytes.length;) {
       const count=handle.write(bytes.subarray(at),{at});
