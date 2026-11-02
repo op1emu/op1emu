@@ -27,6 +27,13 @@ https://op1emu.github.io/op1emu/ runs the same emulator in Chrome or Edge
 `otp.bin`, which stay in the browser. A boot takes about a minute. See
 [web/README.md](web/README.md) for how it works and how to build it.
 
+## NAND provisioning (experimental)
+
+To create an op1emu NAND image containing the original OP-1 factory content,
+see [NAND provisioning](docs/nand-provisioning.md). This can use an official
+`.op1` update package or an unpacked `content/` directory and requires an
+external `mkyaffs2` utility. Provisioning content does not decrypt firmware.
+
 ## Headless operation
 
 Run from the repository root with the matching `otp.bin`:
