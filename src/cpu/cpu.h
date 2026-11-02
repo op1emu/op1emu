@@ -205,6 +205,8 @@ public:
     void QueueEvent(const std::function<void()>& event, std::chrono::nanoseconds delay = std::chrono::nanoseconds(1));
 
     void AttachDisplay(const std::shared_ptr<Display>& display);
+    // Each attachment is an independent input source; a key is down while
+    // any source holds it. Changes are applied on the CPU thread.
     void AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard);
     void AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash);
     void AttachAudioOutput(const std::shared_ptr<AudioOutput>& audioOutput);
@@ -269,6 +271,10 @@ protected:
     std::shared_ptr<ADXL345> adxl345;
     std::shared_ptr<Potentiometer> potentiometer;
     std::shared_ptr<GPIOPeripheral> gpioOrConnection;
+    // The OP-1 has eight MCP23017s, each with sixteen GPIOs (excluding
+    // the interrupt outputs). Share these dimensions with keyboard state.
+    static constexpr int kGpioExpanderCount = 8;
+    static constexpr int kGpioPinsPerExpander = 16;
     std::vector<std::shared_ptr<MCP230XX>> gpioExpanders;
     std::vector<std::shared_ptr<Device>> devices;
     // The devices ServiceDevices() calls, in the order of `devices`, with
@@ -330,6 +336,8 @@ protected:
     // A block is running (Core::run): what a device access queues now was
     // not in the run's budget.
     bool inRun_ = false;
+    // Number of input sources holding each GPIO down; CPU-thread only.
+    std::array<std::array<unsigned, kGpioPinsPerExpander>, kGpioExpanderCount> keyHolds_{};
     static constexpr uint32_t kMaxChainPackets = 1u << 24;
     // The GP timers tick every kCyclesPerTimerTick guest cycles (see Run()),
     // but for TMRCLK's: it is TIMER7's output (GPTimer::TmrclkSclks), in

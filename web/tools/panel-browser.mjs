@@ -53,7 +53,7 @@ try {
   await page.goto(server.url);
   await page.locator("#start").click();
   await page.evaluate(() => sendFrame());
-  const sent = () => page.evaluate(() => messages.filter((m) => m.type === "key")
+  const sent = () => page.evaluate(() => messages.filter((m) => m.type === "key" || m.type === "com")
     .map((m) => `${m.bank}.${m.pin}${m.pressed ? "+" : "-"}`));
   const clear = () => page.evaluate(() => { messages.length = 0; });
   const ready = () => page.waitForFunction(() => {
