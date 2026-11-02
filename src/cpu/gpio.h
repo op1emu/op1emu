@@ -122,6 +122,9 @@ public:
     int GetPinCount() const override;
 
 private:
+    // An edge-sensitive input's register readback is the sticky edge latch,
+    // not the latest sampled pin level used for edge detection.
+    u16 ReadData() const;
     void ForwardInterrupts();
     void ForwardInterrupt(int irq, u16 mask);
     void OnDataChanged(u16 oldData);
