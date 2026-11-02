@@ -20,12 +20,32 @@ cmake --build build
 ./build/op1emu path/to/nandflash.img path/to/te-boot.ldr
 ```
 
+To enter the te-boot menu, add `--te-boot` (with either the window or
+`--headless`):
+
+```sh
+./build/op1emu path/to/nandflash.img --te-boot
+```
+
+This holds the COM / USB key at startup and releases it after five seconds
+of guest time, independent of the host's compilation speed. This conservative
+hold has been tested with TE-BOOT v2.30; it is not a measured key-scan deadline.
+Automatic and manual input are separate sources: the timed release keeps COM
+pressed if you are still holding the USB key in the window.
+
 ## In the browser
 
 https://op1emu.github.io/op1emu/ runs the same emulator in Chrome or Edge
 (133 or later), compiled to WebAssembly, on your OP-1's NAND image and
 `otp.bin`, which stay in the browser. A boot takes about a minute. See
 [web/README.md](web/README.md) for how it works and how to build it.
+
+## NAND provisioning (experimental)
+
+To create an op1emu NAND image containing the original OP-1 factory content,
+see [NAND provisioning](docs/nand-provisioning.md). This can use an official
+`.op1` update package or an unpacked `content/` directory and requires an
+external `mkyaffs2` utility. Provisioning content does not decrypt firmware.
 
 ## Headless operation
 

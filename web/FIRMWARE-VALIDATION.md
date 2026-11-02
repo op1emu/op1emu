@@ -1,6 +1,25 @@
 # Firmware importer draft validation
 
-## Single active configuration revision (2026-11-02)
+## Upstream startup integration (2026-11-02)
+
+Merged upstream `64a093c95a40f3f88f38bd7028d054d1420437c2` without rewriting
+feature history. The browser retains COM held-level startup, release during
+loading, source-aware key handling and trusted-event audio activation. A stopped
+or failed start releases input and closes audio but remains terminal until reload;
+ordinary storage errors do not stop a healthy session. Both Start and COM use
+the active configuration and are disabled during preparation. Local OTP-only
+preparation and commit-last selection are unchanged. OTP extraction remains out
+of scope; no device access is performed.
+
+Local integration tests: 45 passed, 1 optional oracle skipped, 0 failed; independent
+review approved. Syntax and diff checks pass. Integration checks cover
+prepared-only COM readiness, preparation/terminal
+controls, command-tagged failures, late progress and COM state before the first
+CPU slice. Browser/native/WASM execution is delegated to exact-head CI because
+this fresh cloud checkout has no installed build dependencies. No installation
+was performed; real-input/mobile limitations below still apply.
+
+## Single active configuration revision (earlier 2026-11-02)
 
 - Synthetic tests exercise prepared-only Export, both input transitions,
   shared UI/Start/Export selection, persistence, failed initial commits,

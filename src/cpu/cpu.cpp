@@ -229,7 +229,7 @@ BlackFinCpu::BlackFinCpu(bool deterministic) : time_(deterministic), pc(0) {
     devices.push_back(twi);
     serviced_.twi = twi;
 
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < kGpioExpanderCount; i++) {
         u32 addr = 0x20 + i;
         gpioExpanders.push_back(std::make_shared<MCP230XX>(addr, MCP230XXModel::MCP23017));
         twi->AttachPeripheral(gpioExpanders.back());
@@ -1224,10 +1224,18 @@ void BlackFinCpu::AttachNandFlash(const std::shared_ptr<NandFlash>& nandFlash) {
 }
 
 void BlackFinCpu::AttachKeyboard(const std::shared_ptr<Keyboard>& keyboard) {
-    auto key = [this](int bank, int index, bool pressed) {
-        return [this, bank, index, pressed]() {
-            // Map keyboard events to GPIO expander pins
-            gpioExpanders[bank]->SetPinInput(index, pressed ? GPIOPinLevel::Low : GPIOPinLevel::High);
+    using HeldKeys = std::array<std::array<bool, kGpioPinsPerExpander>, kGpioExpanderCount>;
+    auto held = std::make_shared<HeldKeys>();
+    auto key = [this, held](int bank, int index, bool pressed) {
+        return [this, held, bank, index, pressed]() {
+            auto& down = held->at(bank).at(index);
+            auto& count = keyHolds_.at(bank).at(index);
+            if (down != pressed) {
+                if (pressed) ++count;
+                else --count;
+                down = pressed;
+            }
+            gpioExpanders.at(bank)->SetPinInput(index, count ? GPIOPinLevel::Low : GPIOPinLevel::High);
         };
     };
     keyboard->SetKeyEventCallback([this, key](int bank, int index, bool pressed) {

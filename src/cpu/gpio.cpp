@@ -5,15 +5,19 @@ static constexpr int GPIO_PIN_COUNT = 16;
 
 GPIO::GPIO(const std::string& name, u32 baseAddr) : RegisterDevice(name, baseAddr, 0x44) {
     REG32(GPIO_DATA, 0x00);
-    FIELD(GPIO_DATA, VAL, 0, 16, R(data), [this](u32 v) {
+    FIELD(GPIO_DATA, VAL, 0, 16, R(ReadData()), [this](u32 v) {
         u16 oldData = data;
-        data = v;
+        // Inputs ignore writes; keep sampled levels separate from latch readback.
+        data = (data & ~dir_output) | (v & dir_output);
         OnDataChanged(oldData);
     });
     REG32(GPIO_CLEAR, 0x04);
-    FIELD(GPIO_CLEAR, VAL, 0, 16, R(data), [this](u32 v) {
+    FIELD(GPIO_CLEAR, VAL, 0, 16, R(ReadData()), [this](u32 v) {
         u16 oldData = data;
-        data &= ~v;
+        // PORTxIO_CLEAR also acknowledges edge interrupts on input pins.
+        // Preserve externally driven input levels; only output pins may
+        // change their data latch when this register is written.
+        data &= ~(v & dir_output);
         OnDataChanged(oldData);
         // Clear edge interrupts for cleared bits
         bool changed = false;
@@ -29,15 +33,15 @@ GPIO::GPIO(const std::string& name, u32 baseAddr) : RegisterDevice(name, baseAdd
         }
     });
     REG32(GPIO_SET, 0x08);
-    FIELD(GPIO_SET, VAL, 0, 16, R(data), [this](u32 v) {
+    FIELD(GPIO_SET, VAL, 0, 16, R(ReadData()), [this](u32 v) {
         u16 oldData = data;
-        data |= v;
+        data |= v & dir_output;
         OnDataChanged(oldData);
     });
     REG32(GPIO_TOGGLE, 0x0C);
-    FIELD(GPIO_TOGGLE, VAL, 0, 16, R(data), [this](u32 v) {
+    FIELD(GPIO_TOGGLE, VAL, 0, 16, R(ReadData()), [this](u32 v) {
         u16 oldData = data;
-        data ^= v;
+        data ^= v & dir_output;
         OnDataChanged(oldData);
     });
 
@@ -107,6 +111,14 @@ GPIO::GPIO(const std::string& name, u32 baseAddr) : RegisterDevice(name, baseAdd
 
     REG32(GPIO_INEN, 0x40);
     FIELD(GPIO_INEN, inen, 0, 16, R(inen), W(inen));
+}
+
+// For edge-sensitive input pins, the GPIO DATA register reports the sticky
+// interrupt latch. Keep 'data' as the last sampled level so transitions and
+// GPIOPeripheral::GetPinOutput remain independent of acknowledgment.
+u16 GPIO::ReadData() const {
+    const u16 edgeInputs = edge & inen & ~dir_output;
+    return (data & ~edgeInputs) | (intState & edgeInputs);
 }
 
 int GPIO::GetPinCount() const {

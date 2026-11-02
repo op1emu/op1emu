@@ -21,6 +21,8 @@ const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "modu
 let size = null;  // active faceplate's intrinsic coordinates
 let ui;
 let running = false;
+let started = false;  // one session per page; OPFS handles stay open until reload
+let audioContext = null;
 let volume = 128;
 const encoderIndex = {};
 
@@ -97,11 +99,22 @@ const inside = ([x, y], [left, top, width, height]) => x >= left && x < left + w
 
 // ---- input, to the worker ----
 
-function key(name, pressed) {
+const keySources = new Map();  // button name -> the pointer/keyboard sources holding it
+function key(name, pressed, source) {
   const button = ui.buttons[name];
-  if (!button || !running) return;
+  // The COM start control queues its level before start(); the panel's
+  // pointer handler still ignores every key until running.
+  if (!button || (!running && name !== "usb")) return;
+  const sources = keySources.get(name) ?? new Set();
+  const wasPressed = sources.size > 0;
+  if (pressed) sources.add(source);
+  else sources.delete(source);
+  if (sources.size) keySources.set(name, sources);
+  else keySources.delete(name);
+  pressed = sources.size > 0;
+  if (pressed === wasPressed) return;
   const [bank, pin] = button.gpio;
-  worker.postMessage({ type: "key", bank, pin, pressed });
+  worker.postMessage({ type: name === "usb" ? "com" : "key", bank, pin, pressed });
   $(`key-${name}`)?.classList.toggle("down", pressed);
 }
 
@@ -135,10 +148,61 @@ function turnerAt(point) {
 const held = new Map();  // pointer id -> button name
 const keysDown = new Set();  // KeyboardEvent.code, pressed and not yet released
 function releaseAll() {
-  for (const code of keysDown) key(KEYMAP[code], false);
+  releaseCom();
+  for (const code of keysDown) key(KEYMAP[code], false, `keyboard:${code}`);
   keysDown.clear();
-  for (const name of held.values()) key(name, false);
+  for (const [pointer, name] of held) key(name, false, `pointer:${pointer}`);
   held.clear();
+}
+
+// This button starts the emulator on press, and remains available while it
+// loads and runs. Keep the current level in the Worker even before op1_start.
+const comPointers = new Set(), comKeys = new Set();
+let comPressed = false;
+function updateCom() {
+  const pressed = comPointers.size > 0 || comKeys.size > 0;
+  if (pressed === comPressed) return;
+  comPressed = pressed;
+  $("te-boot").classList.toggle("down", pressed);
+  if (!pressed) $("panel").style.minHeight = "";
+  key("usb", pressed, "com-button");
+}
+function releaseCom() {
+  comPointers.clear();
+  comKeys.clear();
+  updateCom();
+}
+function bindCom() {
+  const button = $("te-boot");
+  const press = () => {
+    if (button.disabled) return;
+    updateCom();
+    if (!running) start();
+  };
+  button.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || button.disabled) return;
+    button.setPointerCapture(event.pointerId);
+    comPointers.add(event.pointerId);
+    press();
+    event.preventDefault();
+  });
+  const release = (event) => {
+    comPointers.delete(event.pointerId);
+    updateCom();
+  };
+  for (const name of ["pointerup", "pointercancel", "lostpointercapture"])
+    button.addEventListener(name, release);
+  button.addEventListener("keydown", (event) => {
+    if (button.disabled || (event.code !== "Space" && event.code !== "Enter")) return;
+    event.preventDefault();
+    comKeys.add(event.code);
+    press();
+  });
+  addEventListener("keyup", (event) => {
+    if (!comKeys.delete(event.code)) return;
+    event.preventDefault();
+    updateCom();
+  });
 }
 
 function bindInput() {
@@ -150,7 +214,7 @@ function bindInput() {
     if (name) {
       device.setPointerCapture(event.pointerId);
       held.set(event.pointerId, name);
-      key(name, true);
+      key(name, true, `pointer:${event.pointerId}`);
     } else {
       const turner = turnerAt(point);
       turner?.turn(turner.clockwise);
@@ -159,7 +223,7 @@ function bindInput() {
   });
   const release = (event) => {
     const name = held.get(event.pointerId);
-    if (name) key(name, false);
+    if (name) key(name, false, `pointer:${event.pointerId}`);
     held.delete(event.pointerId);
   };
   device.addEventListener("pointerup", release);
@@ -180,12 +244,12 @@ function bindInput() {
     event.preventDefault();
     if (event.repeat || keysDown.has(event.code)) return;
     keysDown.add(event.code);
-    key(name, true);
+    key(name, true, `keyboard:${event.code}`);
   });
   addEventListener("keyup", (event) => {
     if (!keysDown.delete(event.code)) return;
     event.preventDefault();
-    key(KEYMAP[event.code], false);
+    key(KEYMAP[event.code], false, `keyboard:${event.code}`);
   });
   // Keys held when the window loses focus, on the keyboard or by a pointer,
   // would stay down: their releases may never come.
@@ -206,12 +270,13 @@ function showFiles(next) {
   $("nand-state").textContent = describe(files.nand);
   $("otp-state").textContent = describe(files.otp);
   $('firmware-state').textContent=files.firmware?`Active: firmware 246 (${files.firmware.pages} NAND pages)`:files.kind==='manual'?'Active: manual NAND + OTP inputs':'No active boot configuration';
-  $('start').disabled=running||preparing||!files.ready;
+  $('start').disabled=started||preparing||!files.ready;
+  $('te-boot').disabled=(started&&!running)||preparing||!files.ready;
   for (const id of ["export-nand", "export-otp"]) $(id).disabled = !files[id.slice(7)];
 }
 
 function importFile(file) {
-  if(running||preparing)return;
+  if(started||preparing)return;
   // By size: the NAND image is 528 MiB, the OTP 8 KiB.
   if(/\.op1$/i.test(file.name)){setStatus('Use Prepare firmware below for .op1 files.');return;}
   const name=file.size===553648128?'nand':file.size===8192?'otp':null;
@@ -221,7 +286,7 @@ function importFile(file) {
 
 function bindFiles() {
   $('prepare-firmware').addEventListener('click',()=>{
-    if(preparing||running)return;
+    if(preparing||started)return;
     const file=$('firmware-file').files[0];
     if(!file){setStatus('Choose an original OP-1 firmware 246 .op1 file first.',true);return;}
     preparing=true;preparationId++;
@@ -236,7 +301,7 @@ function bindFiles() {
   addEventListener("dragover", (event) => event.preventDefault());
   addEventListener("drop", (event) => {
     event.preventDefault();
-    if (!running && !preparing) for (const file of event.dataTransfer.files) importFile(file);
+    if (!started && !preparing) for (const file of event.dataTransfer.files) importFile(file);
   });
   $("export-nand").addEventListener("click", () => worker.postMessage({ type: "export", name: "nand" }));
   $("export-otp").addEventListener("click", () => worker.postMessage({ type: "export", name: "otp" }));
@@ -246,16 +311,35 @@ function bindFiles() {
   $("start").addEventListener("click", start);
 }
 
+// Touch pointerdown starts the CPU but does not activate audio. Keep the
+// context from that first press, and resume it on pointerup or a later key.
+function resumeAudio(event) {
+  if (event.isTrusted && audioContext?.state === "suspended")
+    audioContext.resume().catch((error) => console.warn("no audio:", error));
+}
+addEventListener("pointerup", resumeAudio);
+addEventListener("keydown", resumeAudio);
+
+function stop() {
+  releaseAll();
+  running = false;
+  showFiles(files);
+  audioContext?.close().catch((error) => console.warn("closing audio:", error));
+}
+
 async function start() {
-  if(running||preparing||!files.ready)return;
+  if(started||preparing||!files.ready)return;
+  started = true;
   running = true;
   for(const id of ['prepare-firmware','firmware-file','firmware-otp','pick','delete','start'])$(id).disabled=true;
+  // Preserve the held COM button's position while setup collapses.
+  if (comPressed) $('panel').style.minHeight = `${$('panel').getBoundingClientRect().height}px`;
   $("panel").classList.add("running");
   navigator.storage.persist?.();
-  // The audio needs the click: an AudioContext made without one is suspended.
+  // Do not await resume(): touch must start booting while COM is still held.
   let audioPort = null;
   try {
-    const context = new AudioContext({ sampleRate: 44100, latencyHint: "interactive" });
+    const context = audioContext = new AudioContext({ sampleRate: 44100, latencyHint: "interactive" });
     await context.audioWorklet.addModule(audioWorklet);
     const node = new AudioWorkletNode(context, "op1-output", {
       numberOfInputs: 0, outputChannelCount: [2],
@@ -305,8 +389,8 @@ worker.onmessage = ({ data }) => {
     case 'prepared':break;
     case 'preparing':
       preparing=data.value;
-      $('prepare-firmware').disabled=preparing||running;
-      for(const id of ['firmware-file','firmware-otp','pick','delete'])$(id).disabled=preparing||running;
+      $('prepare-firmware').disabled=preparing||started;
+      for(const id of ['firmware-file','firmware-otp','pick','delete'])$(id).disabled=preparing||started;
       $('cancel-firmware').disabled=!preparing;showFiles(files);break;
     case "files":
       // Worker-only, so the worker says.
@@ -318,12 +402,14 @@ worker.onmessage = ({ data }) => {
       showFiles(data.files);
       break;
     case "progress":
+      if (started && !running) break;
       setStatus(data.text);
       break;
     case "running":
       cacheModule();
       break;
     case "stats":
+      if (started && !running) break;
       globalThis.op1Stats = data;  // for a look from the console
       setStatus(data.frames ? "" : `Booting: ${data.guestS.toFixed(1)} s of the OP-1's time` +
                 " (it compiles the firmware's code as it goes: about a minute)");
@@ -348,17 +434,18 @@ worker.onmessage = ({ data }) => {
       cacheModule();
       setStatus(`Self-test: ${JSON.stringify(data.result)}`);
       break;
-    case 'start-failed':
-      running=true;$('start').disabled=true;
-      setStatus(`${data.text}. Reload this page before trying again.`,true);break;
-    case "error":
+    case "error": {
       if (params.has("selftest")) globalThis.op1Selftest = { error: data.text };
-      setStatus(data.text, true);
+      // File operations can fail during a healthy session. Only a failed
+      // start ends it and requires reload, as a stopped CPU does.
+      const failedStart = data.command === "start";
+      if (failedStart) stop();
+      setStatus(data.text + (failedStart ? " Reload the page to start again." : ""), true);
       break;
+    }
     case "stopped":
-      running=true; // Native session resources are terminal until reload.
-      $('start').disabled=true;
-      setStatus("The emulator stopped. Reload the page to start another session.", true);
+      stop();
+      setStatus("The emulator stopped. Reload the page to start again (see the browser's console).", true);
       break;
   }
 };
@@ -372,6 +459,7 @@ worker.onmessage = ({ data }) => {
     return;
   }
   bindInput();
+  bindCom();
   bindFiles();
   worker.postMessage({ type: "files" });
   // The module and the boot ROM with no firmware (tools/smoke-browser.mjs).

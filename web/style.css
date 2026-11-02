@@ -68,6 +68,7 @@ main {
 }
 
 #panel {
+  box-sizing: border-box;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -78,9 +79,11 @@ main {
   font-size: 1.3em;
 }
 #panel.running .files,
-#panel.running .setup,
-#panel.running #start {
+#panel.running .setup {
   display: none;
+}
+#panel.running #start {
+  visibility: hidden;  /* keep COM in place while the pointer is held */
 }
 table {
   border-collapse: collapse;
@@ -115,6 +118,14 @@ button.primary {
   border-color: var(--accent);
   color: #fff;
   padding: 6px 24px;
+}
+#te-boot {
+  touch-action: none;
+  user-select: none;
+}
+#te-boot.down {
+  background: var(--accent);
+  color: #fff;
 }
 button.quiet {
   border: none;

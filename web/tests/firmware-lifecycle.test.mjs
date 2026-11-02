@@ -9,11 +9,21 @@ const ref=name=>({path:[name],name:'nand.bin'});
 const manual={kind:'manual',nand:ref('manual'),otp:{path:['manual'],name:'otp.bin'}};
 const prepared={kind:'firmware',nand:ref('prepared'),ldr:{path:['prepared'],name:'plaintext.ldr'},pages:17};
 function ui(running=false){
-  const elements=new Map(),$=id=>{if(!elements.has(id))elements.set(id,{disabled:false,classList:{remove(){}}});return elements.get(id)};
-  const context={worker:{},$,setStatus(){},params:new URLSearchParams(),cacheModule(){}};
+  const elements=new Map(),messages=[],statuses=[];
+  let audioClosed=0;
+  const $=id=>{if(!elements.has(id))elements.set(id,{disabled:false,style:{},classList:{remove(){},toggle(){}}});return elements.get(id)};
+  const context={worker:{postMessage:message=>messages.push(message)},$,setStatus:(...args)=>statuses.push(args),params:new URLSearchParams(),cacheModule(){},console,
+    KEYMAP:{KeyA:'synth'},ui:{buttons:{usb:{gpio:[1,2]},synth:{gpio:[3,4]}}},
+    audioContext:{close:()=>{audioClosed++;return Promise.resolve()}},
+  };
   vm.createContext(context);
-  vm.runInContext(`let running=${running};\n`+main.slice(main.indexOf('let files = {}'),main.indexOf('function importFile(file)'))+main.slice(main.indexOf('worker.onmessage ='),main.indexOf('\n(async () => {')),context);
-  return {context,elements,send:data=>context.worker.onmessage({data}),running:()=>vm.runInContext('running',context)};
+  vm.runInContext(`let running=${running},started=${running};\n`+
+    main.slice(main.indexOf('const keySources ='),main.indexOf('function turnEncoder('))+
+    main.slice(main.indexOf('const held ='),main.indexOf('function bindCom('))+
+    main.slice(main.indexOf('let files = {}'),main.indexOf('function bindFiles()'))+
+    main.slice(main.indexOf('function stop()'),main.indexOf('async function start()'))+
+    main.slice(main.indexOf('worker.onmessage ='),main.indexOf('\n(async () => {')),context);
+  return {context,elements,messages,statuses,audioClosed:()=>audioClosed,send:data=>context.worker.onmessage({data}),running:()=>vm.runInContext('running',context),run:code=>vm.runInContext(code,context)};
 }
 function worker(config=manual){
   const messages=[],opened=[],removed=[];
@@ -37,9 +47,9 @@ function worker(config=manual){
   return {context,messages,root,opened,removed,run:code=>vm.runInContext(code,context),stored:()=>committed};
 }
 const prepare='prepareFirmware({requestId:7,file:{size:1,arrayBuffer:async()=>new ArrayBuffer(1)}})';
-test('prepared-only Export and Start are enabled from the active UI description',async()=>{
+test('prepared-only Export, COM and Start are enabled from the active UI description',async()=>{
   const w=worker(prepared),u=ui();const files=await w.run('files()');u.send({type:'files',files,syncAccess:true});
-  assert.equal(u.elements.get('start').disabled,false);assert.equal(u.elements.get('export-nand').disabled,false);assert.equal(u.elements.get('export-otp').disabled,true);
+  assert.equal(u.elements.get('start').disabled,false);assert.equal(u.elements.get('te-boot').disabled,false);assert.equal(u.elements.get('export-nand').disabled,false);assert.equal(u.elements.get('export-otp').disabled,true);
   assert.match(u.elements.get('firmware-state').textContent,/Active: firmware 246/);
   assert.equal((await w.run("exportFile('nand')")).identity,'prepared');
 });
@@ -91,8 +101,24 @@ test('repeated preparation replaces only on success and survives worker reload',
 test('encrypted input without local OTP fails without retrieval',async()=>{
   const w=worker();w.context.firmwareHash=async()=> 'encrypted';await assert.rejects(w.run(prepare),/local OTP text file/);assert.equal(w.stored().config,manual);
 });
-test('generic storage errors preserve running state',()=>{const u=ui(true);u.send({type:'error',text:'failed export'});assert.equal(u.running(),true)});
-test('stopped and failed sessions require reload',()=>{for(const type of ['stopped','start-failed']){const u=ui(true);u.send({type,text:'failure'});assert.equal(u.running(),true);assert.equal(u.elements.get('start').disabled,true)}});
+test('generic storage errors preserve running state and audio',()=>{const u=ui(true);u.send({type:'error',command:'export',text:'failed export'});assert.equal(u.running(),true);assert.equal(u.run('started'),true);assert.equal(u.audioClosed(),0)});
+test('stopped and failed starts release input and audio but remain terminal',()=>{
+  for(const message of [{type:'stopped'},{type:'error',command:'start',text:'failure'}]){
+    const u=ui(true);
+    u.send({type:'files',syncAccess:true,files:{kind:'firmware',ready:true,nand:{size:553648128},firmware:{pages:17}}});
+    u.run("keysDown.add('KeyA');key('synth',true,'keyboard:KeyA');comPointers.add(1);updateCom()");
+    assert.equal(u.messages.filter(m=>m.pressed).length,2);
+    u.send(message);
+    assert.equal(u.running(),false);assert.equal(u.run('started'),true);
+    assert.equal(u.elements.get('start').disabled,true);assert.equal(u.elements.get('te-boot').disabled,true);
+    assert.equal(u.audioClosed(),1);assert.equal(u.run('keysDown.size+comPointers.size+comKeys.size+held.size+keySources.size'),0);
+    assert.equal(u.messages.filter(m=>!m.pressed).length,2);
+    const messageCount=u.messages.length;u.run("importFile({name:'otp.bin',size:8192})");assert.equal(u.messages.length,messageCount);
+    const terminal=u.statuses.at(-1);assert.match(terminal[0],/Reload the page/);
+    u.send({type:'progress',text:'late progress'});u.send({type:'stats',frames:1,guestS:42});
+    assert.equal(u.statuses.at(-1),terminal);
+  }
+});
 test('second native start and input replacement are refused',async()=>{const w=worker();w.run('op1 = {}');await assert.rejects(w.run('start({})'),/native session already exists/);await assert.rejects(w.run("importFile('otp',{size:8192})"),/reload/);await assert.rejects(w.run(prepare),/Reload/)});
 test('failed manual import leaves prepared selection active',async()=>{
   const w=worker(prepared);
@@ -134,4 +160,40 @@ for(const name of ['input-browser.mjs','panel-browser.mjs'])test(`${name} advert
   w.postMessage({type:'files'});
   assert.equal(u.elements.get('start').disabled,false);
   assert.equal(u.elements.get('export-nand').disabled,false);
+});
+
+test('preparation disables COM and Start without losing prepared configuration',async()=>{
+  const w=worker(prepared),u=ui();u.send({type:'files',files:await w.run('files()'),syncAccess:true});
+  u.send({type:'preparing',value:true});assert.equal(u.elements.get('start').disabled,true);assert.equal(u.elements.get('te-boot').disabled,true);
+  u.send({type:'preparing',value:false});assert.equal(u.elements.get('start').disabled,false);assert.equal(u.elements.get('te-boot').disabled,false);
+  assert.match(u.elements.get('firmware-state').textContent,/Active: firmware 246/);
+});
+test('queued COM level reaches native before the first slice for both selected boot paths',async()=>{
+  for(const config of [manual,prepared])for(const released of [false,true]){
+    const w=worker(config),events=[];
+    let loading,finish;
+    const atLoading=new Promise(resolve=>{loading=resolve}),gate=new Promise(resolve=>{finish=resolve});
+    w.context.events=events;w.context.setInterval=()=>0;
+    w.context.native={FS:{mkdir(){},mount(){},chdir(){},writeFile(){}},stringToNewUTF8:s=>s,
+      _op1_start:(nand,ldr)=>{events.push(['start',nand,ldr]);return 0},
+      _op1_key:(bank,pin,pressed)=>events.push(['key',bank,pin,pressed]),
+      _op1_step:()=>{events.push(['slice']);return -1},
+    };
+    w.context.opfsFs=()=>({flush(){}});
+    w.context.instantiateStub=async()=>{loading();await gate;return w.context.native};
+    w.run('compileAhead=()=>Promise.resolve({});ensureBootRom=async()=>{};instantiate=instantiateStub;tierWorker=()=>{}');
+    const send=data=>w.context.self.onmessage({data});
+    send({type:'com',bank:1,pin:2,pressed:true});send({type:'start',build:{}});
+    await atLoading;
+    if(released)send({type:'com',bank:1,pin:2,pressed:false});
+    assert.deepEqual(events,[]);finish();await w.run('queue');
+    assert.deepEqual(events,[['start','/data/nand.bin',config.kind==='firmware'?'/firmware.ldr':''],['key',1,2,released?0:1],['slice']]);
+    assert.equal(w.opened[0],`${config.nand.path[0]}/nand.bin`);
+    assert.equal(w.opened.some(n=>n.endsWith('/otp.bin')),config.kind==='manual');
+    assert.equal(w.messages.some(m=>m.type==='error'),false);
+  }
+});
+test('worker start failures retain command tagging for terminal UI cleanup',async()=>{
+  const w=worker();w.run('op1={}');w.context.self.onmessage({data:{type:'start',build:{}}});await w.run('queue');
+  const failure=w.messages.find(m=>m.type==='error');assert.equal(failure.command,'start');assert.match(failure.text,/native session already exists/);
 });

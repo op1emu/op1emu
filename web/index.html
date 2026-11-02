@@ -38,6 +38,9 @@
       The BF526's boot ROM is fetched once from <a href="https://github.com/op1emu/bfin_sim">op1emu/bfin_sim</a>.
       The guest's writes go to the stored image, as to the device's flash.</p>
 
+    <p><button id="start" class="primary" disabled>Start</button>
+      <button id="te-boot" disabled>COM (hold)</button></p>
+    <p class="setup">Hold COM to start in te-boot; release to let go of the key.</p>
     <fieldset id="firmware-setup">
       <legend>Prepare from firmware (experimental, original OP-1 version 246)</legend>
       <p>Choose your original .op1 update instead of preparing a NAND image manually.
@@ -71,7 +74,6 @@
       <label><input id="snapshot" type="checkbox"> Don't keep the guest's writes to the NAND</label>
       <button id="delete" class="quiet">Delete the stored files</button>
     </p>
-    <p><button id="start" class="primary" disabled>Start</button></p>
 
     <details>
       <summary>Controls</summary>
