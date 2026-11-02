@@ -244,11 +244,56 @@ void InputWritesPreserveSamples() {
         CheckEdgeReadback(portG, kPg3 | kPg4, 0, context + ": output clear still works");
     }
 }
+
+// The keypad's expander interrupt lines are active-low. An active-low OR must
+// start inactive (all inputs High), assert when either input goes Low, and let
+// PortG observe a fresh falling edge after each acknowledgement.
+void ActiveLowOrGate() {
+    GPIOOrGate gate(true);
+    Check(gate.GetPinOutput(2) == GPIOPinLevel::High, "active-low OR starts inactive");
+    gate.SetPinInput(0, GPIOPinLevel::Low);
+    Check(gate.GetPinOutput(2) == GPIOPinLevel::Low, "first active-low input asserts OR");
+    gate.SetPinInput(0, GPIOPinLevel::High);
+    gate.SetPinInput(1, GPIOPinLevel::Low);
+    Check(gate.GetPinOutput(2) == GPIOPinLevel::Low, "second active-low input asserts OR");
+    gate.SetPinInput(1, GPIOPinLevel::High);
+    Check(gate.GetPinOutput(2) == GPIOPinLevel::High, "all inactive inputs release OR");
+
+    GPIO portG("PORTG", 0xFFC01500);
+    int interruptLevel = 0;
+    portG.BindInterruptB(41, [&](int, int level) { interruptLevel = level; });
+    gate.Connect(2, {portG, 0});
+    portG.Write32(0x30, 0);
+    portG.Write32(0x40, kPg0);
+    portG.Write32(0x34, kPg0);
+    portG.Write32(0x38, kPg0);
+    portG.Write32(0x3C, 0);
+    portG.Write32(0x28, kPg0);
+    Check(portG.GetPinOutput(0) == GPIOPinLevel::High && interruptLevel == 0,
+          "PortG starts high with no pending keypad interrupt");
+    gate.SetPinInput(0, GPIOPinLevel::Low);
+    Check(portG.GetPinOutput(0) == GPIOPinLevel::Low && interruptLevel == 1,
+          "first keypad interrupt reaches PortG");
+    CheckEdgeReadback(portG, kPg0, kPg0, "keypad falling edge is latched");
+    gate.SetPinInput(0, GPIOPinLevel::High);
+    portG.Write32(0x04, kPg0);
+    Check(portG.GetPinOutput(0) == GPIOPinLevel::High && interruptLevel == 0,
+          "release and acknowledgement rearm PortG");
+    gate.SetPinInput(1, GPIOPinLevel::Low);
+    CheckEdgeReadback(portG, kPg0, kPg0, "a later key is a new falling edge");
+    Check(interruptLevel == 1, "later key asserts the interrupt again");
+
+    GPIOOrGate activeHigh(false);
+    Check(activeHigh.GetPinOutput(2) == GPIOPinLevel::Low, "active-high OR starts inactive");
+    activeHigh.SetPinInput(0, GPIOPinLevel::High);
+    Check(activeHigh.GetPinOutput(2) == GPIOPinLevel::High, "active-high behavior is unchanged");
+}
 } // namespace
 
 int main() {
     Stock246Pg3FallingEdge();
     SharedMaskAndRepeatedLow();
     InputWritesPreserveSamples();
+    ActiveLowOrGate();
     std::puts("gpio-edge-test: sticky readback, input writes, acknowledgment, PG3 routing and PG0 passed");
 }
