@@ -9,7 +9,7 @@
 - Selection records commit last; manual file imports also stage replacements.
   Failed preparation preserves the active configuration. The downloaded OTP
   integration is removed; only one-way deletion of an obsolete cache remains.
-- Local Node tests: 40 passed, 1 optional oracle skipped, 0 failed. Syntax
+- Local Node tests: 42 passed, 1 optional oracle skipped, 0 failed. Syntax
   checks and `git diff --check` pass. The optional
   independent mkyaffs2 oracle is unavailable and skipped.
 - This fresh cloud workspace lacks Vite/Playwright dependencies, pytest and the

@@ -124,3 +124,14 @@ test('Delete removes the obsolete OTP reference without reading or reusing it',a
   assert.ok(w.removed.includes('firmware-otp-reference.txt'));
   assert.ok(w.removed.includes('configs'));assert.ok(w.removed.includes('manual-inputs'));assert.ok(w.removed.includes('profiles'));
 });
+
+// Browser harnesses must implement the production files-message contract.
+for(const name of ['input-browser.mjs','panel-browser.mjs'])test(`${name} advertises a startable active configuration`,()=>{
+  const source=fs.readFileSync(new URL(`../tools/${name}`,import.meta.url),'utf8');
+  const context={setTimeout:callback=>callback()};vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function standIn()'),source.indexOf('const server ='))+'standIn();',context);
+  const w=new context.Worker(),u=ui();w.onmessage=({data})=>u.send(data);
+  w.postMessage({type:'files'});
+  assert.equal(u.elements.get('start').disabled,false);
+  assert.equal(u.elements.get('export-nand').disabled,false);
+});

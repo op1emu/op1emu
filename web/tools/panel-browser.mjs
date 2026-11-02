@@ -27,7 +27,7 @@ function standIn() {
       messages.push(message);
       if (message.type === "start") startCount++;
       if (message.type === "files") setTimeout(() => this.onmessage({ data: {
-        type: "files", syncAccess: true, files: { nand: { modified: 0 }, otp: { modified: 0 } },
+        type: "files", syncAccess: true, files: { kind: "manual", ready: true, nand: { modified: 0 }, otp: { modified: 0 } },
       } }), 0);
     }
   };

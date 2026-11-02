@@ -25,7 +25,7 @@ function standIn() {
     postMessage(message) {
       if (message.type === "key") keys.push(`${message.bank}.${message.pin}${message.pressed ? "+" : "-"}`);
       if (message.type === "files") {
-        const files = { nand: { size: 553648128, modified: 0 }, otp: { size: 8192, modified: 0 } };
+        const files = { kind: "manual", ready: true, nand: { size: 553648128, modified: 0 }, otp: { size: 8192, modified: 0 } };
         setTimeout(() => this.onmessage({ data: { type: "files", syncAccess: true, files } }), 0);
       }
     }
