@@ -6,7 +6,8 @@
 // From the page: {type: "files"}, {type: "import", name, file},
 // {type: "export", name}, {type: "delete"}, {type: "start", build, site,
 // snapshot, audioMs, audioPort, cached}, {type: "selftest", build, site, cached,
-// program}, {type: "key", bank, pin, pressed}, {type: "volume", value},
+// program}, {type: "key", bank, pin, pressed}, {type: "com", bank, pin, pressed},
+// {type: "volume", value},
 // {type: "frame-done"} (cached: the page's Service Worker serves the .wasm
 // from its cache).
 // build is virtual:op1emu (tools/emulator-assets.js), whose files are at the
@@ -14,7 +15,7 @@
 // text}, {type: "exported", name, blob}, {type: "frame", width, height,
 // pixels}, {type: "stats", guestS, frames, audio}, {type: "running"} (the
 // module is the page's to cache), {type: "selftest", result}, {type:
-// "error", text}, {type: "stopped"}.
+// "error", command, text}, {type: "stopped"}.
 
 import { BOOT_ROM_SIZE, parseBootRom, sha256 } from "./bootrom.js";
 import { attachTierWorker } from "./compile-helpers.js";
@@ -301,6 +302,10 @@ async function selftest({ build, site, cached, program = "rts" }) {
            module: moduleSource, llvmLoaded, tier1 };
 }
 
+let com = null, keysReady = false;
+function applyCom() {
+  if (keysReady && com) op1._op1_key(com.bank, com.pin, com.pressed ? 1 : 0, 0);
+}
 async function start({ build, site, snapshot, audioMs, audioPort: port, cached }) {
   const compiled = compileAhead(build, site, cached);
   await ensureBootRom(build.bootRom);
@@ -337,6 +342,8 @@ async function start({ build, site, snapshot, audioMs, audioPort: port, cached }
   const NAND_SNAPSHOT = 2;
   if (op1._op1_start(path, none, snapshot ? NAND_SNAPSHOT : 0, 0, port ? audioMs : 0) !== 0)
     throw new Error("the emulator did not start (see the console)");
+  keysReady = true;
+  applyCom();  // the current level, before the first slice
   tierWorker(op1, build, site, await compiled);
   status("Booting");
   post({ type: "running" });
@@ -395,6 +402,12 @@ function run() {
 let queue = Promise.resolve();
 self.onmessage = ({ data }) => {
   switch (data.type) {
+    case "com":
+      // Unlike a transient key event, this level survives module loading.
+      // A release during loading must cancel the press before the CPU runs.
+      com = data;
+      applyCom();
+      return;
     case "key":
       op1?._op1_key(data.bank, data.pin, data.pressed ? 1 : 0, 0);
       return;
@@ -411,7 +424,8 @@ self.onmessage = ({ data }) => {
       }
       return;
   }
-  queue = queue.then(() => handle(data)).catch((e) => post({ type: "error", text: e.message ?? String(e) }));
+  queue = queue.then(() => handle(data)).catch((e) =>
+    post({ type: "error", command: data.type, text: e.message ?? String(e) }));
 };
 
 async function handle(data) {

@@ -6,6 +6,7 @@
 #include "utils/log.h"
 #include "glfw_display.h"
 #include "headless.h"
+#include "boot_keys.h"
 #include "audio_output_miniaudio.h"
 #include "usbipd.h"
 #include "build_info.h"
@@ -99,6 +100,7 @@ static int RunEmulator(int argc, char* argv[]) {
     // persistent-mode selector.
     bool nandSnapshot = false;
     bool headless = false;
+    bool teBoot = false;
     bool deterministic = false;
     std::optional<long long> rtcEpoch;
     unsigned twiSpeedup = TWI::kDefaultSpeedup;
@@ -145,6 +147,7 @@ static int RunEmulator(int argc, char* argv[]) {
         else if (options && arg == "--nand-rw") nandSnapshot = false;
         else if (options && arg == "--nand-snapshot") nandSnapshot = true;
         else if (options && arg == "--headless") headless = true;
+        else if (options && arg == "--te-boot") teBoot = true;
         else if (options && arg == "--deterministic") deterministic = true;
         else if (options && arg == "--no-chain") noChain = true;
         else if (options && arg == "--no-loop-blocks") noLoopBlocks = true;
@@ -257,6 +260,7 @@ static int RunEmulator(int argc, char* argv[]) {
         std::cout << "Usage: " << argv[0]
                   << " <nand_flash_file> [ldr_file] [--nand-rw|--nand-snapshot]\n"
                      "  --headless            No GLFW window or host audio device\n"
+                     "  --te-boot             Hold COM at startup to enter the te-boot menu\n"
                      "  --input-script PATH   Read headless commands from PATH instead of stdin\n"
                      "  --deterministic       Run as fast as the host allows, not at the device's\n"
                      "                        pace: repeatable runs, for measurement and tests\n"
@@ -437,6 +441,7 @@ static int RunEmulator(int argc, char* argv[]) {
 #endif
     cpu.AttachDisplay(display);
     cpu.AttachKeyboard(keyboard);
+    if (teBoot) BootKeys::HoldComForBoot(cpu);
     // SPORT still drains DMA and advances its sample accounting without a
     // host sink. Avoid opening ALSA/PulseAudio devices on headless hosts.
     if (!headless) cpu.AttachAudioOutput(std::make_shared<MiniaudioOutput>(audioBufferMs));

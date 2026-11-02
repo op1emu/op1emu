@@ -46,6 +46,12 @@ desktop build has the BF526's boot ROM compiled in (`ext/bfin_sim`'s
 
 ## The page
 
+**Start** boots normally; hold **COM (hold)** with a mouse, touch, Space or
+Enter to start in te-boot, then release it to let go of COM.
+The button also works during loading and a run, combines with the panel's
+USB key, and releases on loss of focus; an early release may boot normally.
+Reload the page after the emulator stops or fails to start.
+
 - `index.html`, `main.js`, `faceplate.js`: the default faceplate is a native
   browser-rendered SVG (`panel/op1.svg`), with a separate canvas for the live
   firmware display. The Panel selector also offers the original `gui/ui.png`

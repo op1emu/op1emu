@@ -20,6 +20,19 @@ cmake --build build
 ./build/op1emu path/to/nandflash.img path/to/te-boot.ldr
 ```
 
+To enter the te-boot menu, add `--te-boot` (with either the window or
+`--headless`):
+
+```sh
+./build/op1emu path/to/nandflash.img --te-boot
+```
+
+This holds the COM / USB key at startup and releases it after five seconds
+of guest time, independent of the host's compilation speed. This conservative
+hold has been tested with TE-BOOT v2.30; it is not a measured key-scan deadline.
+Automatic and manual input are separate sources: the timed release keeps COM
+pressed if you are still holding the USB key in the window.
+
 ## In the browser
 
 https://op1emu.github.io/op1emu/ runs the same emulator in Chrome or Edge

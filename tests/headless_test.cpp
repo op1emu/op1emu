@@ -1,4 +1,5 @@
 #include "headless.h"
+#include "boot_keys.h"
 #include "cpu/cpu.h"
 #include "peripheral/mcp230xx.h"
 #include <cstdint>
@@ -38,6 +39,10 @@ public:
     void Drain() {
         ProcessEvents();
         time_.Retire(1);
+        ProcessEvents();
+    }
+    void AdvanceTo(uint64_t ns) {
+        time_.Idle(TimeSource::CyclesAt(ns) - time_.Cycles());
         ProcessEvents();
     }
     GPIOPinLevel Pin(int bank, int index) { return gpioExpanders.at(bank)->GetPinOutput(index); }
@@ -274,6 +279,35 @@ int main() {
         frontend->PollEvents(start + 116ms);
         cpu.Drain();
         Require(cpu.Pin(5, 2) == GPIOPinLevel::High, "CPU queue applies timed release");
+
+        frontend->OnKeyReleased(5, 12);
+        cpu.Drain();
+        Require(cpu.Pin(5, 12) == GPIOPinLevel::High, "COM is released for ordinary boot");
+        const uint64_t bootAt = cpu.Time().Nanoseconds();
+        BootKeys::HoldComForBoot(cpu);
+        Require(cpu.Pin(5, 12) == GPIOPinLevel::High, "boot COM press uses CPU event queue");
+        cpu.Drain();
+        Require(cpu.Pin(5, 12) == GPIOPinLevel::Low, "boot COM press reaches USB key GPIO");
+        cpu.AdvanceTo(bootAt + 4999999990ULL);
+        Require(cpu.Pin(5, 12) == GPIOPinLevel::Low, "COM stays down through boot in guest time");
+        cpu.AdvanceTo(bootAt + 5000000000ULL);
+        Require(cpu.Pin(5, 12) == GPIOPinLevel::High, "COM releases after five guest seconds");
+
+        const uint64_t againAt = cpu.Time().Nanoseconds();
+        BootKeys::HoldComForBoot(cpu);
+        cpu.Drain();
+        frontend->OnKeyReleased(5, 12);
+        cpu.Drain();
+        Require(cpu.Pin(5, 12) == GPIOPinLevel::Low, "manual release preserves startup hold");
+        cpu.AdvanceTo(againAt + 4000000000ULL);
+        frontend->OnKeyPressed(5, 12);
+        frontend->OnKeyPressed(5, 12);
+        cpu.Drain();
+        cpu.AdvanceTo(againAt + BootKeys::kComHoldNs);
+        Require(cpu.Pin(5, 12) == GPIOPinLevel::Low, "startup release preserves manual hold");
+        frontend->OnKeyReleased(5, 12);
+        cpu.Drain();
+        Require(cpu.Pin(5, 12) == GPIOPinLevel::High, "one release clears duplicate manual presses");
     }
     std::filesystem::current_path(original);
     std::filesystem::remove_all(directory);
