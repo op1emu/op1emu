@@ -58,7 +58,10 @@ protected:
 
 class GPIOOrGate : public GPIOPeripheral {
 public:
-    GPIOOrGate(bool low) : activeLow(low) { }
+    GPIOOrGate(bool low) : activeLow(low) {
+        const auto inactive = activeLow ? GPIOPinLevel::High : GPIOPinLevel::Low;
+        inputs[0] = inputs[1] = inactive;
+    }
 
     int GetPinCount() const override { return 3; } // 2 inputs, 1 output
 
@@ -71,21 +74,16 @@ public:
     }
 
     GPIOPinLevel GetPinOutput(int pin) const override {
-        GPIOPinLevel output = GPIOPinLevel::Low;
-        if (pin == 2) {
-            // Output pin: OR of all input pins
-            for (int i = 0; i < 2; i++) {
-                if (inputs[i] == GPIOPinLevel::High) {
-                    output = GPIOPinLevel::High;
-                    break;
-                }
+        if (pin != 2) return activeLow ? GPIOPinLevel::High : GPIOPinLevel::Low;
+        bool asserted = false;
+        for (const auto input : inputs) {
+            if (activeLow ? input == GPIOPinLevel::Low : input == GPIOPinLevel::High) {
+                asserted = true;
+                break;
             }
         }
-        if (output == GPIOPinLevel::High) {
-            return activeLow ? GPIOPinLevel::Low : GPIOPinLevel::High;
-        } else {
-            return activeLow ? GPIOPinLevel::High : GPIOPinLevel::Low;
-        }
+        if (asserted) return activeLow ? GPIOPinLevel::Low : GPIOPinLevel::High;
+        return activeLow ? GPIOPinLevel::High : GPIOPinLevel::Low;
     }
 
     bool SetPinInput(int pin, GPIOPinLevel level) override {
