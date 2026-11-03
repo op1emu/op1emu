@@ -59,6 +59,16 @@ function standIn() {
   URL.createObjectURL = (blob) => {
     const url = createObjectURL(blob);
     createdObjectUrls.push(url);
+    // Close at loadBlob's duration await, even when supplied PCM makes loading
+    // finish too quickly for an ordinary click to interleave deterministically.
+    if (globalThis.closeAiffDuringLoad && blob.type === "audio/wav") {
+      const action = globalThis.closeAiffDuringLoad;
+      globalThis.closeAiffDuringLoad = null;
+      queueMicrotask(() => {
+        if (action === "drawer") document.getElementById("storage-toggle").click();
+        else document.getElementById("storage-preview").close();
+      });
+    }
     return url;
   };
   URL.revokeObjectURL = (url) => {
@@ -460,6 +470,19 @@ try {
     "closing AIFF preview stops playback");
   assert.equal(await page.locator(".storage-waveform").count(), 0,
     "closing AIFF preview removes the waveform instance");
+
+  for (const action of ["dialog", "drawer"]) {
+    await page.evaluate((action) => { globalThis.closeAiffDuringLoad = action; }, action);
+    await openRowMenu("/samples/tone.aif");
+    await page.getByRole("menuitem", { name: "Preview", exact: true }).click();
+    const expected = action === "drawer" ? "Preview cancelled" : "Preview closed";
+    await page.waitForFunction((text) => document.getElementById("storage-status").textContent === text &&
+      document.getElementById("storage").getAttribute("aria-busy") === "false", expected);
+    assert.equal(await page.locator("#storage-preview").evaluate((dialog) => dialog.open), false);
+    await page.waitForFunction(() => revokedObjectUrls.includes(createdObjectUrls.at(-1)) &&
+      !document.querySelector(".storage-waveform"));
+    if (action === "drawer") await toggle.click();
+  }
 
   await openRowMenu("/samples/demo.bin");
   await page.getByRole("menuitem", { name: "Preview", exact: true }).click();

@@ -50,7 +50,7 @@ function pcmToWav(channelData, sampleRate) {
       at += 2;
     }
   }
-  return new Blob([bytes], { type: "audio/wav" });
+  return { blob: new Blob([bytes], { type: "audio/wav" }), frames };
 }
 
 function formatHex(bytes) {
@@ -121,8 +121,7 @@ export function createStoragePreview({ dialog, title, content, closeButton }) {
       // @audio/decode-aiff is synchronous. The caller caps previews at 16 MiB
       // so this bounded decode cannot grow without limit on the UI thread.
       const decoded = decodeAiff(new Uint8Array(bytes));
-      const wav = pcmToWav(decoded.channelData, decoded.sampleRate);
-      const frames = decoded.channelData.reduce((length, channel) => Math.min(length, channel.length), Infinity);
+      const { blob: wav, frames } = pcmToWav(decoded.channelData, decoded.sampleRate);
       node = document.createElement("div");
       node.className = "storage-audio-preview";
       const waveform = document.createElement("div");
@@ -157,19 +156,22 @@ export function createStoragePreview({ dialog, title, content, closeButton }) {
         // only the playback bridge needs the WAV container.
         await wave.loadBlob(wav, decoded.channelData, frames / decoded.sampleRate);
       } catch (error) {
-        if (audioPlayer !== wave || !dialog.open) return false;
+        const cancelled = !isValid();
+        const closed = audioPlayer !== wave || !dialog.open;
         if (audioPlayer === wave) audioPlayer = null;
         wave.destroy();
         if (dialog.open) dialog.close();
+        if (cancelled) throw new DOMException("Preview cancelled", "AbortError");
+        if (closed) return false;
         throw error;
       }
-      if (audioPlayer !== wave || !dialog.open) return false;
       if (!isValid()) {
         wave.destroy();
         if (audioPlayer === wave) audioPlayer = null;
         if (dialog.open) dialog.close();
         throw new DOMException("Preview cancelled", "AbortError");
       }
+      if (audioPlayer !== wave || !dialog.open) return false;
     } else {
       if (!isValid()) throw new DOMException("Preview cancelled", "AbortError");
       node = document.createElement(kind === "image" ? "img" : "audio");
