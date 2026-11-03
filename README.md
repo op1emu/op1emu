@@ -221,6 +221,18 @@ describes it, so as audio and MIDI (2367:0004) normally and as mass storage
 (2367:0002) for a firmware upload. One client is attached at a time: another
 attach is refused as busy until it detaches, and a list does not disturb it.
 
+The browser build cannot use USB/IP. Its left USB storage drawer instead
+contains an in-process Mass Storage host and FatFs, connected directly to the
+emulated controller. It announces when the firmware activates the USB bus but
+opens only from its edge toggle, overlaying rather than moving the page. Choose
+"Upload firmware" in TE-BOOT, then explicitly "Connect USB" to enumerate and
+browse a Finder-style Wunderbaum directory tree with size and FAT modification
+time columns. Right-click a file to preview or download it, a directory to
+upload there, or empty tree space to upload at the root; files can also be
+dropped onto a directory row. Previews are limited to 16 MiB. Hiding the drawer preserves
+the connection, while bus loss invalidates it. This does not use WebUSB or
+access a physical OP-1; see `web/README.md`.
+
 ## Acknowledgements
 - [bfin_sim](https://github.com/op1emu/bfin_sim) - Blackfin simulator used for CPU emulation, from gdb/sim.
 - [op1kenobi](https://github.com/alexmandelshtam/op1kenobi) - OP-1 screenshot assets used for the GUI background.

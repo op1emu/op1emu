@@ -4,6 +4,7 @@ project(op1emu)
 set(CMAKE_CXX_STANDARD 17)
 
 include(FetchContent)
+include(cmake/FatFs.cmake)
 
 # The browser's build (web/README.md): the emulator and a module for a Web
 # Worker or Node in place of the native frontend, which needs a window, a
@@ -281,6 +282,29 @@ if(OP1_BUILD_HEADLESS_TESTS)
     target_include_directories(op1-usbipd-test PRIVATE gui)
     target_link_libraries(op1-usbipd-test PRIVATE emulator uvw ext Threads::Threads)
     add_test(NAME op1-usbipd-test COMMAND op1-usbipd-test)
+    add_executable(op1-usb-storage-test
+        tests/usb_storage_test.cpp
+        web/src/storage/usb_host.cpp
+        web/src/storage/usb_msc.cpp
+        web/src/storage/fat_storage.cpp
+        web/src/storage/fat_diskio.cpp
+    )
+    target_include_directories(op1-usb-storage-test PRIVATE web/src)
+    target_link_libraries(op1-usb-storage-test PRIVATE emulator)
+    op1_link_fatfs(op1-usb-storage-test)
+    add_test(NAME op1-usb-storage-test COMMAND op1-usb-storage-test)
+    # Real firmware is an opt-in manual acceptance test, never a CTest input.
+    add_executable(op1-real-usb-storage-test
+        tests/real_usb_storage_test.cpp
+        gui/headless.cpp
+        web/src/storage/usb_host.cpp
+        web/src/storage/usb_msc.cpp
+        web/src/storage/fat_storage.cpp
+        web/src/storage/fat_diskio.cpp
+    )
+    target_include_directories(op1-real-usb-storage-test PRIVATE gui web/src)
+    target_link_libraries(op1-real-usb-storage-test PRIVATE emulator nlohmann_json::nlohmann_json)
+    op1_link_fatfs(op1-real-usb-storage-test)
     if(ENABLE_PROFILING)
         add_executable(op1-mark-set-test tests/mark_set_test.cpp src/profiling/mark_set.cpp)
         target_include_directories(op1-mark-set-test PRIVATE src)

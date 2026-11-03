@@ -2,10 +2,20 @@
 # Node (the tests), built with emcmake as bcore's WebAssembly build is
 # (ext/bcore/tools/wasm/README.md).
 
-add_executable(op1emu-web src/op1_web.cpp src/gate.cpp src/tier_worker.cpp ${CMAKE_SOURCE_DIR}/src/profiling/mark_set.cpp)
+add_executable(op1emu-web
+    src/op1_web.cpp
+    src/gate.cpp
+    src/tier_worker.cpp
+    src/storage/usb_host.cpp
+    src/storage/usb_msc.cpp
+    src/storage/fat_storage.cpp
+    src/storage/fat_diskio.cpp
+    ${CMAKE_SOURCE_DIR}/src/profiling/mark_set.cpp
+)
 set_target_properties(op1emu-web PROPERTIES SUFFIX ".mjs")
 target_include_directories(op1emu-web PRIVATE src ${CMAKE_SOURCE_DIR}/gui ${CMAKE_SOURCE_DIR}/src/profiling)
 target_link_libraries(op1emu-web PRIVATE emulator bfin-core nlohmann_json::nlohmann_json)
+op1_link_fatfs(op1emu-web)
 # bcore's (its CMakeLists.txt): -O1, as wasm-opt's higher levels cost a
 # minute a link and start slower in V8; memory and the function table grow,
 # the table with every block; it starts with 128 MiB, for bcore's stencils

@@ -9,11 +9,13 @@
 #include "loader/ldr.h"
 #include "peripheral/MT29F4G08.h"
 #include "peripheral/keyboard.h"
+#include "storage/fat_storage.h"
 #include "utils/log.h"
 #include "web_audio.h"
 #include "web_display.h"
 
 #include <emscripten.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -87,10 +89,19 @@ enum StartFlags : int {
     kNoChain = 4,        // --no-chain
 };
 
+struct Session;
+bool RunOnce(Session& s);
+
 struct Session {
-    explicit Session(bool deterministic) : cpu(deterministic) {}
+    explicit Session(bool deterministic)
+        : cpu(deterministic), usbHost(cpu.GetUSB(), [this] { return RunOnce(*this); }), storage(usbHost) {}
 
     BlackFinCpu cpu;
+    op1::storage::UsbHost usbHost;
+    op1::storage::FatStorage storage;
+    std::string storageJson;
+    std::string storageError;
+    bool storageBusy = false;
     std::shared_ptr<WebDisplay> display = std::make_shared<WebDisplay>();
     std::shared_ptr<Keyboard> keyboard = std::make_shared<Keyboard>();
     std::shared_ptr<WebAudioOutput> audio;  // none: the SPORT drains with no sink
@@ -107,6 +118,29 @@ struct Session {
 };
 
 std::unique_ptr<Session> session;
+
+struct StorageCall {
+    explicit StorageCall(Session& session) : s(session) {
+        if (s.storageBusy) return;
+        s.storageBusy = true;
+        s.storageError.clear();
+        entered = true;
+    }
+    ~StorageCall() {
+        if (!entered) return;
+        s.storageBusy = false;
+        if (s.audio) s.audio->Flush();
+    }
+    explicit operator bool() const { return entered; }
+
+    Session& s;
+    bool entered = false;
+};
+
+int StorageException(Session& s, const std::exception& e) {
+    s.storageError = e.what();
+    return -1;
+}
 
 void PushSensors(Session& s) {
     // Deterministic runs get one random sample, as gui/main.cpp sends.
@@ -233,6 +267,118 @@ EMSCRIPTEN_KEEPALIVE double op1_step(double budgetMs) {
     }
     if (s.audio) s.audio->Flush();
     return wait;
+}
+
+// The firmware's USB controller is enabled and SOFT_CONN is asserted. This is
+// bus availability only: Mass Storage still needs explicit enumeration/mount.
+EMSCRIPTEN_KEEPALIVE int op1_usb_bus_active() {
+    return session && session->usbHost.Connected() ? 1 : 0;
+}
+
+// In-process USB mass storage. These entry points run between op1_step()
+// slices; FatFs's synchronous sector callbacks pump RunOnce(), never op1_step.
+EMSCRIPTEN_KEEPALIVE int op1_msc_connect() {
+    if (!session) return -1;
+    StorageCall call(*session);
+    if (!call) return -1;
+    try {
+        return session->storage.Connect() ? 0 : -1;
+    } catch (const std::exception& e) { return StorageException(*session, e); }
+}
+
+EMSCRIPTEN_KEEPALIVE void op1_msc_disconnect() {
+    if (!session) return;
+    StorageCall call(*session);
+    if (call) session->storage.Disconnect();
+}
+
+EMSCRIPTEN_KEEPALIVE int op1_msc_connected() { return session && session->storage.Mounted() ? 1 : 0; }
+
+EMSCRIPTEN_KEEPALIVE const char* op1_msc_error() {
+    if (!session) return "the emulator is not running";
+    if (!session->storageError.empty()) return session->storageError.c_str();
+    return session->storage.Error().c_str();
+}
+
+EMSCRIPTEN_KEEPALIVE const char* op1_msc_list(const char* path) {
+    if (!session || !path) return nullptr;
+    StorageCall call(*session);
+    if (!call) return nullptr;
+    try {
+        std::vector<op1::storage::StorageEntry> entries;
+        if (!session->storage.List(path, entries)) return nullptr;
+        nlohmann::json json = nlohmann::json::array();
+        for (const auto& entry : entries)
+            json.push_back({{"name", entry.name}, {"size", entry.size}, {"directory", entry.directory},
+                {"modifiedDate", entry.modifiedDate}, {"modifiedTime", entry.modifiedTime}});
+        session->storageJson = json.dump();
+        return session->storageJson.c_str();
+    } catch (const std::exception& e) {
+        StorageException(*session, e);
+        return nullptr;
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE double op1_msc_open_read(const char* path) {
+    if (!session || !path) return -1;
+    StorageCall call(*session);
+    if (!call) return -1;
+    try {
+        uint32_t size = 0;
+        return session->storage.OpenRead(path, size) ? double(size) : -1;
+    } catch (const std::exception& e) { return StorageException(*session, e); }
+}
+
+EMSCRIPTEN_KEEPALIVE int op1_msc_read(uint8_t* data, int length) {
+    if (!session || length < 0) return -1;
+    StorageCall call(*session);
+    if (!call) return -1;
+    try {
+        uint32_t read = 0;
+        return session->storage.Read(data, length, read) ? int(read) : -1;
+    } catch (const std::exception& e) { return StorageException(*session, e); }
+}
+
+EMSCRIPTEN_KEEPALIVE int op1_msc_close_read() {
+    if (!session) return -1;
+    StorageCall call(*session);
+    if (!call) return -1;
+    try {
+        return session->storage.CloseRead() ? 0 : -1;
+    } catch (const std::exception& e) { return StorageException(*session, e); }
+}
+
+EMSCRIPTEN_KEEPALIVE int op1_msc_begin_write(const char* path, int overwrite) {
+    if (!session || !path) return -1;
+    StorageCall call(*session);
+    if (!call) return -1;
+    try {
+        return session->storage.BeginWrite(path, overwrite != 0) ? 0 : -1;
+    } catch (const std::exception& e) { return StorageException(*session, e); }
+}
+
+EMSCRIPTEN_KEEPALIVE int op1_msc_write(const uint8_t* data, int length) {
+    if (!session || length < 0) return -1;
+    StorageCall call(*session);
+    if (!call) return -1;
+    try {
+        return session->storage.Write(data, length) ? 0 : -1;
+    } catch (const std::exception& e) { return StorageException(*session, e); }
+}
+
+EMSCRIPTEN_KEEPALIVE int op1_msc_commit_write() {
+    if (!session) return -1;
+    StorageCall call(*session);
+    if (!call) return -1;
+    try {
+        return session->storage.CommitWrite() ? 0 : -1;
+    } catch (const std::exception& e) { return StorageException(*session, e); }
+}
+
+EMSCRIPTEN_KEEPALIVE void op1_msc_abort_write() {
+    if (!session) return;
+    StorageCall call(*session);
+    if (call) session->storage.AbortWrite();
 }
 
 // The AudioWorklet's report (WebAudioOutput::Report): frames it took in all,

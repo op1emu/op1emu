@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "brotli-dec-wasm": "2.3.2",
-    "wasm-feature-detect": "1.9.0"
+    "wasm-feature-detect": "1.9.0",
+    "wunderbaum": "0.15.0"
   },
   "devDependencies": {
     "playwright-core": "1.64.0",
