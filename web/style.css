@@ -491,12 +491,6 @@ body.storage-open #storage {
   background: color-mix(in srgb, var(--bg) 72%, transparent);
   overflow: hidden;
 }
-#storage-preview-content .storage-waveform audio {
-  display: block;
-  width: calc(100% - 24px);
-  margin: 8px 12px 12px;
-}
-#storage-preview-content .storage-waveform canvas { display: block; }
 #storage-preview-content pre {
   margin: 0;
   font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;

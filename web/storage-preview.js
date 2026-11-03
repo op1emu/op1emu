@@ -27,6 +27,8 @@ function loadAudioModules() {
 }
 
 function pcmToWav(channelData, sampleRate) {
+  // PCM16 keeps the compatibility bridge small; the original float samples
+  // remain available to wavesurfer for the waveform itself.
   const channels = channelData.length;
   const frames = channelData.reduce((length, channel) => Math.min(length, channel.length), Infinity);
   if (!channels || !Number.isFinite(frames) || !frames || !Number.isFinite(sampleRate) || sampleRate <= 0)
@@ -116,8 +118,11 @@ export function createStoragePreview({ dialog, title, content, closeButton }) {
         blob.arrayBuffer(),
       ]);
       if (!isValid()) throw new DOMException("Preview cancelled", "AbortError");
+      // @audio/decode-aiff is synchronous. The caller caps previews at 16 MiB
+      // so this bounded decode cannot grow without limit on the UI thread.
       const decoded = decodeAiff(new Uint8Array(bytes));
       const wav = pcmToWav(decoded.channelData, decoded.sampleRate);
+      const frames = decoded.channelData.reduce((length, channel) => Math.min(length, channel.length), Infinity);
       node = document.createElement("div");
       node.className = "storage-audio-preview";
       const waveform = document.createElement("div");
@@ -148,13 +153,17 @@ export function createStoragePreview({ dialog, title, content, closeButton }) {
       dialog.showModal();
       displayed = true;
       try {
-        await wave.loadBlob(wav);
+        // Pass the decoded PCM as peaks so wavesurfer renders it directly and
+        // only the playback bridge needs the WAV container.
+        await wave.loadBlob(wav, decoded.channelData, frames / decoded.sampleRate);
       } catch (error) {
+        if (audioPlayer !== wave || !dialog.open) return false;
         if (audioPlayer === wave) audioPlayer = null;
         wave.destroy();
         if (dialog.open) dialog.close();
         throw error;
       }
+      if (audioPlayer !== wave || !dialog.open) return false;
       if (!isValid()) {
         wave.destroy();
         if (audioPlayer === wave) audioPlayer = null;
@@ -177,6 +186,7 @@ export function createStoragePreview({ dialog, title, content, closeButton }) {
       title.textContent = name;
       dialog.showModal();
     }
+    return true;
   }
 
   closeButton.addEventListener("click", () => dialog.close());

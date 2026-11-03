@@ -451,7 +451,15 @@ try {
     element.querySelector(":scope > div")?.shadowRoot?.querySelectorAll("audio").length ?? 0), 1,
     "AIFF preview includes browser playback controls");
   assert.match(await aiffPreview.locator(".storage-preview-note").textContent(), /1 channel.*8,000 Hz/);
+  const aiffAudio = await aiffPreview.locator(".storage-waveform").evaluate((element) =>
+    element.querySelector(":scope > div")?.shadowRoot?.querySelector("audio")?.getAttribute("src"));
+  const aiffPausesBefore = await page.evaluate(() => audioPauses);
   await page.getByRole("button", { name: "Close preview" }).click();
+  await page.waitForFunction((url) => revokedObjectUrls.includes(url), aiffAudio);
+  assert.ok(await page.evaluate((before) => audioPauses > before, aiffPausesBefore),
+    "closing AIFF preview stops playback");
+  assert.equal(await page.locator(".storage-waveform").count(), 0,
+    "closing AIFF preview removes the waveform instance");
 
   await openRowMenu("/samples/demo.bin");
   await page.getByRole("menuitem", { name: "Preview", exact: true }).click();
