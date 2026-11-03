@@ -9,7 +9,49 @@ const FORMATS = new Map(Object.entries({
   gif: ["image", "image/gif"], webp: ["image", "image/webp"], bmp: ["image", "image/bmp"],
   wav: ["audio", "audio/wav"], mp3: ["audio", "audio/mpeg"], ogg: ["audio", "audio/ogg"],
   flac: ["audio", "audio/flac"], m4a: ["audio", "audio/mp4"], aac: ["audio", "audio/aac"],
+  aif: ["aiff", "audio/aiff"], aiff: ["aiff", "audio/aiff"], aifc: ["aiff", "audio/aiff"],
 }));
+
+// AIFF is not consistently supported by the browser media decoders (notably
+// Chromium). Decode it with the small, MIT-licensed audiojs decoder and hand
+// the PCM to wavesurfer.js through a browser-friendly WAV container.
+let audioModules;
+function loadAudioModules() {
+  return audioModules ??= Promise.all([
+    import("@audio/decode-aiff"),
+    import("wavesurfer.js"),
+  ]).then(([decoder, wavesurfer]) => ({
+    decodeAiff: decoder.default,
+    WaveSurfer: wavesurfer.default,
+  }));
+}
+
+function pcmToWav(channelData, sampleRate) {
+  // PCM16 keeps the compatibility bridge small; the original float samples
+  // remain available to wavesurfer for the waveform itself.
+  const channels = channelData.length;
+  const frames = channelData.reduce((length, channel) => Math.min(length, channel.length), Infinity);
+  if (!channels || !Number.isFinite(frames) || !frames || !Number.isFinite(sampleRate) || sampleRate <= 0)
+    throw new Error("AIFF contains no playable PCM samples");
+  const dataSize = frames * channels * 2;
+  const bytes = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(bytes);
+  const text = (at, value) => [...value].forEach((character, index) => view.setUint8(at + index, character.charCodeAt(0)));
+  text(0, "RIFF"); view.setUint32(4, 36 + dataSize, true); text(8, "WAVE");
+  text(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true); view.setUint32(24, Math.round(sampleRate), true);
+  view.setUint32(28, Math.round(sampleRate) * channels * 2, true); view.setUint16(32, channels * 2, true);
+  view.setUint16(34, 16, true); text(36, "data"); view.setUint32(40, dataSize, true);
+  let at = 44;
+  for (let frame = 0; frame < frames; frame++) {
+    for (const channel of channelData) {
+      const sample = Math.max(-1, Math.min(1, channel[frame] || 0));
+      view.setInt16(at, sample < 0 ? sample * 32768 : sample * 32767, true);
+      at += 2;
+    }
+  }
+  return { blob: new Blob([bytes], { type: "audio/wav" }), frames };
+}
 
 function formatHex(bytes) {
   const lines = [];
@@ -24,8 +66,13 @@ function formatHex(bytes) {
 
 export function createStoragePreview({ dialog, title, content, closeButton }) {
   let objectUrl = null;
+  let audioPlayer = null;
 
   function cleanup() {
+    if (audioPlayer) {
+      audioPlayer.destroy();
+      audioPlayer = null;
+    }
     for (const media of content.querySelectorAll("audio")) {
       media.pause();
       media.removeAttribute("src");
@@ -46,7 +93,7 @@ export function createStoragePreview({ dialog, title, content, closeButton }) {
     cleanup();
     const extension = name.includes(".") ? name.split(".").at(-1).toLowerCase() : "";
     const [kind, mime] = FORMATS.get(extension) ?? ["hex", "application/octet-stream"];
-    let node;
+    let node, displayed = false;
     if (kind === "text") {
       const text = await blob.text();
       if (!isValid()) throw new DOMException("Preview cancelled", "AbortError");
@@ -65,6 +112,66 @@ export function createStoragePreview({ dialog, title, content, closeButton }) {
         note.textContent = `Showing the first 64 KiB of ${blob.size.toLocaleString()} bytes.`;
         content.append(note);
       }
+    } else if (kind === "aiff") {
+      const [{ decodeAiff, WaveSurfer }, bytes] = await Promise.all([
+        loadAudioModules(),
+        blob.arrayBuffer(),
+      ]);
+      if (!isValid()) throw new DOMException("Preview cancelled", "AbortError");
+      // @audio/decode-aiff is synchronous. The caller caps previews at 16 MiB
+      // so this bounded decode cannot grow without limit on the UI thread.
+      const decoded = decodeAiff(new Uint8Array(bytes));
+      const { blob: wav, frames } = pcmToWav(decoded.channelData, decoded.sampleRate);
+      node = document.createElement("div");
+      node.className = "storage-audio-preview";
+      const waveform = document.createElement("div");
+      waveform.className = "storage-waveform";
+      waveform.setAttribute("role", "group");
+      waveform.setAttribute("aria-label", `${name} waveform`);
+      node.append(waveform);
+      const note = document.createElement("p");
+      note.className = "storage-preview-note";
+      note.textContent = `${decoded.channelData.length} channel${decoded.channelData.length === 1 ? "" : "s"} · ${Math.round(decoded.sampleRate).toLocaleString()} Hz`;
+      node.append(note);
+      const wave = WaveSurfer.create({
+        container: waveform,
+        height: 112,
+        waveColor: getComputedStyle(document.documentElement).getPropertyValue("--muted").trim(),
+        progressColor: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
+        cursorColor: getComputedStyle(document.documentElement).getPropertyValue("--fg").trim(),
+        cursorWidth: 2,
+        normalize: true,
+        dragToSeek: true,
+        mediaControls: true,
+      });
+      audioPlayer = wave;
+      // The renderer measures its host when it loads. Mount and open the
+      // dialog first so a browser does not report a zero-width hidden host.
+      content.append(node);
+      title.textContent = name;
+      dialog.showModal();
+      displayed = true;
+      try {
+        // Pass the decoded PCM as peaks so wavesurfer renders it directly and
+        // only the playback bridge needs the WAV container.
+        await wave.loadBlob(wav, decoded.channelData, frames / decoded.sampleRate);
+      } catch (error) {
+        const cancelled = !isValid();
+        const closed = audioPlayer !== wave || !dialog.open;
+        if (audioPlayer === wave) audioPlayer = null;
+        wave.destroy();
+        if (dialog.open) dialog.close();
+        if (cancelled) throw new DOMException("Preview cancelled", "AbortError");
+        if (closed) return false;
+        throw error;
+      }
+      if (!isValid()) {
+        wave.destroy();
+        if (audioPlayer === wave) audioPlayer = null;
+        if (dialog.open) dialog.close();
+        throw new DOMException("Preview cancelled", "AbortError");
+      }
+      if (audioPlayer !== wave || !dialog.open) return false;
     } else {
       if (!isValid()) throw new DOMException("Preview cancelled", "AbortError");
       node = document.createElement(kind === "image" ? "img" : "audio");
@@ -76,9 +183,12 @@ export function createStoragePreview({ dialog, title, content, closeButton }) {
       objectUrl = URL.createObjectURL(new Blob([blob], { type: mime }));
       node.src = objectUrl;
     }
-    content.append(node);
-    title.textContent = name;
-    dialog.showModal();
+    if (!displayed) {
+      content.append(node);
+      title.textContent = name;
+      dialog.showModal();
+    }
+    return true;
   }
 
   closeButton.addEventListener("click", () => dialog.close());

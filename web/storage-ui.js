@@ -230,7 +230,11 @@ export function createStorageUI(worker, isRunning) {
       const blob = new Blob(parts);
       if (blob.size > MAX_PREVIEW_BYTES) throw new Error("preview exceeds the 16 MiB limit");
       try {
-        await preview.show({ name, blob }, () => open && connected && isRunning() && busy === token);
+        const shown = await preview.show({ name, blob }, () => open && connected && isRunning() && busy === token);
+        if (shown === false) {
+          if (busy === token) say("Preview closed");
+          return;
+        }
       } catch (e) {
         if (e.name === "AbortError" && !open && busy === token) {
           say("Preview cancelled");

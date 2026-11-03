@@ -483,6 +483,14 @@ body.storage-open #storage {
 }
 #storage-preview-content img { display: block; max-width: 100%; max-height: 64vh; margin: auto; }
 #storage-preview-content audio { width: 100%; }
+#storage-preview-content .storage-audio-preview { min-width: min(560px, 100%); }
+#storage-preview-content .storage-waveform {
+  min-height: 112px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  overflow: hidden;
+}
 #storage-preview-content pre {
   margin: 0;
   font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;

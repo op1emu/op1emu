@@ -54,7 +54,8 @@ The existing PNG panel's op1kenobi notices above still apply to the PNG fallback
 ## npm packages
 
 The page's npm dependencies are bundled by Vite, which lists the licenses of
-those in the page itself in `licenses.md` (wasm-feature-detect). Vite does not
+those in the page itself in `licenses.md` (including wavesurfer.js and
+@audio/decode-aiff). Vite does not
 list those in the Worker:
 
 ### brotli-dec-wasm 2.3.2
