@@ -9,6 +9,7 @@ import { loadFaceplate } from "./faceplate.js";
 // A file of its own (Vite would inline one this small as a data: URL).
 import audioWorklet from "./audio-worklet.js?worker&url";
 import { KEYMAP } from "./keymap.js";
+import { createStorageUI } from "./storage-ui.js";
 
 const params = new URLSearchParams(location.search);
 const AUDIO_MS = Number(params.get("audio") ?? 100);
@@ -25,6 +26,7 @@ let started = false;  // one session per page; OPFS handles stay open until relo
 let audioContext = null;
 let volume = 128;
 const encoderIndex = {};
+const storageUI = createStorageUI(worker, () => running);
 
 function setStatus(text, error = false) {
   $("status").textContent = text;
@@ -309,6 +311,7 @@ addEventListener("keydown", resumeAudio);
 function stop() {
   releaseAll();
   running = false;
+  storageUI.reset();
   showFiles(files);
   audioContext?.close().catch((error) => console.warn("closing audio:", error));
 }
@@ -317,6 +320,7 @@ async function start() {
   if (started) return;
   started = true;
   running = true;
+  storageUI.update();
   $("start").disabled = true;
   // Keep the page's height until release: collapsing setup at the bottom
   // of a scrolled page can otherwise move COM under the held pointer.
@@ -372,6 +376,7 @@ globalThis.op1ModuleCached = moduleCached;  // for tools/smoke-browser.mjs
 
 const screen = $("screen").getContext("2d");
 worker.onmessage = ({ data }) => {
+  if (storageUI.handle(data)) return;
   switch (data.type) {
     case "files":
       // Worker-only, so the worker says.

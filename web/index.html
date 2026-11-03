@@ -10,6 +10,37 @@
 <script type="module" src="./main.js"></script>
 </head>
 <body>
+<button id="storage-toggle" type="button" aria-controls="storage" aria-expanded="false" aria-label="Show USB storage"><span id="storage-toggle-label">USB storage</span></button>
+<div id="storage-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+<aside id="storage" aria-label="USB mass storage" aria-hidden="true" inert>
+  <div class="storage-heading">
+    <h2>USB storage</h2>
+    <span id="storage-bus-state">Bus inactive</span>
+  </div>
+  <p class="storage-help">In te-boot, choose <b>Upload firmware</b> on the OP-1, then connect here. Right-click a row or empty tree space for actions, or drop files onto a folder. This does not connect a physical USB device.</p>
+  <div class="storage-actions">
+    <button id="storage-connect" disabled>Connect USB</button>
+    <button id="storage-refresh" disabled>Refresh</button>
+  </div>
+  <div class="storage-status-area">
+    <p id="storage-status"></p>
+    <progress id="storage-progress" max="1" value="0" hidden></progress>
+  </div>
+  <input id="storage-pick" type="file" multiple hidden disabled>
+  <div id="storage-tree" aria-label="Files on the emulated USB disk"></div>
+</aside>
+<div id="storage-menu" class="storage-menu" role="menu" aria-label="Storage actions" hidden>
+  <button type="button" role="menuitem" data-action="preview">Preview</button>
+  <button type="button" role="menuitem" data-action="download">Download</button>
+  <button type="button" role="menuitem" data-action="upload">Upload</button>
+</div>
+<dialog id="storage-preview" aria-labelledby="storage-preview-title">
+  <div class="storage-preview-heading">
+    <h2 id="storage-preview-title"></h2>
+    <button id="storage-preview-close" type="button" aria-label="Close preview">×</button>
+  </div>
+  <div id="storage-preview-content"></div>
+</dialog>
 <main>
   <div class="appearance" aria-label="Panel appearance">
     <label>Panel <select id="panel-style">

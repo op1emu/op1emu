@@ -9,7 +9,9 @@
 // program}, {type: "key", bank, pin, pressed}, {type: "com", bank, pin, pressed},
 // {type: "volume", value},
 // {type: "frame-done"} (cached: the page's Service Worker serves the .wasm
-// from its cache).
+// from its cache). USB storage: {type:"msc-connect"|"msc-disconnect"|"msc-list"|
+// "msc-upload"|"msc-download", id, ...}, with {type:"msc-data-done", id} as
+// download backpressure (storage-worker.js).
 // build is virtual:op1emu (tools/emulator-assets.js), whose files are at the
 // URL site. To it: {type: "files", files, syncAccess}, {type: "progress",
 // text}, {type: "exported", name, blob}, {type: "frame", width, height,
@@ -20,6 +22,7 @@
 import { BOOT_ROM_SIZE, parseBootRom, sha256 } from "./bootrom.js";
 import { attachTierWorker } from "./compile-helpers.js";
 import { opfsFs } from "./opfs-fs.js";
+import { createStorageWorker } from "./storage-worker.js";
 
 const NAMES = { nand: "nand.bin", otp: "otp.bin" };
 const BOOT_ROM = "bootrom.bin";
@@ -37,6 +40,7 @@ let audioPort = null;
 let frameBusy = false;   // the page has not drawn the last frame yet
 let pendingFrame = null;
 let audio = null;        // the worklet's last report
+let storage = null;      // in-process USB Mass Storage host, after module startup
 
 const syncAccess = Boolean(globalThis.FileSystemFileHandle?.prototype.createSyncAccessHandle);
 const post = (message, transfer = []) => self.postMessage(message, transfer);
@@ -343,6 +347,7 @@ async function start({ build, site, snapshot, audioMs, audioPort: port, cached }
   if (op1._op1_start(path, none, snapshot ? NAND_SNAPSHOT : 0, 0, port ? audioMs : 0) !== 0)
     throw new Error("the emulator did not start (see the console)");
   keysReady = true;
+  storage = createStorageWorker(op1, post);
   applyCom();  // the current level, before the first slice
   tierWorker(op1, build, site, await compiled);
   status("Booting");
@@ -388,8 +393,10 @@ function run() {
     wait = -1;
     console.error(e);
   }
+  storage?.pollBus();
   if (wait < 0) {
     dataFs.flush();
+    post({ type: "msc-state", connected: false });
     post({ type: "stopped" });
     return;
   }
@@ -423,9 +430,12 @@ self.onmessage = ({ data }) => {
         post(message, [message.pixels.buffer]);
       }
       return;
+    case "msc-data-done":
+      storage?.acknowledge(data);
+      return;
   }
   queue = queue.then(() => handle(data)).catch((e) =>
-    post({ type: "error", command: data.type, text: e.message ?? String(e) }));
+    post({ type: "error", command: data.type, id: data.id, text: e.message ?? String(e) }));
 };
 
 async function handle(data) {
@@ -453,6 +463,14 @@ async function handle(data) {
       break;
     case "selftest":
       post({ type: "selftest", result: await selftest(data) });
+      break;
+    case "msc-connect":
+    case "msc-disconnect":
+    case "msc-list":
+    case "msc-upload":
+    case "msc-download":
+      if (!storage) throw new Error("start the emulator before connecting USB storage");
+      await storage.command(data);
       break;
   }
 }

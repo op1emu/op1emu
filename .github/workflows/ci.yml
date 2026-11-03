@@ -246,6 +246,10 @@ jobs:
         working-directory: web
         run: node tools/panel-browser.mjs dist node_modules/playwright-core
 
+      - name: USB storage sidebar in Chrome
+        working-directory: web
+        run: node tools/storage-browser.mjs dist node_modules/playwright-core
+
       - name: Upload the site
         if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3

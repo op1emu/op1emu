@@ -66,6 +66,30 @@ Reload the page after the emulator stops or fails to start.
   memory and the guest's writes stay in it. Reloading keeps the images.
   `op1_step()` runs 8 ms at a time; between slices the Worker takes keys and
   the worklet's reports, and waits as long as `Pace()` asked.
+- `storage-ui.js`, `storage-tree.js`, `storage-menu.js`, `storage-preview.js`,
+  `storage-worker.js`, `src/storage/`: the left drawer announces USB bus
+  activation without opening automatically; its edge toggle shows a fixed
+  overlay without moving the emulator. Activation alone does not mount
+  anything: after you choose **Upload firmware** in te-boot, **Connect USB**
+  explicitly enumerates the emulated Mass Storage device. Wunderbaum renders
+  the lazily loaded Finder-style directory tree with Name, Size and Modified
+  columns (using the FAT timestamps) and internal scrolling. Right-click a row
+  (or use its overflow button or Shift+F10) to preview/download a file or choose
+  an upload directory. Right-clicking empty tree space offers an upload to the
+  root. You can also drop external files onto a directory row; tree whitespace targets the root. Text, images and browser-supported
+  audio preview in a native dialog, other files as bounded hexadecimal, with a
+  16 MiB read limit. The in-process C++ host speaks USB Bulk-Only Transport
+  and SCSI to `BlackFinCpu::GetUSB()`, and FatFs R0.16 reads/writes its FAT
+  filesystem. Bus loss cancels transfers and invalidates the mount, so
+  reactivation requires a fresh connection. This is not WebUSB and does not
+  connect a physical OP-1; the LUN remains te-boot's, separate from NAND/OPFS.
+  Uploads use a temporary FAT file and an overwrite backup; downloads use a
+  save stream where the browser offers one, or a Blob otherwise.
+  FatFs's synchronous sector calls advance the guest with `RunOnce()` until
+  each USB transfer completes, only at top level between emulator slices; file
+  chunks yield back to the Worker. `usb_host` contains only enumeration and
+  control/bulk transport, not FAT/SCSI, so a future asynchronous MIDI class
+  does not inherit this blocking MSC model.
 - `audio-worklet.js`: the SPORT's frames come straight from the Worker over a
   MessagePort, into a ring whose target level (`?audio=MS`, default 100 ms)
   the emulator's servo holds (`src/web_audio.h`, the desktop's `LevelServo`).
@@ -172,6 +196,7 @@ npm run preview    # dist/ at http://localhost:4173/
 node tools/smoke-browser.mjs dist node_modules/playwright-core /usr/bin/google-chrome
 node tools/input-browser.mjs dist node_modules/playwright-core /usr/bin/google-chrome
 node tools/panel-browser.mjs dist node_modules/playwright-core /usr/bin/google-chrome
+node tools/storage-browser.mjs dist node_modules/playwright-core /usr/bin/google-chrome
 ```
 
 ## Node
