@@ -77,8 +77,9 @@ Reload the page after the emulator stops or fails to start.
   (or use its overflow button or Shift+F10) to preview/download a file or choose
   an upload directory. Right-clicking empty tree space offers an upload to the
   root. You can also drop external files onto a directory row; tree whitespace targets the root. Text, images and browser-supported
-  audio preview in a native dialog, other files as bounded hexadecimal, with a
-  16 MiB read limit. The in-process C++ host speaks USB Bulk-Only Transport
+  audio preview in a native dialog, with AIFF/AIFC files decoded to PCM and
+  rendered as a playable wavesurfer.js waveform; other files use bounded
+  hexadecimal, with a 16 MiB read limit. The in-process C++ host speaks USB Bulk-Only Transport
   and SCSI to `BlackFinCpu::GetUSB()`, and FatFs R0.16 reads/writes its FAT
   filesystem. Bus loss cancels transfers and invalidates the mount, so
   reactivation requires a fresh connection. This is not WebUSB and does not

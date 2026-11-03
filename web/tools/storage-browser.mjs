@@ -35,6 +35,16 @@ function standIn() {
   globalThis.uploads = [];
   globalThis.saved = [];
   globalThis.previewText = "OP-1\n<b>not markup</b> π\n";
+  globalThis.aiffBytes = (() => {
+    const bytes = new Uint8Array(62), view = new DataView(bytes.buffer);
+    const text = (at, value) => [...value].forEach((character, index) => bytes[at + index] = character.charCodeAt(0));
+    text(0, "FORM"); view.setUint32(4, 54); text(8, "AIFF");
+    text(12, "COMM"); view.setUint32(16, 18); view.setUint16(20, 1); view.setUint32(22, 4);
+    view.setUint16(26, 16); view.setUint16(28, 0x400b); view.setUint32(30, 0xfa000000); view.setUint32(34, 0);
+    text(38, "SSND"); view.setUint32(42, 16); view.setUint32(46, 0); view.setUint32(50, 0);
+    for (const [index, sample] of [0, 12000, -12000, 0].entries()) view.setInt16(54 + index * 2, sample, false);
+    return bytes;
+  })();
   globalThis.failConnect = false;
   globalThis.deferUpload = false;
   globalThis.pendingUpload = null;
@@ -74,6 +84,7 @@ function standIn() {
       { name: "demo.bin", size: 150000, directory: false, ...stamp },
       { name: "pixel.png", size: 150000, directory: false, ...stamp },
       { name: "tone.wav", size: 150000, directory: false, ...stamp },
+      { name: "tone.aif", size: aiffBytes.length, directory: false, ...stamp },
       { name: "huge.bin", size: 128 * 1024 * 1024 + 1, directory: false, ...stamp },
       { name: "oversize-stream.bin", size: 1, directory: false, ...stamp },
     ],
@@ -122,7 +133,8 @@ function standIn() {
         } else this.finishUpload(message);
       }
       if (message.type === "msc-download") {
-        const content = message.path === "/root.txt" ? new TextEncoder().encode(previewText) : null;
+        const content = message.path === "/root.txt" ? new TextEncoder().encode(previewText) :
+          message.path === "/samples/tone.aif" ? aiffBytes : null;
         const size = content?.length ?? (message.path === "/samples/oversize-stream.bin" ? 16 * 1024 * 1024 + 1 : 150000);
         downloads.set(message.id, { at: 0, size, content, name: message.name });
         answer({ type: "msc-progress", id: message.id, done: 0, total: size });
@@ -427,6 +439,20 @@ try {
       assert.ok(await page.evaluate((before) => audioPauses > before, pausesBefore), "closing audio stops playback");
   }
 
+  await openRowMenu("/samples/tone.aif");
+  await page.getByRole("menuitem", { name: "Preview", exact: true }).click();
+  const aiffPreview = page.getByRole("dialog", { name: "tone.aif" });
+  await aiffPreview.waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector(".storage-waveform")?.querySelector(":scope > div")?.shadowRoot?.querySelectorAll("canvas").length > 0);
+  assert.ok(await aiffPreview.locator(".storage-waveform").evaluate((element) =>
+    element.querySelector(":scope > div")?.shadowRoot?.querySelectorAll("canvas").length ?? 0) > 0,
+    "AIFF preview renders a waveform with wavesurfer.js");
+  assert.equal(await aiffPreview.locator(".storage-waveform").evaluate((element) =>
+    element.querySelector(":scope > div")?.shadowRoot?.querySelectorAll("audio").length ?? 0), 1,
+    "AIFF preview includes browser playback controls");
+  assert.match(await aiffPreview.locator(".storage-preview-note").textContent(), /1 channel.*8,000 Hz/);
+  await page.getByRole("button", { name: "Close preview" }).click();
+
   await openRowMenu("/samples/demo.bin");
   await page.getByRole("menuitem", { name: "Preview", exact: true }).click();
   const hexPreview = page.getByRole("dialog", { name: "demo.bin" });
@@ -488,7 +514,7 @@ try {
   await storageRow("/samples/new file.op1").waitFor({ state: "visible" });
   assert.equal(await page.locator("#storage-status").textContent(), "Upload complete",
     "refreshing an expanded directory after upload succeeds");
-  for (const name of ["demo.bin", "pixel.png", "tone.wav", "huge.bin", "oversize-stream.bin", "new file.op1"])
+  for (const name of ["demo.bin", "pixel.png", "tone.wav", "tone.aif", "huge.bin", "oversize-stream.bin", "new file.op1"])
     assert.equal(await storageRow(`/samples/${name}`).count(), 1, `${name} occurs exactly once after refresh`);
   assert.equal(await storageRow("/samples/new file.op1").isVisible(), true,
     "the uploaded file is visible in the refreshed directory");
