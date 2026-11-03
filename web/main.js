@@ -262,24 +262,38 @@ function bindInput() {
 // ---- the images ----
 
 let files = {};
+let preparing=false, preparationId=0;
 function showFiles(next) {
   files = next;
   const describe = (file) =>
     file ? (file.open ? "in use" : `stored ${new Date(file.modified).toLocaleString()}`) : "not stored";
   $("nand-state").textContent = describe(files.nand);
   $("otp-state").textContent = describe(files.otp);
-  $("start").disabled = started || !files.nand || !files.otp;
-  $("te-boot").disabled = (started && !running) || !files.nand || !files.otp;
+  $('firmware-state').textContent=files.firmware?`Active: firmware 246 (${files.firmware.pages} NAND pages)`:files.kind==='manual'?'Active: manual NAND + OTP inputs':'No active boot configuration';
+  $('start').disabled=started||preparing||!files.ready;
+  $('te-boot').disabled=(started&&!running)||preparing||!files.ready;
   for (const id of ["export-nand", "export-otp"]) $(id).disabled = !files[id.slice(7)];
 }
 
 function importFile(file) {
+  if(started||preparing)return;
   // By size: the NAND image is 528 MiB, the OTP 8 KiB.
-  const name = file.size > 1 << 20 ? "nand" : "otp";
+  if(/\.op1$/i.test(file.name)){setStatus('Use Prepare firmware below for .op1 files.');return;}
+  const name=file.size===553648128?'nand':file.size===8192?'otp':null;
+  if(!name){setStatus('Choose a 528 MiB NAND image or 8 KiB otp.bin; use Prepare firmware for .op1 files.',true);return;}
   worker.postMessage({ type: "import", name, file });
 }
 
 function bindFiles() {
+  $('prepare-firmware').addEventListener('click',()=>{
+    if(preparing||started)return;
+    const file=$('firmware-file').files[0];
+    if(!file){setStatus('Choose an original OP-1 firmware 246 .op1 file first.',true);return;}
+    preparing=true;preparationId++;
+    $('prepare-firmware').disabled=true;$('cancel-firmware').disabled=false;showFiles(files);
+    worker.postMessage({type:'prepare-firmware',requestId:preparationId,file,otpFile:$('firmware-otp').files[0]});
+  });
+  $('cancel-firmware').addEventListener('click',()=>worker.postMessage({type:'cancel-firmware',requestId:preparationId}));
   $("pick").addEventListener("change", (event) => {
     for (const file of event.target.files) importFile(file);
     event.target.value = "";
@@ -287,12 +301,12 @@ function bindFiles() {
   addEventListener("dragover", (event) => event.preventDefault());
   addEventListener("drop", (event) => {
     event.preventDefault();
-    if (!started) for (const file of event.dataTransfer.files) importFile(file);
+    if (!started && !preparing) for (const file of event.dataTransfer.files) importFile(file);
   });
   $("export-nand").addEventListener("click", () => worker.postMessage({ type: "export", name: "nand" }));
   $("export-otp").addEventListener("click", () => worker.postMessage({ type: "export", name: "otp" }));
   $("delete").addEventListener("click", () => {
-    if (confirm("Delete the NAND image and otp.bin stored in this browser?")) worker.postMessage({ type: "delete" });
+    if (confirm("Delete all stored NAND images, firmware profiles, OTP inputs in this browser?")) worker.postMessage({ type: "delete" });
   });
   $("start").addEventListener("click", start);
 }
@@ -314,13 +328,12 @@ function stop() {
 }
 
 async function start() {
-  if (started) return;
+  if(started||preparing||!files.ready)return;
   started = true;
   running = true;
-  $("start").disabled = true;
-  // Keep the page's height until release: collapsing setup at the bottom
-  // of a scrolled page can otherwise move COM under the held pointer.
-  if (comPressed) $("panel").style.minHeight = `${$("panel").getBoundingClientRect().height}px`;
+  for(const id of ['prepare-firmware','firmware-file','firmware-otp','pick','delete','start'])$(id).disabled=true;
+  // Preserve the held COM button's position while setup collapses.
+  if (comPressed) $('panel').style.minHeight = `${$('panel').getBoundingClientRect().height}px`;
   $("panel").classList.add("running");
   navigator.storage.persist?.();
   // Do not await resume(): touch must start booting while COM is still held.
@@ -372,7 +385,13 @@ globalThis.op1ModuleCached = moduleCached;  // for tools/smoke-browser.mjs
 
 const screen = $("screen").getContext("2d");
 worker.onmessage = ({ data }) => {
-  switch (data.type) {
+  switch(data.type){
+    case 'prepared':break;
+    case 'preparing':
+      preparing=data.value;
+      $('prepare-firmware').disabled=preparing||started;
+      for(const id of ['firmware-file','firmware-otp','pick','delete'])$(id).disabled=preparing||started;
+      $('cancel-firmware').disabled=!preparing;showFiles(files);break;
     case "files":
       // Worker-only, so the worker says.
       if (!data.syncAccess) {

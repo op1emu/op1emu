@@ -231,7 +231,12 @@ jobs:
         working-directory: web
         run: |
           npm ci
+          npm test
           npm run build
+
+      - name: Firmware import UI in Chrome (synthetic input only)
+        working-directory: web
+        run: node tools/firmware-browser.mjs
 
       # The runner's Chrome, driven by Playwright (a devDependency).
       - name: The site in Chrome

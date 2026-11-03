@@ -30,7 +30,7 @@ function standIn() {
       if (message.type === "key" || message.type === "com")
         keys.push(`${message.bank}.${message.pin}${message.pressed ? "+" : "-"}`);
       if (message.type === "files") {
-        const files = { nand: { size: 553648128, modified: 0 }, otp: { size: 8192, modified: 0 } };
+        const files = { kind: "manual", ready: true, nand: { size: 553648128, modified: 0 }, otp: { size: 8192, modified: 0 } };
         setTimeout(() => this.onmessage({ data: { type: "files", syncAccess: true, files } }), 0);
       }
     }
@@ -75,6 +75,7 @@ try {
     if (!ok) failures.push(`${name}: sent [${sent}], stuck [${stuck}], shown down [${down}]`);
   };
   const button = async (name) => {
+    await page.locator("#device").scrollIntoViewIfNeeded();
     const box = await page.locator(`#key-${name}`).boundingBox();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   };
@@ -142,15 +143,24 @@ try {
   await clearCom();
   await com.focus();
   await boot.keyboard.down("Space");
-  const usb = await boot.locator("#key-usb").boundingBox();
-  await boot.mouse.click(usb.x + usb.width / 2, usb.y + usb.height / 2);
+  const pointAtUsb = async () => {
+    // Setup height varies (including the firmware preparation form). A bounding
+    // box can be outside the viewport; focus can also scroll between gestures.
+    await boot.locator('#device').scrollIntoViewIfNeeded();
+    const usb = await boot.locator('#key-usb').boundingBox();
+    await boot.mouse.move(usb.x + usb.width / 2, usb.y + usb.height / 2);
+  };
+  await pointAtUsb();
+  await boot.mouse.down();
+  await boot.mouse.up();
   assert.deepEqual(await levels(), [true], "panel USB release preserves a COM button hold");
   await boot.keyboard.up("Space");
   assert.deepEqual(await levels(), [true, false]);
   await clearCom();
-  await boot.mouse.move(usb.x + usb.width / 2, usb.y + usb.height / 2);
+  await pointAtUsb();
   await boot.mouse.down();
-  await com.focus();
+  assert.deepEqual(await levels(), [true], 'panel USB pointer hold was acquired');
+  await com.evaluate(button => button.focus({ preventScroll: true }));
   await boot.keyboard.press("Space");
   assert.deepEqual(await levels(), [true], "COM button release preserves a panel USB hold");
   await boot.mouse.up();

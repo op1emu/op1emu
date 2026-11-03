@@ -27,7 +27,7 @@ function standIn() {
       messages.push(message);
       if (message.type === "start") startCount++;
       if (message.type === "files") setTimeout(() => this.onmessage({ data: {
-        type: "files", syncAccess: true, files: { nand: { modified: 0 }, otp: { modified: 0 } },
+        type: "files", syncAccess: true, files: { kind: "manual", ready: true, nand: { modified: 0 }, otp: { modified: 0 } },
       } }), 0);
     }
   };
@@ -67,11 +67,18 @@ try {
     await ready();
   };
   const position = async (rectangle, layout) => {
+    // Clicking Start or changing selectors can scroll the longer setup form.
+    // Mouse coordinates do not auto-scroll like locator clicks do.
+    await page.locator("#device").scrollIntoViewIfNeeded();
     const box = await page.locator("#device").boundingBox();
     const image = await page.locator("#faceplate").evaluate((img) => [img.naturalWidth, img.naturalHeight]);
     const [x, y, w, h] = rectangle;
-    return [box.x + (x + w / 2) * box.width / (layout.width ?? image[0]),
+    const point = [box.x + (x + w / 2) * box.width / (layout.width ?? image[0]),
       box.y + (y + h / 2) * box.height / (layout.height ?? image[1])];
+    const viewport = page.viewportSize();
+    assert.ok(point[0] >= 0 && point[0] < viewport.width && point[1] >= 0 && point[1] < viewport.height,
+      `panel control outside viewport: ${point}`);
+    return point;
   };
   const checkFrame = async () => {
     const colors = await page.locator("#screen").evaluate((canvas) => {

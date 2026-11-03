@@ -199,3 +199,59 @@ node web/tools/run-node.mjs ldr build-wasm/web/op1emu-web.mjs --ldr tiny.ldr
 
 The gate runs with chaining off, so that every block's start is seen: the
 marks fire as the profiler fires them.
+
+## Experimental original OP-1 `.op1` preparation
+
+**Prepare firmware** accepts the byte-identical stock firmware 246 update
+package. It preserves the existing NAND + 8 KiB OTP input path. Other revisions
+and repacked updates fail explicitly: authentication of the complete package
+precedes the third-party LZMA decoder, which lacks an incremental allocation
+limit. Successful preparation replaces the single active boot configuration with
+its NAND and plaintext loader for the direct-LDR boot path. Manual NAND/OTP
+imports replace that configuration with manual boot inputs. Start, Export and
+UI labels all refer to the active configuration, including before first startup
+and after a page reload; there is no separate boot-source selector.
+
+Processing is local: package SHA-256 and CRC32, LZMA-alone, safe TAR parsing,
+CALLBACK-record decryption, canonical plaintext SHA-256, and factory-content
+NAND provisioning. The loader transformation follows the MIT Rust
+[GosuBoy/op-decryptor2](https://github.com/GosuBoy/op-decryptor2) reference,
+retaining INDIRECT flags and the trailer after FINAL and decrypting complete
+8-byte cipher units in partial 24-byte groups.
+
+Encrypted input requires a local OTP **text** file (at most 64 KiB) containing
+the decryption-key pages, supplied by a user authorized to use that material.
+No OTP reference is downloaded, cached, or bundled, and there is no fallback
+network source. The text is processed locally for this preparation only.
+Firmware, OTP values, plaintext and factory audio are never uploaded or bundled.
+
+The key text is not a complete emulator `otp.bin`. Prepared firmware instead
+mirrors a fresh desktop direct-LDR working directory: `op1_start` receives the
+validated plaintext and the existing native OTP device creates its default chip
+identity in MEMFS. This generated identity is session-local, not a physical-device
+dump. Manual NAND boot requires the user's local 528 MiB NAND image and matching
+complete 8 KiB `otp.bin`; the imported OTP is used unchanged.
+
+The independent JavaScript YAFFS2 writer follows PR #76's split data/OOB layout
+(2048+64-byte pages, block 132, tags at OOB offset 4). It does not copy GPL
+mkyaffs2 code. Bounded chunks go directly into OPFS, avoiding a 528 MiB NAND
+allocation; package decompression remains memory-resident. Low-memory and
+mobile browsers are not qualified.
+
+Each preparation writes a new generation and commits metadata last, then replaces
+the active configuration only after success. Failed or cancelled work removes
+its incomplete generation and leaves the previous active configuration unchanged.
+Discovery ignores incomplete/corrupt generations and revalidates loader identity.
+Selection records persist the same active input references across reloads. Manual
+imports also stage new files before committing their selection. Switching from
+prepared firmware to manual boot requires both the NAND and matching OTP again;
+an inactive previous pair is not silently restored.
+Repeat preparation or NAND import needs another 528 MiB of space.
+**Delete the stored files** removes stored boot inputs and profiles. A
+stopped or failed native session requires page reload before restarting.
+
+Synthetic tests: `npm test`. For an optional independent generator comparison,
+set `MKYAFFS2=/path/to/mkyaffs2` before running the tests. No firmware fixtures
+or OTP values are included. Package equality, NAND-format tests and complete
+emulated boot are distinct validation claims; consult the PR's validation
+report. This feature never accesses or installs firmware on hardware.
