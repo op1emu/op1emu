@@ -367,7 +367,7 @@ export function createStorageUI(worker, isRunning) {
     toggle.focus();
   });
   $("storage-connect").addEventListener("click", connect);
-  $("storage-refresh").addEventListener("click", () => operation("Refreshing…", refresh));
+  $("storage-refresh").addEventListener("click", () => operation("Refreshing…", () => refresh()));
   $("storage-pick").addEventListener("change", (event) => {
     const destination = uploadDestination ?? currentPath;
     uploadDestination = null;

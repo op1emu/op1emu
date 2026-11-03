@@ -464,6 +464,13 @@ try {
   await page.locator('.storage-directory[data-storage-path="/samples"] .wb-title').click();
   await page.waitForFunction(() => document.querySelector('[data-storage-path="/samples/demo.bin"]'));
 
+  const listCount = await page.evaluate(() => messages.filter((m) => m.type === "msc-list").length);
+  await page.locator("#storage-refresh").click();
+  await page.waitForFunction((count) => messages.filter((m) => m.type === "msc-list").length === count + 1 &&
+    document.getElementById("storage").getAttribute("aria-busy") === "false", listCount);
+  assert.equal(await page.evaluate(() => messages.filter((m) => m.type === "msc-list").at(-1).path), "/samples",
+    "Refresh lists the selected directory instead of the operation token");
+
   const payload = new Uint8Array(150000);
   for (let i = 0; i < payload.length; ++i) payload[i] = i & 255;
   const downloadEvent = page.waitForEvent("download");
@@ -476,7 +483,17 @@ try {
 
   const upload = Buffer.from(Array.from({ length: 150000 }, (_, i) => (i * 3) & 255));
   await chooseUpload("/samples", { name: "new file.op1", mimeType: "application/octet-stream", buffer: upload });
-  await page.waitForFunction(() => globalThis.uploads.length === 1);
+  await page.waitForFunction(() => globalThis.uploads.length === 1 &&
+    document.getElementById("storage").getAttribute("aria-busy") === "false");
+  await storageRow("/samples/new file.op1").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#storage-status").textContent(), "Upload complete",
+    "refreshing an expanded directory after upload succeeds");
+  for (const name of ["demo.bin", "pixel.png", "tone.wav", "huge.bin", "oversize-stream.bin", "new file.op1"])
+    assert.equal(await storageRow(`/samples/${name}`).count(), 1, `${name} occurs exactly once after refresh`);
+  assert.equal(await storageRow("/samples/new file.op1").isVisible(), true,
+    "the uploaded file is visible in the refreshed directory");
+  assert.equal(await storageRow("/samples").evaluate((row) => row.classList.contains("wb-expanded")), true,
+    "refresh preserves directory expansion");
   const first = await page.evaluate(async () => {
     const item = uploads[0];
     return { path: item.path, overwrite: item.overwrite, size: item.file.size,

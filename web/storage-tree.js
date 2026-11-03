@@ -161,7 +161,10 @@ export function createStorageTree({ element, isInteractive, onDirectory, onConte
       }
       const node = tree.findKey(path);
       if (!node) return false;
+      const wasExpanded = node.expanded;
+      node.removeChildren();
       await node.load(childNodes(entries, path));
+      if (wasExpanded) await node.setExpanded(true, { noEvents: true });
       return true;
     },
     setEnabled: (enabled) => {
